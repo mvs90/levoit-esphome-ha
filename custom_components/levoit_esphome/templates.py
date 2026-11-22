@@ -34,7 +34,10 @@ TEMPLATES_REF = "main"
 VARIANT_ORIGINAL = "original"
 VARIANT_XIAO_C3 = "xiao_c3"
 VARIANT_C3 = "c3"
+VARIANT_S3 = "s3"
 VARIANT_CUSTOM = "custom"
+# the ESP variants this version knows; templates with others are skipped
+VARIANTS = (VARIANT_ORIGINAL, VARIANT_XIAO_C3, VARIANT_C3, VARIANT_S3)
 
 MARKER_PREFIX = "# levoit-esphome-ha: template="
 _MARKER = re.compile(r"(?m)^# levoit-esphome-ha: template=(\S+)[ \t]*$")
@@ -97,7 +100,19 @@ async def async_fetch_templates(session: aiohttp.ClientSession) -> list[Template
     async with session.get(url, timeout=_TIMEOUT) as resp:
         resp.raise_for_status()
         data = await resp.json(content_type=None)
-    return [Template(**entry) for entry in data.get("templates", [])]
+    return parse_templates(data)
+
+
+def parse_templates(data: dict) -> list[Template]:
+    """The templates of templates.json this version can offer.
+
+    A variant added to tuct/levoit later (a new ESP) is skipped until the
+    integration knows it, instead of reaching the config type sensor, whose
+    states are a fixed list.
+    """
+    return [
+        Template(**entry) for entry in data.get("templates", []) if entry.get("variant") in VARIANTS
+    ]
 
 
 async def async_fetch_template_text(session: aiohttp.ClientSession, template: Template) -> str:

@@ -37,7 +37,7 @@ Installing and compiling need the config.
 | **Firmware channel** | `stable` (releases), `main` (every merge), `pinned` (another ref or a fork) or `local`; from the config, else the select below |
 | **Update channel** (select) | `stable` / `main`. Without a Device Builder config: which channel to compare the device with. With a template config: rewrites `ref:` in the config, the next install builds from it. Unavailable for a custom config: change its `ref:` yourself |
 | **Device Builder config** | The config file the device is built from |
-| **Config type** | `original` / `xiao_c3` / `c3`: made from a template; `custom`: your own config |
+| **Config type** | `original` / `xiao_c3` / `c3` / `s3`: made from a template; `custom`: your own config |
 
 A newer **ESPHome** version is already offered by Home Assistant's own ESPHome
 firmware update; this integration adds the component version.
@@ -63,7 +63,7 @@ nothing is loaded from outside Home Assistant.
 **Settings → Devices & services → Levoit ESPHome → Add device** makes a Device
 Builder config from a template of tuct/levoit
 ([`devices/templates.json`](https://github.com/tuct/levoit/blob/main/devices/templates.json)):
-pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3).
+pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, ESP32-S3).
 
 * **New device:** a name is suggested; a new API encryption key and OTA
   password are generated and stored in the Device Builder's `secrets.yaml` as

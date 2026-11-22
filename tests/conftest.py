@@ -83,7 +83,16 @@ CORE300S = Template(
     file="devices/levoit-core300s/levoit-core300s-builder.yaml",
     source="devices/levoit-core300s/levoit-core300s.yaml",
 )
-TEMPLATES = [CORE300S, EVEREST_ORIGINAL, EVEREST_C3]
+CORE300S_S3 = Template(
+    title="Levoit Core 300S",
+    model="CORE300S",
+    variant="s3",
+    board="esp32-s3-devkitc-1",
+    name="levoit-core300s-s3",
+    file="devices/levoit-core300s/levoit-core300s-builder-s3.yaml",
+    source="devices/levoit-core300s/levoit-core300s-s3.yaml",
+)
+TEMPLATES = [CORE300S, CORE300S_S3, EVEREST_ORIGINAL, EVEREST_C3]
 CUSTOM_CONFIG = "esphome:\n  name: bedroom-purifier\n"
 WIFI = {"wifi_ssid": "home", "wifi_password": "wifi-pw", "wifi_ap_password": "ap-pw"}
 
