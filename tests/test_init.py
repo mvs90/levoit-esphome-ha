@@ -78,7 +78,7 @@ async def test_setup_finds_our_device(
     ours = dev_reg.async_get_device_by_identifier((DOMAIN, MAC), entry.entry_id)
     assert ours is not None
     assert ours.name == "Bedroom purifier"
-    assert ours.configuration_url == "homeassistant://hassio/ingress/5c53de3b_esphome"
+    assert ours.configuration_url == "homeassistant://app/5c53de3b_esphome"
     assert (dr.CONNECTION_NETWORK_MAC, MAC) in ours.connections
     assert ours.via_device_id is None
     ent_reg = er.async_get(hass)
