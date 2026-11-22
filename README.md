@@ -14,9 +14,13 @@ Device Builder and uploads it over the air.
 
 ## What you get
 
-Per purifier, on a device of the same name that is linked to its ESPHome
-device ("connected via"). Since Home Assistant 2026.8 an integration cannot add
-entities to another integration's device.
+Per purifier, on a device of the same name; Home Assistant lists the purifier's
+ESPHome device under *Linked devices* (same MAC address). Since Home Assistant
+2026.8 an integration cannot add entities to another integration's device.
+
+Without a config in the Device Builder, a device shows its installed version
+only: model, channel and whether an update is out stay *unknown*, and compiling
+is not available.
 
 | Entity | What it shows / does |
 |--------|----------------------|

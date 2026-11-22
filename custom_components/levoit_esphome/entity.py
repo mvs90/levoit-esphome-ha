@@ -28,14 +28,15 @@ class LevoitEsphomeEntity(CoordinatorEntity[LevoitEsphomeCoordinator]):
         # Since Home Assistant 2026.8 identifiers and connections are unique per
         # config entry only: a matching MAC no longer merges into the ESPHome
         # integration's device. So this is our own device, named like the
-        # purifier and linked to its ESPHome device ("connected via").
+        # purifier. The shared MAC connection makes Home Assistant list the
+        # ESPHome device under "Linked devices"; no via_device ("connected
+        # via" would mean routed through it).
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.mac)},
             connections={(CONNECTION_NETWORK_MAC, device.mac)},
             name=device.title,
             manufacturer="tuct/levoit",
             model="ESPHome component",
-            via_device_id=device.esphome_device_id,
         )
 
     @property
