@@ -35,9 +35,34 @@ Installing and compiling need the config.
 | **Firmware channel** | `stable` (releases), `main` (every merge), `pinned` (another ref or a fork) or `local`; from the config, else the select below |
 | **Update channel** (select) | Only for a device without a Device Builder config: which channel to compare it with (`stable` / `main`) |
 | **Device Builder config** | The config file the device is built from |
+| **Config type** | `original` / `xiao_c3` / `c3`: made from a template; `custom`: your own config |
 
 A newer **ESPHome** version is already offered by Home Assistant's own ESPHome
 firmware update; this integration adds the component version.
+
+## Add device
+
+**Settings → Devices & services → Levoit ESPHome → Add device** makes a Device
+Builder config from a template of tuct/levoit
+([`devices/templates.json`](https://github.com/tuct/levoit/blob/main/devices/templates.json)):
+pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3).
+
+* **New device:** a name is suggested; a new API encryption key and OTA
+  password are generated and stored in the Device Builder's `secrets.yaml` as
+  `<name>_api_key` / `<name>_ota_password`. Flash it once over USB from the
+  Device Builder; after that, updates come over the air
+* **Device already in Home Assistant without a config:** it keeps its name,
+  its API encryption key (from Home Assistant's ESPHome entry) and the OTA
+  password you enter, so Home Assistant keeps the device
+* Wi-Fi comes from the shared `wifi_ssid`, `wifi_password` and
+  `wifi_ap_password` secrets, which must exist. The integration reads secret
+  **names** only, never values, and never overwrites an existing secret
+
+**Template configs follow the templates.** A config made from a template (or a
+pasted builder file) is recognised by its first line. Every update rewrites it
+from the newest builder file first, keeping its name, secrets and channel, then
+compiles and uploads. A **custom** config is never rewritten: updates only build
+the new component it pulls through its `ref:`.
 
 ## Requirements
 

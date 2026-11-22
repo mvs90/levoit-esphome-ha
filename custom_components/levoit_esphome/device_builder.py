@@ -10,14 +10,28 @@ The Device Builder endpoints behind it (/devices, /json-config, /compile,
 /upload) are kept by the Device Builder for Home Assistant only; going
 through Home Assistant's object means we move along when Home Assistant
 moves to their newer API.
+
+Writing files (configs, secrets.yaml) is not in that legacy API. It goes
+through the Device Builder's own /ws API at the same address: Home
+Assistant's address is the add-on's trusted (Supervisor) site, where a
+connection is authenticated from the start. Only secret *names* are ever
+read from secrets.yaml, never values.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+import itertools
 from typing import Any, Protocol
 
+import aiohttp
+
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+_WS_TIMEOUT = 60
+_message_ids = itertools.count(1)
 
 
 class DeviceBuilderApi(Protocol):
@@ -48,6 +62,7 @@ class DeviceBuilder(Protocol):
 
     api: DeviceBuilderApi
     supports_build_queue: bool
+    url: str
 
 
 @callback
@@ -59,3 +74,84 @@ def async_get_device_builder(hass: HomeAssistant) -> DeviceBuilder | None:
     )
 
     return async_get_dashboard(hass)
+
+
+class DeviceBuilderCommandError(Exception):
+    """A /ws command failed; `code` is the Device Builder's error code."""
+
+    def __init__(self, code: str, details: str = "") -> None:
+        """Initialize."""
+        super().__init__(f"{code}: {details}" if details else code)
+        self.code = code
+        self.details = details
+
+
+async def _ws_command(
+    hass: HomeAssistant, builder: DeviceBuilder, command: str, **args: Any
+) -> Any:
+    """Run one /ws command and return its result.
+
+    One connection per command: these are rare, user-started actions.
+    """
+    message_id = str(next(_message_ids))
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(_WS_TIMEOUT):
+            async with session.ws_connect(builder.url.rstrip("/") + "/ws") as ws:
+                await ws.send_json({"command": command, "message_id": message_id, "args": args})
+                async for msg in ws:
+                    if msg.type != aiohttp.WSMsgType.TEXT:
+                        break
+                    data = msg.json()
+                    if data.get("message_id") != message_id or "event" in data:
+                        continue  # the server info on connect, stream events
+                    if "error_code" in data:
+                        raise DeviceBuilderCommandError(
+                            str(data["error_code"]), str(data.get("details", ""))
+                        )
+                    return data.get("result")
+    except (aiohttp.ClientError, TimeoutError) as err:
+        raise DeviceBuilderCommandError("unavailable", str(err)) from err
+    raise DeviceBuilderCommandError("unavailable", "connection closed")
+
+
+async def async_read_config(hass: HomeAssistant, builder: DeviceBuilder, configuration: str) -> str:
+    """A config's YAML as written (not resolved)."""
+    return str(await _ws_command(hass, builder, "devices/get_config", configuration=configuration))
+
+
+async def async_write_config(
+    hass: HomeAssistant, builder: DeviceBuilder, configuration: str, content: str, expected: str
+) -> None:
+    """Replace a config, only if it still holds `expected` (else precondition_failed)."""
+    await _ws_command(
+        hass,
+        builder,
+        "devices/update_config",
+        configuration=configuration,
+        content=content,
+        expected=expected,
+    )
+
+
+async def async_create_config(
+    hass: HomeAssistant, builder: DeviceBuilder, name: str, content: str
+) -> str:
+    """Create a config; returns its file name. Refuses an existing one (already_exists)."""
+    result = await _ws_command(hass, builder, "devices/create", name=name, file_content=content)
+    return str(result["configuration"])
+
+
+async def async_secret_names(hass: HomeAssistant, builder: DeviceBuilder) -> set[str]:
+    """The keys in secrets.yaml (names only, never values)."""
+    return set(await _ws_command(hass, builder, "config/get_secrets") or [])
+
+
+async def async_add_secret(
+    hass: HomeAssistant, builder: DeviceBuilder, key: str, value: str
+) -> bool:
+    """Add a key to secrets.yaml unless it exists; True if it was added."""
+    result = await _ws_command(
+        hass, builder, "config/set_secret", key=key, value=value, overwrite=False
+    )
+    return bool(result.get("created")) if isinstance(result, dict) else False

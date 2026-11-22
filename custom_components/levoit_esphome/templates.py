@@ -1,0 +1,242 @@
+"""Device templates: the builder files of tuct/levoit.
+
+A config made from a template keeps a marker line naming it:
+
+    # levoit-esphome-ha: template=devices/levoit-everest-air/levoit-everest-air-builder-c3.yaml
+
+Builder files pasted by hand are recognised by their generated header
+("# Generated from devices/<source> by devices/make-builder-yaml.ps1").
+A config with neither is custom: it is never rewritten.
+
+Rendering takes the newest builder file and puts the device's own values in:
+its name, the secret names (or inline values) of its API key and OTA
+password, and its channel. Plain text edits on the known shape of the
+generated files; no YAML round trip, so comments and layout stay.
+Plain Python without Home Assistant, so it is easy to test.
+"""
+
+from __future__ import annotations
+
+import base64
+from dataclasses import dataclass
+import re
+import secrets as pysecrets
+
+import aiohttp
+
+from .const import CHANNEL_MAIN, CHANNEL_STABLE, GITHUB_RAW
+
+TEMPLATES_FILE = "devices/templates.json"
+# Templates come from main: the newest builder files. The component itself comes
+# from the device's channel (`ref:`); device configs only use released options.
+TEMPLATES_REF = "main"
+
+VARIANT_ORIGINAL = "original"
+VARIANT_XIAO_C3 = "xiao_c3"
+VARIANT_C3 = "c3"
+VARIANT_CUSTOM = "custom"
+
+MARKER_PREFIX = "# levoit-esphome-ha: template="
+_MARKER = re.compile(r"(?m)^# levoit-esphome-ha: template=(\S+)[ \t]*$")
+_GENERATED = re.compile(
+    r"(?m)^# Generated from (devices/\S+\.yaml) by devices/make-builder-yaml\.ps1"
+)
+_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?$")
+
+_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
+@dataclass(frozen=True)
+class Template:
+    """One entry of devices/templates.json."""
+
+    title: str
+    model: str
+    variant: str
+    board: str
+    name: str
+    file: str
+    source: str
+
+
+@dataclass(frozen=True)
+class Value:
+    """How a config sets a value: by `!secret <name>`, inline, or not at all."""
+
+    secret: str | None = None
+    inline: str | None = None
+
+    @property
+    def yaml(self) -> str:
+        """The value as written in the config."""
+        if self.secret is not None:
+            return f"!secret {self.secret}"
+        return '"' + (self.inline or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+@dataclass(frozen=True)
+class ConfigValues:
+    """What a device keeps when its config is (re)made from a template."""
+
+    name: str
+    api_key: Value | None = None  # None: no API encryption
+    ota_password: Value | None = None  # None: no OTA password
+    channel: str | None = None  # None: as in the template (stable)
+
+
+class TemplateError(ValueError):
+    """A builder file does not have the shape rendering expects."""
+
+
+# --- GitHub -----------------------------------------------------------------
+
+
+async def async_fetch_templates(session: aiohttp.ClientSession) -> list[Template]:
+    """devices/templates.json of tuct/levoit (main)."""
+    url = f"{GITHUB_RAW}/{TEMPLATES_REF}/{TEMPLATES_FILE}"
+    async with session.get(url, timeout=_TIMEOUT) as resp:
+        resp.raise_for_status()
+        data = await resp.json(content_type=None)
+    return [Template(**entry) for entry in data.get("templates", [])]
+
+
+async def async_fetch_template_text(session: aiohttp.ClientSession, template: Template) -> str:
+    """The builder file of a template (main)."""
+    url = f"{GITHUB_RAW}/{TEMPLATES_REF}/{template.file}"
+    async with session.get(url, timeout=_TIMEOUT) as resp:
+        resp.raise_for_status()
+        return (await resp.text()).replace("\r\n", "\n")
+
+
+# --- recognising and reading configs ------------------------------------------
+
+
+def template_of(config_text: str, templates: list[Template]) -> Template | None:
+    """The template a config was made from; None for a custom config."""
+    if match := _MARKER.search(config_text):
+        return next((t for t in templates if t.file == match.group(1)), None)
+    if match := _GENERATED.search(config_text):
+        return next((t for t in templates if t.source == match.group(1)), None)
+    return None
+
+
+def _block(text: str, key: str) -> str | None:
+    """The lines of a top-level YAML key (`api:`, `ota:` ...), without the key."""
+    match = re.search(rf"(?m)^{re.escape(key)}:[ \t]*\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text)
+    return match.group(1) if match else None
+
+
+def _value(raw: str) -> Value:
+    raw = raw.strip()
+    if raw.startswith("!secret"):
+        return Value(secret=raw.removeprefix("!secret").strip())
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        raw = raw[1:-1]
+    return Value(inline=raw)
+
+
+def config_values(config_text: str) -> ConfigValues:
+    """Name, API key, OTA password and channel as a config sets them."""
+    name_match = re.search(r"(?m)^  device_name:\s*(\S+)", config_text)
+    if name_match is None:
+        name_match = re.search(r"(?m)^esphome:\s*\n(?:[ \t]+.*\n)*?  name:\s*(\S+)", config_text)
+    if name_match is None or "${" in name_match.group(1):
+        raise TemplateError("the config has no device name")
+    name = name_match.group(1).strip("'\"")
+
+    api_key = None
+    if (api := _block(config_text, "api")) is not None and (
+        key := re.search(r"(?m)^\s+key:\s*(.+?)\s*$", api)
+    ):
+        api_key = _value(key.group(1))
+
+    ota_password = None
+    if (ota := _block(config_text, "ota")) is not None and (
+        password := re.search(r"(?m)^\s+password:\s*(.+?)\s*$", ota)
+    ):
+        ota_password = _value(password.group(1))
+
+    channel = None
+    if (ext := _block(config_text, "external_components")) is not None and (
+        ref := re.search(r"(?m)^\s+ref:\s*(\S+)", ext)
+    ):
+        channel = ref.group(1)
+
+    return ConfigValues(name=name, api_key=api_key, ota_password=ota_password, channel=channel)
+
+
+# --- rendering ----------------------------------------------------------------
+
+
+def _sub_once(pattern: str, repl: str, text: str, what: str) -> str:
+    new, count = re.subn(pattern, lambda _: repl, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise TemplateError(f"builder file has no {what}")
+    return new
+
+
+def render(template_text: str, template: Template, values: ConfigValues) -> str:
+    """The builder file with the device's own values, and the marker line."""
+    text = template_text.replace("\r\n", "\n")
+    text = _MARKER.sub("", text).lstrip("\n")
+    text = f"{MARKER_PREFIX}{template.file}\n{text}"
+
+    text = _sub_once(
+        r"^  device_name:\s*\S+[ \t]*$", f"  device_name: {values.name}", text, "device_name"
+    )
+
+    if values.api_key is None:
+        text = _sub_once(r"^  encryption:[ \t]*\n    key:.*\n", "", text, "api encryption key")
+    else:
+        text = _sub_once(
+            r"^    key: !secret api_key[ \t]*$", f"    key: {values.api_key.yaml}", text, "api key"
+        )
+
+    if values.ota_password is None:
+        text = _sub_once(r"^    password: !secret ota_password[ \t]*\n", "", text, "ota password")
+    else:
+        text = _sub_once(
+            r"^    password: !secret ota_password[ \t]*$",
+            f"    password: {values.ota_password.yaml}",
+            text,
+            "ota password",
+        )
+
+    if values.channel in (CHANNEL_STABLE, CHANNEL_MAIN):
+        text = _sub_once(
+            r"^      ref: \S+[ \t]*$", f"      ref: {values.channel}", text, "component ref"
+        )
+    return text
+
+
+# --- names and keys -----------------------------------------------------------
+
+
+def valid_name(name: str) -> bool:
+    """An ESPHome node name: lowercase letters, digits, hyphens; max 31."""
+    return bool(_NAME.match(name))
+
+
+def suggest_name(base: str, taken: set[str]) -> str:
+    """`base`, or `base-2`, `base-3` ... if taken."""
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}"
+
+
+def secret_key(name: str, what: str) -> str:
+    """Secret name for a device: levoit-everest-air-c3 -> levoit_everest_air_c3_api_key."""
+    return f"{name.replace('-', '_')}_{what}"
+
+
+def new_api_key() -> str:
+    """An ESPHome API encryption key: 32 random bytes, base64."""
+    return base64.b64encode(pysecrets.token_bytes(32)).decode()
+
+
+def new_ota_password() -> str:
+    """A random OTA password."""
+    return pysecrets.token_hex(16)

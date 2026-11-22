@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import ClientError
+
 from homeassistant.components.update import (
     UpdateDeviceClass,
     UpdateEntity,
@@ -14,7 +16,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, GITHUB_REPO
+from .device_builder import DeviceBuilderCommandError
 from .entity import LevoitEsphomeEntity, async_add_per_device
+from .templates import TemplateError
 from .versions import ChannelHead, is_behind
 
 if TYPE_CHECKING:
@@ -148,6 +152,20 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
         self._attr_in_progress = True
         self.async_write_ha_state()
         try:
+            if device.template:
+                # Original / C3 configs follow the newest builder file; a custom
+                # config only gets the new component through its ref.
+                try:
+                    await self.coordinator.async_refresh_from_template(builder, configuration)
+                except (DeviceBuilderCommandError, TemplateError, ClientError, TimeoutError) as err:
+                    raise HomeAssistantError(
+                        translation_domain=DOMAIN,
+                        translation_key="template_refresh_failed",
+                        translation_placeholders={
+                            "configuration": configuration,
+                            "error": str(err),
+                        },
+                    ) from err
             async with lock:
                 compiled = await builder.api.compile(configuration)
             if not compiled:
