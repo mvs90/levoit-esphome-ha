@@ -88,6 +88,12 @@
     },
     "already_building": {
       "message": "This device is being built already."
+    },
+    "custom_channel": {
+      "message": "This device's config is your own: change ref: under external_components there."
+    },
+    "channel_failed": {
+      "message": "Changing the channel in {configuration} failed: {error}"
     }
   },
   "config_subentries": {

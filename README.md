@@ -19,7 +19,8 @@ ESPHome device under *Linked devices* (same MAC address). Since Home Assistant
 2026.8 an integration cannot add entities to another integration's device.
 
 **With a config in the Device Builder** the integration reads model and
-channel from it and can install updates. **Without one** it still shows whether
+channel from it and can install updates; for a template config the *Update
+channel* select switches the channel. **Without one** it still shows whether
 an update is out: pick the channel in the device's *Update channel* select
 (default `stable`); the model comes from the device's `model` text sensor.
 Installing and compiling need the config.
@@ -34,7 +35,7 @@ Installing and compiling need the config.
 | **Latest component version** | Newest version on the device's channel (release + commit), *unknown* without a channel |
 | **Component model** | `model:` from the config, else from the device's `model` text sensor, e.g. `CORE300S` |
 | **Firmware channel** | `stable` (releases), `main` (every merge), `pinned` (another ref or a fork) or `local`; from the config, else the select below |
-| **Update channel** (select) | Only for a device without a Device Builder config: which channel to compare it with (`stable` / `main`) |
+| **Update channel** (select) | `stable` / `main`. Without a Device Builder config: which channel to compare the device with. With a template config: rewrites `ref:` in the config, the next install builds from it. Unavailable for a custom config: change its `ref:` yourself |
 | **Device Builder config** | The config file the device is built from |
 | **Config type** | `original` / `xiao_c3` / `c3`: made from a template; `custom`: your own config |
 

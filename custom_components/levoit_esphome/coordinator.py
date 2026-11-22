@@ -104,8 +104,6 @@ class LevoitDevice:
     esphome_current: str | None = None
     model: str | None = None
     channel: str | None = None
-    # True: picked in the "Update channel" select (no config to read it from)
-    channel_chosen: bool = False
     ref: str | None = None
     template: str | None = None
     config_kind: str | None = None
@@ -316,7 +314,6 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         """
         if not device.configuration:
             device.channel = self._chosen_channels.get(device.name, CHANNEL_STABLE)
-            device.channel_chosen = True
             return
         if facts := self._facts.get(device.configuration):
             device.model = facts.model or device.model
@@ -331,9 +328,65 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         self._chosen_channels[name] = channel
         if self.data is None or name not in self.data.devices:
             return
+        self._async_reapply_facts()
+
+    @callback
+    def _async_reapply_facts(self) -> None:
+        """Push the stored facts and choices to the current data, without a refresh."""
         devices = {n: replace(d) for n, d in self.data.devices.items()}
-        self._apply_facts(devices[name])
+        for device in devices.values():
+            self._apply_facts(device)
         self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
+
+    def can_set_channel(self, device: LevoitDevice) -> bool:
+        """Without a config (the user's choice) or with a template config (its `ref:`).
+
+        A custom config is the user's own file: its `ref:` is changed there.
+        """
+        return not device.configuration or device.template is not None
+
+    async def async_set_channel(self, device: LevoitDevice, channel: str) -> None:
+        """Switch a device to `channel`.
+
+        Without a config this only changes what it is compared with. A template
+        config gets its component `ref:` rewritten in the Device Builder (only
+        if the file did not change meanwhile); the next install builds from
+        the new channel.
+        """
+        if not device.configuration:
+            self.async_choose_channel(device.name, channel)
+            return
+        builder = self.device_builder
+        if builder is None:
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_device_builder")
+        if not self.can_set_channel(device):
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="custom_channel")
+        configuration = device.configuration
+        try:
+            text = await async_read_config(self.hass, builder, configuration)
+            if tpl.template_of(text, await self.async_get_templates()) is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN, translation_key="custom_channel"
+                )
+            new = tpl.with_channel(text, channel)
+            if new != text:
+                await async_write_config(self.hass, builder, configuration, new, expected=text)
+        except (
+            DeviceBuilderCommandError,
+            tpl.TemplateError,
+            aiohttp.ClientError,
+            TimeoutError,
+        ) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="channel_failed",
+                translation_placeholders={"configuration": configuration, "error": str(err)},
+            ) from err
+        # the ref is known now; no new `esphome config` run needed
+        if (facts := self._facts.get(configuration)) is not None:
+            self._facts[configuration] = replace(facts, channel=channel, ref=channel)
+        if self.data is not None:
+            self._async_reapply_facts()
 
     def _scan_sensors(self, ent_reg: er.EntityRegistry, name: str, device_id: str) -> _FoundSensors:
         """Version and model, from the device's `esp_version` and `model` sensors.
@@ -440,10 +493,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             # Apply to the current data instead of a new refresh: no second
             # round of Device Builder and state lookups, and no refresh in
             # flight can overwrite it.
-            devices = {name: replace(device) for name, device in self.data.devices.items()}
-            for device in devices.values():
-                self._apply_facts(device)
-            self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
+            self._async_reapply_facts()
 
     async def _async_config_kind(
         self, builder: DeviceBuilder, configuration: str
