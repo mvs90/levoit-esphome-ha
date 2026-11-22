@@ -7,6 +7,28 @@ DOMAIN = "levoit_esphome"
 # ESPHome components from tuct/levoit that make a device ours.
 COMPONENTS = frozenset({"levoit", "philips"})
 
+# `model:` values of those components (VALID_MODELS in components/levoit and
+# components/philips __init__.py). The `model` text sensor is recognised by its
+# state being one of these; add new models here when the components get them.
+KNOWN_MODELS = frozenset(
+    {
+        "CORE200S",
+        "CORE300S",
+        "CORE400S",
+        "CORE600S",
+        "ELEVA300X",
+        "EVERESTAIR",
+        "SPROUT",
+        "SUPERIOR6000S",
+        "VITAL100S",
+        "VITAL200S",
+        "AC0650",
+        "AC0651",
+        "AC0950",
+        "AC0951",
+    }
+)
+
 GITHUB_REPO = "tuct/levoit"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
 GITHUB_RAW = f"https://raw.githubusercontent.com/{GITHUB_REPO}"

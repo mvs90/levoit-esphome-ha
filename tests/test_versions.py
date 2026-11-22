@@ -47,20 +47,28 @@ def test_text() -> None:
 
 
 @pytest.mark.parametrize(
-    ("reported", "behind"),
+    ("reported", "channel", "behind"),
     [
-        (Reported("1.8.0", "abcdef1"), False),  # at the head
-        (Reported("1.7.0", "10361cc"), True),  # older commit
-        (Reported("1.8.0", "0000000"), True),  # other commit, same release
-        (Reported("1.7.0"), True),  # no commit: release number decides
-        (Reported("1.8.0"), False),
-        (Reported("1.9.0"), False),
-        (Reported("1.7.0", "10361cc", dirty=True), False),  # local build
+        # main: commits decide where both have one
+        (Reported("1.8.0", "abcdef1"), "main", False),  # at the head
+        (Reported("1.7.0", "10361cc"), "main", True),  # older commit
+        (Reported("1.8.0", "0000000"), "main", True),  # other commit, same release
+        (Reported("1.7.0"), "main", True),  # no commit: release number decides
+        (Reported("1.8.0"), "main", False),
+        # stable: only a newer release counts
+        (Reported("1.8.0", "abcdef1"), "stable", False),
+        (Reported("1.8.0", "0000000"), "stable", False),  # main build after 1.8.0
+        (Reported("1.7.0", "10361cc"), "stable", True),
+        (Reported("1.7.0"), "stable", True),
+        (Reported("1.9.0", "0000000"), "stable", False),
+        # never a local build
+        (Reported("1.7.0", "10361cc", dirty=True), "main", False),
+        (Reported("1.7.0", "10361cc", dirty=True), "stable", False),
     ],
 )
-def test_is_behind(reported: Reported, behind: bool) -> None:
-    """Commits decide where both have one."""
-    assert is_behind(reported, HEAD) is behind
+def test_is_behind(reported: Reported, channel: str, behind: bool) -> None:
+    """main compares commits, stable compares releases."""
+    assert is_behind(reported, HEAD, channel) is behind
 
 
 @pytest.mark.parametrize(

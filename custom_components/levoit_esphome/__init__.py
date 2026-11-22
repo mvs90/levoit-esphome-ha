@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import LevoitEsphomeCoordinator
 
-PLATFORMS = [Platform.BUTTON, Platform.SENSOR, Platform.UPDATE]
+PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR, Platform.UPDATE]
 
 type LevoitEsphomeConfigEntry = ConfigEntry[LevoitEsphomeCoordinator]
 

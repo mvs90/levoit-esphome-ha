@@ -96,12 +96,12 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
         return None if head is None else head.text
 
     def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
-        """Commits decide where both have one (see versions.is_behind)."""
+        """main compares commits, stable compares releases (see versions.is_behind)."""
         device = self.device
         head = self._head
-        if device is None or device.reported is None or head is None:
+        if device is None or device.reported is None or head is None or device.channel is None:
             return False
-        return is_behind(device.reported, head)
+        return is_behind(device.reported, head, device.channel)
 
     @property
     def release_url(self) -> str | None:

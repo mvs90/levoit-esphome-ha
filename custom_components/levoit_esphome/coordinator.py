@@ -19,10 +19,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CHANNEL_STABLE,
     COMPONENTS,
     CONFIG_INTERVAL,
     DOMAIN,
     GITHUB_INTERVAL,
+    KNOWN_MODELS,
     SCAN_INTERVAL,
 )
 from .device_builder import DeviceBuilder, async_get_device_builder
@@ -65,12 +67,25 @@ class LevoitDevice:
     components: frozenset[str]
     reported: Reported | None
     version_entity_id: str | None
+    model_entity_id: str | None = None
     configuration: str | None = None
     esphome_deployed: str | None = None
     esphome_current: str | None = None
     model: str | None = None
     channel: str | None = None
+    # True: picked in the "Update channel" select (no config to read it from)
+    channel_chosen: bool = False
     ref: str | None = None
+
+
+@dataclass
+class _FoundSensors:
+    """What a device's own ESPHome sensors tell."""
+
+    reported: Reported | None = None
+    version_entity_id: str | None = None
+    model: str | None = None
+    model_entity_id: str | None = None
 
 
 @dataclass
@@ -99,6 +114,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         self._heads_at: datetime | None = None
         self._facts: dict[str, ConfigFacts] = {}
         self._facts_task: asyncio.Task[None] | None = None
+        # Channel per device name, for devices without a Device Builder config;
+        # set (and restored after a restart) by the "Update channel" select.
+        self._chosen_channels: dict[str, str] = {}
         self._tracked: frozenset[str] = frozenset()
         self._unsub_states: CALLBACK_TYPE | None = None
         # Device Builders before 2026.6 have no build queue: one compile at a time.
@@ -162,12 +180,12 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 continue
             mac = next(c[1] for c in device.connections if c[0] == dr.CONNECTION_NETWORK_MAC)
 
-            reported, version_entity_id = self._find_reported(ent_reg, device.id)
+            found = self._scan_sensors(ent_reg, device.id)
             config = configured.get(name)
             components = frozenset(
                 COMPONENTS & set((config or {}).get("loaded_integrations") or [])
             )
-            if not components and reported is None:
+            if not components and found.reported is None and found.model is None:
                 continue  # not one of ours
 
             levoit_device = LevoitDevice(
@@ -176,8 +194,10 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 title=device.name_by_user or device.name or name,
                 esphome_device_id=device.id,
                 components=components,
-                reported=reported,
-                version_entity_id=version_entity_id,
+                reported=found.reported,
+                version_entity_id=found.version_entity_id,
+                model_entity_id=found.model_entity_id,
+                model=found.model,
             )
             if config is not None:
                 levoit_device.configuration = config.get("configuration")
@@ -188,29 +208,52 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         return devices
 
     def _apply_facts(self, device: LevoitDevice) -> None:
-        """Model and channel from the config read, if there is one."""
-        if device.configuration and (facts := self._facts.get(device.configuration)):
-            device.model = facts.model
+        """Model and channel: from the config read, else the user's choice.
+
+        A device without a Device Builder config has no `ref:` to read; its
+        channel is the one picked in its "Update channel" select (default
+        stable). The model then comes from its `model` text sensor.
+        """
+        if not device.configuration:
+            device.channel = self._chosen_channels.get(device.name, CHANNEL_STABLE)
+            device.channel_chosen = True
+            return
+        if facts := self._facts.get(device.configuration):
+            device.model = facts.model or device.model
             device.channel = facts.channel
             device.ref = facts.ref
 
-    def _find_reported(
-        self, ent_reg: er.EntityRegistry, device_id: str
-    ) -> tuple[Reported | None, str | None]:
-        """The device's component version, from its `esp_version` text sensor.
+    @callback
+    def async_choose_channel(self, name: str, channel: str) -> None:
+        """Set the channel of a device without a Device Builder config."""
+        self._chosen_channels[name] = channel
+        if self.data is None or name not in self.data.devices:
+            return
+        devices = {n: replace(d) for n, d in self.data.devices.items()}
+        self._apply_facts(devices[name])
+        self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
 
-        Matched by the state's format, so the sensor's name does not matter.
-        ESPHome text sensors are `sensor` entities in Home Assistant.
+    def _scan_sensors(self, ent_reg: er.EntityRegistry, device_id: str) -> _FoundSensors:
+        """Version and model, from the device's `esp_version` and `model` sensors.
+
+        Matched by their states (the version format, a known model name), so
+        the sensors' names do not matter. ESPHome text sensors are `sensor`
+        entities in Home Assistant.
         """
+        found = _FoundSensors()
         for entity in er.async_entries_for_device(ent_reg, device_id):
             if entity.domain != Platform.SENSOR or entity.platform != ESPHOME_DOMAIN:
                 continue
             state = self.hass.states.get(entity.entity_id)
             if state is None:
                 continue
-            if (reported := parse_reported(state.state)) is not None:
-                return reported, entity.entity_id
-        return None, None
+            if found.reported is None and (reported := parse_reported(state.state)):
+                found.reported = reported
+                found.version_entity_id = entity.entity_id
+            elif found.model is None and state.state in KNOWN_MODELS:
+                found.model = state.state
+                found.model_entity_id = entity.entity_id
+        return found
 
     @callback
     def _schedule_config_reads(
@@ -278,8 +321,13 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
 
     @callback
     def _track_version_entities(self, devices: dict[str, LevoitDevice]) -> None:
-        """Refresh as soon as a device reports a new version (after an update)."""
-        wanted = frozenset(d.version_entity_id for d in devices.values() if d.version_entity_id)
+        """Refresh as soon as a device reports a new version or model (after an update)."""
+        wanted = frozenset(
+            entity_id
+            for d in devices.values()
+            for entity_id in (d.version_entity_id, d.model_entity_id)
+            if entity_id
+        )
         if wanted == self._tracked:
             return
         if self._unsub_states is not None:
