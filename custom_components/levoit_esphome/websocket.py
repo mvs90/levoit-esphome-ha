@@ -98,6 +98,7 @@ def _device_dict(
         "online": device.online,
         "detected": device.detected,
         "building": coordinator.is_building(device.name),
+        "build_step": coordinator.build_step(device.name),
         "last_build": None
         if last is None
         else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},

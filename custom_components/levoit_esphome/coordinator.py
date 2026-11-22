@@ -156,6 +156,19 @@ def _filter_score(entity: er.RegistryEntry, state: State | None) -> int | None:
     return score
 
 
+BUILD_STEP_TEMPLATE = "template"  # rewriting a template config from the newest builder file
+BUILD_STEP_WAITING = "waiting"  # an older Device Builder compiles another device first
+BUILD_STEP_COMPILE = "compile"
+BUILD_STEP_UPLOAD = "upload"
+# progress bar of the update entity per step, in %
+BUILD_STEPS = {
+    BUILD_STEP_TEMPLATE: 5,
+    BUILD_STEP_WAITING: 5,
+    BUILD_STEP_COMPILE: 10,
+    BUILD_STEP_UPLOAD: 85,
+}
+
+
 @dataclass(frozen=True)
 class BuildResult:
     """How the last compile / upload of a device ended."""
@@ -204,6 +217,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         # Device Builders before 2026.6 have no build queue: one compile at a time.
         self.build_lock = asyncio.Lock()
         self._building: set[str] = set()
+        # step of each running build (BUILD_STEPS), for the update's progress bar
+        self._build_steps: dict[str, str] = {}
         self.last_builds: dict[str, BuildResult] = {}
 
     @property
@@ -569,6 +584,24 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         """Whether a compile / upload of this device is running."""
         return name in self._building
 
+    def build_step(self, name: str) -> str | None:
+        """What a running build of this device does now (a BUILD_STEPS key)."""
+        return self._build_steps.get(name) if name in self._building else None
+
+    def build_progress(self, name: str) -> int | None:
+        """Rough progress of a running build in %, by its step (None: not building).
+
+        The Device Builder does not report compile progress, so the bar moves in
+        steps: the compile, by far the longest part, stays at 10 %.
+        """
+        step = self.build_step(name)
+        return BUILD_STEPS[step] if step else None
+
+    @callback
+    def _async_set_build_step(self, name: str, step: str) -> None:
+        self._build_steps[name] = step
+        self.async_update_listeners()
+
     async def async_build(self, device: LevoitDevice, *, upload: bool) -> None:
         """Compile a device's config in the Device Builder; with `upload`, also install it.
 
@@ -603,6 +636,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             self.last_builds[device.name] = BuildResult(ok=True, upload=upload, at=dt_util.utcnow())
         finally:
             self._building.discard(device.name)
+            self._build_steps.pop(device.name, None)
             if upload:
                 self.async_forget_config(configuration)
             self.async_update_listeners()
@@ -620,6 +654,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         """Template refresh (install), compile, upload (install)."""
         placeholders = {"configuration": configuration}
         if upload and device.template:
+            self._async_set_build_step(device.name, BUILD_STEP_TEMPLATE)
             try:
                 await self.async_refresh_from_template(builder, configuration)
             except (
@@ -633,7 +668,11 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                     translation_key="template_refresh_failed",
                     translation_placeholders={**placeholders, "error": str(err)},
                 ) from err
+        if isinstance(lock, asyncio.Lock) and lock.locked():
+            # an older Device Builder compiles one at a time: another device first
+            self._async_set_build_step(device.name, BUILD_STEP_WAITING)
         async with lock:
+            self._async_set_build_step(device.name, BUILD_STEP_COMPILE)
             compiled = await builder.api.compile(configuration)
         if not compiled:
             raise HomeAssistantError(
@@ -641,6 +680,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 translation_key="compile_failed",
                 translation_placeholders=placeholders,
             )
+        if upload:
+            self._async_set_build_step(device.name, BUILD_STEP_UPLOAD)
         if upload and not await builder.api.upload(configuration, "OTA"):
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

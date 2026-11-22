@@ -84,6 +84,7 @@ async def test_subscribe_and_build(
     assert device["config_kind"] == "custom"
     assert device["can_set_channel"] is False
     assert device["building"] is False
+    assert device["build_step"] is None
     assert device["device_id"]
 
     build = {"type": "levoit_esphome/build", "name": "bedroom-purifier", "upload": False}

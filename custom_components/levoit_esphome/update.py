@@ -133,6 +133,11 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
         """While any build of the device runs (install, compile, compile and upload)."""
         return self.coordinator.is_building(self._device_name)
 
+    @property
+    def update_percentage(self) -> int | None:
+        """Rough progress by step: config 5 %, compile 10 %, upload 85 %."""
+        return self.coordinator.build_progress(self._device_name)
+
     async def async_install(self, version: str | None, backup: bool, **kwargs: Any) -> None:
         """Compile in the Device Builder, then upload over the air."""
         device = self.device
