@@ -1,0 +1,167 @@
+"""Sidebar panel: the option, and its WebSocket commands."""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.typing import WebSocketGenerator
+
+from custom_components.levoit_esphome.const import DOMAIN, PANEL_URL_PATH
+from homeassistant.components.frontend import DATA_PANELS
+from homeassistant.core import HomeAssistant
+
+from .conftest import FakeBuilder
+
+
+async def _setup(hass: HomeAssistant, options: dict[str, Any] | None = None) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={}, options=options or {})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    return entry
+
+
+async def _set_option(hass: HomeAssistant, entry: MockConfigEntry, show: bool) -> None:
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "init"
+    await hass.config_entries.options.async_configure(result["flow_id"], {"show_panel": show})
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+@pytest.mark.usefixtures("esphome_devices", "patch_sources")
+async def test_panel_behind_option(hass: HomeAssistant) -> None:
+    """Off by default; the option adds and removes it; admins only."""
+    entry = await _setup(hass)
+    assert PANEL_URL_PATH not in hass.data.get(DATA_PANELS, {})
+
+    await _set_option(hass, entry, True)
+    panel = hass.data[DATA_PANELS][PANEL_URL_PATH]
+    assert panel.require_admin
+    assert panel.sidebar_title == "Levoit ESPHome"
+    custom = panel.config["_panel_custom"]
+    assert custom["name"] == "levoit-esphome-panel"
+    assert custom["module_url"].startswith("/levoit_esphome_static/levoit-esphome-panel.js?v=")
+
+    await _set_option(hass, entry, False)
+    assert PANEL_URL_PATH not in hass.data.get(DATA_PANELS, {})
+
+
+async def _call(client: Any, message: dict[str, Any]) -> dict[str, Any]:
+    """Send a command; its result, skipping subscription events."""
+    await client.send_json_auto_id(message)
+    while True:
+        msg = await client.receive_json()
+        if msg["id"] == message["id"] and msg["type"] == "result":
+            return msg
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_subscribe_and_build(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    patch_sources: AsyncMock,
+    builder: FakeBuilder,
+) -> None:
+    """The devices come with versions and state; build compiles in the Device Builder."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "levoit_esphome/subscribe"})
+    sub = await client.receive_json()
+    assert sub["success"]
+    event = (await client.receive_json())["event"]
+    assert event["heads"]["stable"]["version"] == "1.8.0+abcdef1"
+    assert event["builder_url"] == "/app/5c53de3b_esphome"
+    (device,) = event["devices"]
+    assert device["name"] == "bedroom-purifier"
+    assert device["installed"] == "1.7.0+10361cc"
+    assert device["latest"] == "1.8.0+abcdef1"
+    assert device["update_available"] is True
+    assert device["configuration"] == "bedroom-purifier.yaml"
+    assert device["config_kind"] == "custom"
+    assert device["can_set_channel"] is False
+    assert device["building"] is False
+    assert device["device_id"]
+
+    build = {"type": "levoit_esphome/build", "name": "bedroom-purifier", "upload": False}
+    await client.send_json_auto_id(build)
+    build_id = build["id"]
+    seen_building = False
+    while True:
+        msg = await client.receive_json()
+        if msg["type"] == "event":
+            seen_building |= msg["event"]["devices"][0]["building"]
+            continue
+        assert msg["id"] == build_id
+        assert msg["success"]
+        break
+    assert seen_building
+    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    builder.api.upload.assert_not_awaited()
+    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    assert last.ok
+    assert not last.upload
+
+    # failed compile: an error, and the failure is kept for the panel
+    builder.api.compile.return_value = False
+    result = await _call(
+        client, {"type": "levoit_esphome/build", "name": "bedroom-purifier", "upload": True}
+    )
+    assert not result["success"]
+    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    assert not last.ok
+    assert last.error
+    builder.api.upload.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_commands_refuse(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, patch_sources: AsyncMock
+) -> None:
+    """Unknown device, custom config channel, bad channel."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    result = await _call(client, {"type": "levoit_esphome/build", "name": "nope", "upload": True})
+    assert result["error"]["code"] == "not_found"
+
+    result = await _call(
+        client,
+        {"type": "levoit_esphome/set_channel", "name": "bedroom-purifier", "channel": "main"},
+    )
+    assert not result["success"]
+
+    result = await _call(
+        client, {"type": "levoit_esphome/set_channel", "name": "bedroom-purifier", "channel": "dev"}
+    )
+    assert result["error"]["code"] == "invalid_format"
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_check_now(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, patch_sources: AsyncMock
+) -> None:
+    """Check reads GitHub again, without waiting for the 6 hours."""
+    await _setup(hass)
+    assert patch_sources.await_count == 1
+    client = await hass_ws_client(hass)
+    result = await _call(client, {"type": "levoit_esphome/check"})
+    assert result["success"]
+    assert patch_sources.await_count == 2
+
+
+@pytest.mark.usefixtures("esphome_devices", "patch_sources")
+async def test_admins_only(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """A user who is not an admin gets nothing."""
+    await _setup(hass)
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    await client.send_json_auto_id({"type": "levoit_esphome/subscribe"})
+    result = await client.receive_json()
+    assert result["error"]["code"] == "unauthorized"

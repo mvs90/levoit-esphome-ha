@@ -1,6 +1,7 @@
 {
   "domain": "levoit_esphome",
   "name": "Levoit ESPHome",
+  "after_dependencies": ["frontend", "http", "panel_custom", "websocket_api"],
   "codeowners": ["@tuct"],
   "config_flow": true,
   "dependencies": ["esphome"],
@@ -10,5 +11,5 @@
   "issue_tracker": "https://github.com/tuct/levoit-esphome-ha/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.3.3"
+  "version": "0.4.0"
 }

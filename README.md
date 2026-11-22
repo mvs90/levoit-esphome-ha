@@ -42,6 +42,22 @@ Installing and compiling need the config.
 A newer **ESPHome** version is already offered by Home Assistant's own ESPHome
 firmware update; this integration adds the component version.
 
+## Sidebar page
+
+Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
+Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
+
+* every device: model, ESP / config type, channel, installed and latest
+  component version, filter %, ESPHome version, status and the last build
+* **Compile** and **Compile and upload** (*Update* when one is out), with the
+  result per device; the build log stays in the Device Builder
+* the channel of a device without a config or with a template config
+* links to each device, the Device Builder and Add device; *check now* reads
+  the latest versions from GitHub without waiting for the 6 hours
+
+The page updates live. It is a plain web component served by the integration;
+nothing is loaded from outside Home Assistant.
+
 ## Add device
 
 **Settings → Devices & services → Levoit ESPHome → Add device** makes a Device

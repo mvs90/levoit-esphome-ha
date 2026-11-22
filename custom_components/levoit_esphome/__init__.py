@@ -5,15 +5,31 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+)
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from . import websocket
+from .const import CONF_SHOW_PANEL, DOMAIN, SIGNAL_COORDINATOR
 from .coordinator import LevoitEsphomeCoordinator
 from .entity import subentry_for
+from .panel import async_register_panel, async_remove_panel
 
 PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR, Platform.UPDATE]
 
 type LevoitEsphomeConfigEntry = ConfigEntry[LevoitEsphomeCoordinator]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """The panel's WebSocket commands."""
+    websocket.async_register(hass)
+    return True
 
 
 @callback
@@ -56,7 +72,7 @@ def _async_move_to_subentries(
 
 
 async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """A sub-entry was added or removed: set up again, so devices move under it."""
+    """A sub-entry or an option changed: set up again (devices move, panel shows)."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -69,6 +85,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: LevoitEsphomeConfigEntry
     _async_move_to_subentries(hass, entry, coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
+    if entry.options.get(CONF_SHOW_PANEL):
+        await async_register_panel(hass)
+        entry.async_on_unload(lambda: async_remove_panel(hass))
+    # an open panel follows the new coordinator
+    async_dispatcher_send(hass, SIGNAL_COORDINATOR)
     return True
 
 

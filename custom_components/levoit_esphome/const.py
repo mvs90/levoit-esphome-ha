@@ -47,3 +47,13 @@ GITHUB_INTERVAL = timedelta(hours=6)
 # Model and channel read from each config. Every read runs `esphome config` in
 # the Device Builder, so it is cached.
 CONFIG_INTERVAL = timedelta(hours=6)
+
+# Options
+CONF_SHOW_PANEL = "show_panel"
+
+# Sidebar panel (admins only, behind the show_panel option)
+PANEL_URL_PATH = "levoit-esphome"
+PANEL_COMPONENT = "levoit-esphome-panel"
+PANEL_STATIC_URL = "/levoit_esphome_static"
+# Coordinator replaced (entry set up again): panel subscriptions re-attach
+SIGNAL_COORDINATOR = f"{DOMAIN}_coordinator"
