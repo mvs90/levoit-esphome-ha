@@ -8,7 +8,7 @@ const KIND_LABELS = {
   original: "Original ESP",
   xiao_c3: "XIAO ESP32-C3",
   c3: "ESP32-C3",
-  s3: "ESP32-S3",
+  s3: "XIAO ESP32-S3",
   custom: "Custom config",
 };
 const CHANNEL_LABELS = {
