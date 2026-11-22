@@ -25,7 +25,7 @@ async def _setup(hass: HomeAssistant) -> MockConfigEntry:
     entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     return entry
 
 
@@ -100,7 +100,7 @@ async def test_new_version_reported_refreshes(
     await _setup(hass)
     assert hass.states.get(UPDATE).state == STATE_ON
     hass.states.async_set(esphome_devices["purifier"], "1.8.0+abcdef1 esphome")
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(UPDATE).state == STATE_OFF
 
 
@@ -159,5 +159,5 @@ async def test_setup_retries_without_device_builder(hass: HomeAssistant) -> None
         entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={})
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert entry.state is ConfigEntryState.SETUP_RETRY

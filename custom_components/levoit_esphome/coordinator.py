@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 import logging
 from typing import TYPE_CHECKING, Any
@@ -183,14 +183,16 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 levoit_device.configuration = config.get("configuration")
                 levoit_device.esphome_deployed = config.get("deployed_version")
                 levoit_device.esphome_current = config.get("current_version")
-            if levoit_device.configuration and (
-                facts := self._facts.get(levoit_device.configuration)
-            ):
-                levoit_device.model = facts.model
-                levoit_device.channel = facts.channel
-                levoit_device.ref = facts.ref
+            self._apply_facts(levoit_device)
             devices[name] = levoit_device
         return devices
+
+    def _apply_facts(self, device: LevoitDevice) -> None:
+        """Model and channel from the config read, if there is one."""
+        if device.configuration and (facts := self._facts.get(device.configuration)):
+            device.model = facts.model
+            device.channel = facts.channel
+            device.ref = facts.ref
 
     def _find_reported(
         self, ent_reg: er.EntityRegistry, device_id: str
@@ -230,8 +232,13 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         ]
         if not stale:
             return
+        # Not eager: the task must not run inside the refresh that schedules it,
+        # or that refresh's result would overwrite what the task applies.
         self._facts_task = self.config_entry.async_create_background_task(
-            self.hass, self._async_read_configs(builder, stale), f"{DOMAIN} config read"
+            self.hass,
+            self._async_read_configs(builder, stale),
+            f"{DOMAIN} config read",
+            eager_start=False,
         )
 
     async def _async_read_configs(
@@ -255,8 +262,14 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 deployed_version=deployed,
             )
             changed = True
-        if changed:
-            await self.async_request_refresh()
+        if changed and self.data is not None:
+            # Apply to the current data instead of a new refresh: no second
+            # round of Device Builder and state lookups, and no refresh in
+            # flight can overwrite it.
+            devices = {name: replace(device) for name, device in self.data.devices.items()}
+            for device in devices.values():
+                self._apply_facts(device)
+            self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
 
     @callback
     def async_forget_config(self, configuration: str) -> None:

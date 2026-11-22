@@ -31,7 +31,7 @@ async def test_create_entry(
     assert result["step_id"] == "user"
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Levoit ESPHome"
 
