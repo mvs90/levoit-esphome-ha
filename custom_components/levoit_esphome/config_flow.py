@@ -1,7 +1,7 @@
 """Config flow (one entry) and the "Add device" subentry flow.
 
 Add device makes a Device Builder config from a template of tuct/levoit
-(devices/templates.json: a model, original ESP, ESP32-C3 or ESP32-S3):
+(devices/templates.json: a model, original ESP, ESP32-C3 or Seeed XIAO ESP32-S3):
 
 * new device: suggested name, generated API encryption key and OTA password,
   stored in secrets.yaml as <name>_api_key / <name>_ota_password

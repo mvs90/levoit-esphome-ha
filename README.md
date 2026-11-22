@@ -69,7 +69,7 @@ nothing is loaded from outside Home Assistant.
 **Settings → Devices & services → Levoit ESPHome → Add device** makes a Device
 Builder config from a template of tuct/levoit
 ([`devices/templates.json`](https://github.com/tuct/levoit/blob/main/devices/templates.json)):
-pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, ESP32-S3).
+pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, Seeed XIAO ESP32-S3).
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
