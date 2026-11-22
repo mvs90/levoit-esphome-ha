@@ -86,17 +86,19 @@ def _release_newer(latest: str, installed: str) -> bool:
         return False
 
 
-def is_behind(reported: Reported, head: ChannelHead) -> bool:
-    """Whether a rebuild from the channel would change the device.
+def is_behind(reported: Reported, head: ChannelHead, channel: str) -> bool:
+    """Whether the channel has something newer than the device runs.
 
-    With a commit on both sides the commits decide: the channel head is what a
-    rebuild produces. A build from before the version carried a commit (or
-    without git) can only be compared by release number. A `.dirty` local
-    build is never offered an update: it is not on any channel.
+    * `stable`: only a newer release counts. A device that runs another commit
+      of the same release (built from `main` after it) is not behind.
+    * `main`: the commits decide where both sides have one; the head of main
+      is the newest there is. Without a commit (1.7.0 and older, or no git)
+      only the release number can be compared.
+    * A `.dirty` local build is never offered an update: it is on no channel.
     """
     if reported.dirty:
         return False
-    if reported.commit:
+    if channel == CHANNEL_MAIN and reported.commit:
         return not (
             head.commit.startswith(reported.commit) or reported.commit.startswith(head.commit)
         )

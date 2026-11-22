@@ -17,6 +17,15 @@
         "name": "Compile firmware"
       }
     },
+    "select": {
+      "update_channel": {
+        "name": "Update channel",
+        "state": {
+          "stable": "Stable (releases)",
+          "main": "Main (every merge)"
+        }
+      }
+    },
     "sensor": {
       "model": {
         "name": "Component model"

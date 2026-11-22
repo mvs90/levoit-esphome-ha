@@ -18,16 +18,19 @@ Per purifier, on a device of the same name; Home Assistant lists the purifier's
 ESPHome device under *Linked devices* (same MAC address). Since Home Assistant
 2026.8 an integration cannot add entities to another integration's device.
 
-Without a config in the Device Builder, a device shows its installed version
-only: model, channel and whether an update is out stay *unknown*, and compiling
-is not available.
+**With a config in the Device Builder** the integration reads model and
+channel from it and can install updates. **Without one** it still shows whether
+an update is out: pick the channel in the device's *Update channel* select
+(default `stable`); the model comes from the device's `model` text sensor.
+Installing and compiling need the config.
 
 | Entity | What it shows / does |
 |--------|----------------------|
 | **Component firmware** (update) | Installed component version against the newest one on the device's channel; release notes; *Install* compiles and uploads |
 | **Compile firmware** (button) | Compiles in the Device Builder without uploading |
-| **Component model** | `model:` from the config, e.g. `CORE300S` |
-| **Firmware channel** | `stable` (releases), `main` (every merge), `pinned` (another ref or a fork) or `local` |
+| **Component model** | `model:` from the config, else from the device's `model` text sensor, e.g. `CORE300S` |
+| **Firmware channel** | `stable` (releases), `main` (every merge), `pinned` (another ref or a fork) or `local`; from the config, else the select below |
+| **Update channel** (select) | Only for a device without a Device Builder config: which channel to compare it with (`stable` / `main`) |
 | **Device Builder config** | The config file the device is built from |
 
 A newer **ESPHome** version is already offered by Home Assistant's own ESPHome
@@ -39,10 +42,13 @@ firmware update; this integration adds the component version.
 * The **ESPHome Device Builder add-on**, found by Home Assistant's ESPHome
   integration (Home Assistant OS or Supervised). A standalone Device Builder is
   not supported yet
-* Each device's config in that Device Builder, for example a pasted builder
-  file from [tuct/levoit](https://github.com/tuct/levoit/tree/main/devices)
+* For installing updates: each device's config in that Device Builder, for
+  example a pasted builder file from
+  [tuct/levoit](https://github.com/tuct/levoit/tree/main/devices)
 * The `esp_version` text sensor in the device config (the builder files have
   it); it is how the integration reads the installed version
+* Optional, for devices without a Device Builder config: the `model` text sensor
+  (`type: model`, tuct/levoit after 1.7.0)
 * The channel comes from the component's source in the config:
 
   ```yaml
@@ -66,16 +72,19 @@ one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
 ## How it works
 
 * Devices: every ESPHome device whose Device Builder config loads `levoit` or
-  `philips`, or whose `esp_version` sensor reports a component version
+  `philips`, or that has an `esp_version` sensor reporting a component version
+  or a `model` sensor reporting a known model (both matched by their state, so
+  their names do not matter)
 * Model and channel come from the resolved config (`esphome config` in the
   Device Builder). That output contains resolved secrets; the integration keeps
   only the model and the source, and reads each config at most every 6 hours
   or after a build
 * Newest versions: the latest release and the `stable` / `main` heads of
   tuct/levoit on GitHub, every 6 hours
-* A device is behind when it runs another commit than its channel's head; a
-  build without a commit in its version (1.7.0 and older) is compared by release
-  number; a local `.dirty` build is never offered an update
+* Behind on `stable`: a newer release is out (a build from `main` after that
+  release is not behind). Behind on `main`: it runs another commit than the
+  head of `main`; a build without a commit in its version (1.7.0 and older) is
+  compared by release number. A local `.dirty` build is never offered an update
 
 ## Development
 

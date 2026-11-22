@@ -126,10 +126,17 @@ def patch_sources(builder: FakeBuilder) -> Generator[AsyncMock]:
 
 
 def add_esphome_device(
-    hass: HomeAssistant, name: str, mac: str, title: str, version: str | None
+    hass: HomeAssistant,
+    name: str,
+    mac: str,
+    title: str,
+    version: str | None,
+    *,
+    model: str | None = None,
 ) -> str | None:
     """Register an ESPHome device like the esphome integration does.
 
+    With `model`, it also gets a `model` text sensor reporting it.
     Returns the entity_id of its version sensor, if it has one.
     """
     entry = MockConfigEntry(domain="esphome", data={"device_name": name, "host": f"{name}.local"})
@@ -139,6 +146,16 @@ def add_esphome_device(
         connections={(dr.CONNECTION_NETWORK_MAC, mac)},
         name=title,
     )
+    if model is not None:
+        model_entity = er.async_get(hass).async_get_or_create(
+            "sensor",
+            "esphome",
+            f"{mac}-text_sensor-model",
+            device_id=device.id,
+            config_entry=entry,
+            suggested_object_id=f"{name}_model",
+        )
+        hass.states.async_set(model_entity.entity_id, model)
     if version is None:
         return None
     entity = er.async_get(hass).async_get_or_create(

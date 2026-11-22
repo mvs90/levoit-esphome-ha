@@ -8,10 +8,15 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.levoit_esphome.const import DOMAIN
-from homeassistant.components.update import ATTR_INSTALLED_VERSION, ATTR_LATEST_VERSION
+from homeassistant.components.update import (
+    ATTR_INSTALLED_VERSION,
+    ATTR_LATEST_VERSION,
+    UpdateEntityFeature,
+)
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
     ATTR_ENTITY_ID,
+    ATTR_SUPPORTED_FEATURES,
     STATE_OFF,
     STATE_ON,
     STATE_UNAVAILABLE,
@@ -25,6 +30,7 @@ from .conftest import MAC, OTHER_MAC, FakeBuilder, add_esphome_device
 
 UPDATE = "update.bedroom_purifier_component_firmware"
 BUTTON = "button.bedroom_purifier_compile_firmware"
+SELECT = "select.bedroom_purifier_update_channel"
 
 
 async def _setup(hass: HomeAssistant) -> MockConfigEntry:
@@ -153,17 +159,69 @@ async def test_github_unreachable(hass: HomeAssistant, patch_sources: AsyncMock)
 async def test_without_device_builder_config(
     hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
 ) -> None:
-    """Found by its version sensor only: version shown, the rest unknown."""
+    """No config: channel from the select (default stable), model from the sensor."""
     hass.config.components.add("esphome")
     builder.api.configured = []  # nothing in the Device Builder
-    add_esphome_device(hass, "bedroom-purifier", MAC, "Bedroom purifier", "1.7.0+10361cc esphome")
+    version_entity = add_esphome_device(
+        hass,
+        "bedroom-purifier",
+        MAC,
+        "Bedroom purifier",
+        "1.7.0+10361cc esphome",
+        model="EVERESTAIR",
+    )
     await _setup(hass)
-    state = hass.states.get(UPDATE)
-    assert state.state == STATE_UNKNOWN  # no channel: not "up to date"
-    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
-    assert hass.states.get(BUTTON).state == STATE_UNAVAILABLE
-    assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == STATE_UNKNOWN
+
+    assert hass.states.get(SELECT).state == "stable"
+    assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == "stable"
+    assert hass.states.get("sensor.bedroom_purifier_component_model").state == "EVERESTAIR"
     assert builder.api.get_config_calls == []
+
+    # stable: 1.8.0 is out, the device runs 1.7.0
+    state = hass.states.get(UPDATE)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_LATEST_VERSION] == "1.8.0+abcdef1"
+    # ... but installing needs a config
+    assert not state.attributes[ATTR_SUPPORTED_FEATURES] & UpdateEntityFeature.INSTALL
+    assert hass.states.get(BUTTON).state == STATE_UNAVAILABLE
+
+    # main: the commit decides
+    await hass.services.async_call(
+        "select", "select_option", {ATTR_ENTITY_ID: SELECT, "option": "main"}, blocking=True
+    )
+    assert hass.states.get(SELECT).state == "main"
+    assert hass.states.get(UPDATE).state == STATE_ON
+    hass.states.async_set(version_entity, "1.8.0+1234567 esphome")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(UPDATE).state == STATE_OFF
+
+    # a main build is not behind stable
+    await hass.services.async_call(
+        "select", "select_option", {ATTR_ENTITY_ID: SELECT, "option": "stable"}, blocking=True
+    )
+    assert hass.states.get(UPDATE).state == STATE_OFF
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_select_unavailable_with_config(
+    hass: HomeAssistant, patch_sources: AsyncMock
+) -> None:
+    """With a Device Builder config the ref decides; the select is off."""
+    await _setup(hass)
+    assert hass.states.get(SELECT).state == STATE_UNAVAILABLE
+    assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == "stable"
+
+
+async def test_found_by_model_sensor_only(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """A model sensor alone (no version yet) is enough to be listed."""
+    hass.config.components.add("esphome")
+    builder.api.configured = []
+    add_esphome_device(hass, "bedroom-purifier", MAC, "Bedroom purifier", None, model="CORE300S")
+    await _setup(hass)
+    assert hass.states.get("sensor.bedroom_purifier_component_model").state == "CORE300S"
+    assert hass.states.get(UPDATE).state == STATE_UNKNOWN  # no installed version
 
 
 @pytest.mark.usefixtures("esphome_devices")
