@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 import probatio
 
 from homeassistant.components import websocket_api
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import (
     CALLBACK_TYPE,
     Event,
@@ -71,10 +70,6 @@ def _device_dict(
             filter_life = float(state.state)
         except ValueError:
             filter_life = None
-    online: bool | None = None
-    if sensor := device.version_entity_id or device.model_entity_id:
-        state = hass.states.get(sensor)
-        online = state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
     last = coordinator.last_builds.get(device.name)
     return {
         "name": device.name,
@@ -100,7 +95,8 @@ def _device_dict(
         "esphome_deployed": device.esphome_deployed,
         "esphome_current": device.esphome_current,
         "filter_life": filter_life,
-        "online": online,
+        "online": device.online,
+        "detected": device.detected,
         "building": coordinator.is_building(device.name),
         "last_build": None
         if last is None

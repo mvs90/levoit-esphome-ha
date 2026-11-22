@@ -122,7 +122,11 @@ one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
 * Devices: every ESPHome device whose Device Builder config loads `levoit` or
   `philips`, or that has an `esp_version` sensor reporting a component version
   or a `model` sensor reporting a known model (both matched by their state, so
-  their names do not matter)
+  their names do not matter). A device found once stays listed while
+  it is offline (*Offline* on the sidebar page, its entities unavailable) and
+  is back as soon as it reports again. One that is gone for good can be
+  deleted on its device page (*⋮ → Delete*), if it has no Device Builder
+  config
 * Model and channel come from the resolved config (`esphome config` in the
   Device Builder). That output contains resolved secrets; the integration keeps
   only the model and the source, and reads each config at most every 6 hours

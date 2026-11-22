@@ -51,8 +51,9 @@ class LevoitEsphomeEntity(CoordinatorEntity[LevoitEsphomeCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Available while the device is known."""
-        return super().available and self.device is not None
+        """Available while the device is found (not only remembered, offline)."""
+        device = self.device
+        return super().available and device is not None and device.detected
 
 
 def subentry_for(entry: ConfigEntry, name: str) -> str | None:

@@ -93,6 +93,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: LevoitEsphomeConfigEntry
     return True
 
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: LevoitEsphomeConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow deleting a device that is gone: offline and without a Device Builder config.
+
+    One with a config would come back on the next refresh (delete the config
+    in the Device Builder first); one that reports now is in use.
+    """
+    macs = {value for domain, value in device_entry.identifiers if domain == DOMAIN}
+    data = entry.runtime_data.data
+    device = next(
+        (d for d in (data.devices.values() if data else ()) if d.mac in macs),
+        None,
+    )
+    return device is None or (not device.configuration and device.online is not True)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: LevoitEsphomeConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
