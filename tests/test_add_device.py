@@ -116,6 +116,7 @@ async def test_existing_device(
     """A device without a config keeps its name, API key and OTA password."""
     hass.config.components.add("esphome")
     builder.api.configured = []
+    builder.files.configs.clear()  # no config at all, as for a device without one
     add_esphome_device(
         hass,
         "bedroom-purifier",
@@ -151,6 +152,7 @@ async def test_existing_device_without_keys(
     """No encryption and no OTA password stay that way."""
     hass.config.components.add("esphome")
     builder.api.configured = []
+    builder.files.configs.clear()  # no config at all, as for a device without one
     add_esphome_device(
         hass, "bedroom-purifier", MAC, "Bedroom purifier", "1.7.0 esphome", model="EVERESTAIR"
     )
