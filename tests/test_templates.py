@@ -15,6 +15,7 @@ from custom_components.levoit_esphome.templates import (
     Value,
     config_values,
     new_api_key,
+    parse_templates,
     render,
     secret_key,
     suggest_name,
@@ -156,3 +157,20 @@ def test_names_and_keys() -> None:
     assert secret_key("levoit-everest-air-c3", "api_key") == "levoit_everest_air_c3_api_key"
     key = new_api_key()
     assert len(key) == 44 and key.endswith("=")
+
+
+def test_parse_templates_skips_unknown_variants() -> None:
+    """A variant this version does not know (a future ESP) is not offered."""
+    entry = {
+        "title": "Levoit Core 300S",
+        "model": "CORE300S",
+        "board": "esp32-s3-devkitc-1",
+        "name": "levoit-core300s-s3",
+        "file": "devices/levoit-core300s/levoit-core300s-builder-s3.yaml",
+        "source": "devices/levoit-core300s/levoit-core300s-s3.yaml",
+    }
+    data = {
+        "version": 1,
+        "templates": [{**entry, "variant": "s3"}, {**entry, "variant": "c6"}],
+    }
+    assert [t.variant for t in parse_templates(data)] == ["s3"]

@@ -107,6 +107,11 @@ class LevoitDevice:
     ref: str | None = None
     template: str | None = None
     config_kind: str | None = None
+    # False: known from before (our device entry exists) but nothing tells
+    # right now that it runs the component: offline since a restart, no config
+    detected: bool = True
+    # its version / model sensor has a value (None: no such sensor)
+    online: bool | None = None
 
 
 @dataclass
@@ -303,7 +308,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             components = frozenset(
                 COMPONENTS & set((config or {}).get("loaded_integrations") or [])
             )
-            if not components and found.reported is None and found.model is None:
+            detected = bool(components) or found.reported is not None or found.model is not None
+            if not detected and not self._known(dev_reg, mac):
                 continue  # not one of ours
 
             levoit_device = LevoitDevice(
@@ -317,6 +323,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 model_entity_id=found.model_entity_id,
                 filter_entity_id=found.filter_entity_id,
                 model=found.model,
+                detected=detected,
+                online=self._online(found) if detected else False,
             )
             if config is not None:
                 levoit_device.configuration = config.get("configuration")
@@ -449,6 +457,27 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 found.model_entity_id = before.model_entity_id
         self._sensors[name] = found
         return found
+
+    def _known(self, dev_reg: dr.DeviceRegistry, mac: str) -> bool:
+        """Whether this integration made a device for it before.
+
+        A device without a Device Builder config is recognised by its sensors'
+        values only. While it is offline (after a restart) they have none; the
+        device entry from before keeps it listed, as offline, until it is back
+        or deleted.
+        """
+        return (
+            dev_reg.async_get_device_by_identifier((DOMAIN, mac), self.config_entry.entry_id)
+            is not None
+        )
+
+    def _online(self, found: _FoundSensors) -> bool | None:
+        """Whether its version (else model) sensor has a value now."""
+        entity_id = found.version_entity_id or found.model_entity_id
+        if entity_id is None:
+            return None
+        state = self.hass.states.get(entity_id)
+        return state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
 
     def _offline(self, ent_reg: er.EntityRegistry, entity_id: str | None) -> bool:
         """The sensor still exists but has no value right now."""
@@ -621,12 +650,23 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
 
     @callback
     def _track_version_entities(self, devices: dict[str, LevoitDevice]) -> None:
-        """Refresh as soon as a device reports a new version or model (after an update)."""
+        """Refresh as soon as a device reports a new version or model (after an update).
+
+        For a device that is only remembered (offline), every ESPHome sensor of
+        it: whichever comes back first brings it back.
+        """
+        ent_reg = er.async_get(self.hass)
         wanted = frozenset(
             entity_id
             for d in devices.values()
             for entity_id in (d.version_entity_id, d.model_entity_id)
             if entity_id
+        ) | frozenset(
+            entity.entity_id
+            for d in devices.values()
+            if not d.detected
+            for entity in er.async_entries_for_device(ent_reg, d.esphome_device_id)
+            if entity.domain == Platform.SENSOR and entity.platform == ESPHOME_DOMAIN
         )
         if wanted == self._tracked:
             return

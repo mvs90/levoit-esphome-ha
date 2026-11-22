@@ -43,7 +43,7 @@ Installing and compiling need the config.
 | **Firmware channel** | `stable` (releases), `main` (every merge), `pinned` (another ref or a fork) or `local`; from the config, else the select below |
 | **Update channel** (select) | `stable` / `main`. Without a Device Builder config: which channel to compare the device with. With a template config: rewrites `ref:` in the config, the next install builds from it. Unavailable for a custom config: change its `ref:` yourself |
 | **Device Builder config** | The config file the device is built from |
-| **Config type** | `original` / `xiao_c3` / `c3`: made from a template; `custom`: your own config |
+| **Config type** | `original` / `xiao_c3` / `c3` / `s3`: made from a template; `custom`: your own config |
 
 A newer **ESPHome** version is already offered by Home Assistant's own ESPHome
 firmware update; this integration adds the component version.
@@ -69,7 +69,7 @@ nothing is loaded from outside Home Assistant.
 **Settings → Devices & services → Levoit ESPHome → Add device** makes a Device
 Builder config from a template of tuct/levoit
 ([`devices/templates.json`](https://github.com/tuct/levoit/blob/main/devices/templates.json)):
-pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3).
+pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, ESP32-S3).
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
@@ -130,7 +130,11 @@ one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
 * Devices: every ESPHome device whose Device Builder config loads `levoit` or
   `philips`, or that has an `esp_version` sensor reporting a component version
   or a `model` sensor reporting a known model (both matched by their state, so
-  their names do not matter)
+  their names do not matter). A device found once stays listed while
+  it is offline (*Offline* on the sidebar page, its entities unavailable) and
+  is back as soon as it reports again. One that is gone for good can be
+  deleted on its device page (*⋮ → Delete*), if it has no Device Builder
+  config
 * Model and channel come from the resolved config (`esphome config` in the
   Device Builder). That output contains resolved secrets; the integration keeps
   only the model and the source, and reads each config at most every 6 hours

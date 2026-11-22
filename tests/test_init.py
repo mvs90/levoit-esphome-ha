@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
+from custom_components.levoit_esphome import async_remove_config_entry_device
 from custom_components.levoit_esphome.const import DOMAIN
 from homeassistant.components.update import (
     ATTR_INSTALLED_VERSION,
@@ -367,3 +368,67 @@ async def test_no_filter_sensor(hass: HomeAssistant, patch_sources: AsyncMock) -
     """Without a filter sensor on the device: unavailable."""
     await _setup(hass)
     assert hass.states.get(FILTER).state == STATE_UNAVAILABLE
+
+
+async def test_offline_device_is_remembered(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """After a restart an offline device without a config stays listed, and can be deleted."""
+    hass.config.components.add("esphome")
+    builder.api.configured = []
+    version_entity = add_esphome_device(
+        hass, "bedroom-purifier", MAC, "Bedroom purifier", "1.7.0 esphome", model="CORE300S"
+    )
+    hass.states.async_set(version_entity, STATE_UNAVAILABLE)
+    hass.states.async_set("sensor.bedroom_purifier_model", STATE_UNAVAILABLE)
+    entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={})
+    entry.add_to_hass(hass)
+    # our device from before the restart
+    dev_reg = dr.async_get(hass)
+    ours = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, MAC)}, name="Bedroom purifier"
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    device = entry.runtime_data.data.devices["bedroom-purifier"]
+    assert not device.detected
+    assert device.online is False
+    assert hass.states.get(UPDATE).state == STATE_UNAVAILABLE
+    assert await async_remove_config_entry_device(hass, entry, ours)
+
+    # back online: found again, with its version, and no longer deletable
+    hass.states.async_set(version_entity, "1.7.0 esphome")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=15))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    device = entry.runtime_data.data.devices["bedroom-purifier"]
+    assert device.detected
+    assert device.online is True
+    assert hass.states.get(UPDATE).state == STATE_ON
+    assert not await async_remove_config_entry_device(hass, entry, ours)
+
+
+async def test_unknown_offline_device_is_not_listed(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """Offline and never seen by this integration: nothing tells it is ours."""
+    hass.config.components.add("esphome")
+    builder.api.configured = []
+    version_entity = add_esphome_device(
+        hass, "bedroom-purifier", MAC, "Bedroom purifier", "1.7.0 esphome"
+    )
+    hass.states.async_set(version_entity, STATE_UNAVAILABLE)
+    entry = await _setup(hass)
+    assert "bedroom-purifier" not in entry.runtime_data.data.devices
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_device_with_config_is_not_deletable(
+    hass: HomeAssistant, patch_sources: AsyncMock
+) -> None:
+    """A device with a Device Builder config would come back: not deletable."""
+    entry = await _setup(hass)
+    ours = dr.async_get(hass).async_get_device_by_identifier((DOMAIN, MAC), entry.entry_id)
+    assert ours is not None
+    assert not await async_remove_config_entry_device(hass, entry, ours)

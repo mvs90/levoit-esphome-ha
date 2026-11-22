@@ -8,6 +8,7 @@ const KIND_LABELS = {
   original: "Original ESP",
   xiao_c3: "XIAO ESP32-C3",
   c3: "ESP32-C3",
+  s3: "ESP32-S3",
   custom: "Custom config",
 };
 const CHANNEL_LABELS = {
@@ -245,8 +246,8 @@ class LevoitEsphomePanel extends HTMLElement {
   _status(d) {
     if (d.building)
       return `<span class="chip info"><span class="spinner"></span>Building…</span>`;
-    if (!d.configuration) return `<span class="chip">No config</span>`;
     if (d.online === false) return `<span class="chip">Offline</span>`;
+    if (!d.configuration) return `<span class="chip">No config</span>`;
     if (d.update_available) return `<span class="chip warning">Update available</span>`;
     if (d.installed && d.latest) return `<span class="chip success">Up to date</span>`;
     return `<span class="chip">Unknown</span>`;

@@ -73,6 +73,7 @@
           "original": "Template: original ESP",
           "xiao_c3": "Template: XIAO ESP32-C3",
           "c3": "Template: ESP32-C3",
+          "s3": "Template: ESP32-S3",
           "custom": "Custom"
         }
       }
@@ -190,7 +191,8 @@
       "options": {
         "original": "Original ESP",
         "xiao_c3": "Seeed XIAO ESP32-C3",
-        "c3": "ESP32-C3"
+        "c3": "ESP32-C3",
+        "s3": "ESP32-S3"
       }
     },
     "channel": {

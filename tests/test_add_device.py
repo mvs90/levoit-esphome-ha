@@ -23,7 +23,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .conftest import BUILDER_TEXT, EVEREST_C3, MAC, FakeBuilder, add_esphome_device
+from .conftest import BUILDER_TEXT, CORE300S_S3, EVEREST_C3, MAC, FakeBuilder, add_esphome_device
 
 UPDATE = "update.bedroom_purifier_component_firmware"
 SELECT = "select.bedroom_purifier_update_channel"
@@ -251,3 +251,25 @@ async def test_channel_of_template_config(
     # main compares commits: 1.7.0+10361cc is behind main's 1.8.0+1234567
     assert hass.states.get(UPDATE).attributes["latest_version"] == "1.8.0+1234567"
     builder.api.compile.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_s3_template(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """ESP32-S3 is offered where an S3 builder file exists; its configs show as s3."""
+    entry = await _setup(hass)
+    result = await _start(hass, entry)
+    result = await _step(hass, result, {"model": "CORE300S"})
+    assert result["step_id"] == "variant"
+    variants = result["data_schema"].schema["variant"].config["options"]
+    assert variants == ["original", "s3"]
+
+    # a config made from the S3 template is recognised as one
+    values = ConfigValues(name="bedroom-purifier", channel="stable")
+    builder.files.configs["bedroom-purifier.yaml"] = render(BUILDER_TEXT, CORE300S_S3, values)
+    coordinator = entry.runtime_data
+    coordinator.async_forget_config("bedroom-purifier.yaml")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get("sensor.bedroom_purifier_config_type").state == "s3"
