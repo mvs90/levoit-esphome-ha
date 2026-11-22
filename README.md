@@ -55,6 +55,11 @@ install yet.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/updates-page.png" width="560" alt="Settings, Updates: the Levoit ESPHome card with Update all and four purifiers on component 1.7.2, one installing">
 
+Each update shows the installed and the latest version, with the release notes
+(stable) or a link to the new commits (main):
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/update-dialog.png" width="380" alt="The Component firmware update of a purifier: installed 1.3.0, latest 1.7.2, with the release notes, installing">
+
 ## Sidebar page
 
 Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
