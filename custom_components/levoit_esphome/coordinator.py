@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from homeassistant.const import Platform
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, Platform
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -117,6 +117,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         # Channel per device name, for devices without a Device Builder config;
         # set (and restored after a restart) by the "Update channel" select.
         self._chosen_channels: dict[str, str] = {}
+        # Version / model sensors found per device, kept while they are
+        # unavailable (device restarting).
+        self._sensors: dict[str, _FoundSensors] = {}
         self._tracked: frozenset[str] = frozenset()
         self._unsub_states: CALLBACK_TYPE | None = None
         # Device Builders before 2026.6 have no build queue: one compile at a time.
@@ -180,7 +183,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 continue
             mac = next(c[1] for c in device.connections if c[0] == dr.CONNECTION_NETWORK_MAC)
 
-            found = self._scan_sensors(ent_reg, device.id)
+            found = self._scan_sensors(ent_reg, name, device.id)
             config = configured.get(name)
             components = frozenset(
                 COMPONENTS & set((config or {}).get("loaded_integrations") or [])
@@ -233,12 +236,17 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         self._apply_facts(devices[name])
         self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
 
-    def _scan_sensors(self, ent_reg: er.EntityRegistry, device_id: str) -> _FoundSensors:
+    def _scan_sensors(self, ent_reg: er.EntityRegistry, name: str, device_id: str) -> _FoundSensors:
         """Version and model, from the device's `esp_version` and `model` sensors.
 
         Matched by their states (the version format, a known model name), so
         the sensors' names do not matter. ESPHome text sensors are `sensor`
         entities in Home Assistant.
+
+        While the device restarts (after an update) its sensors are
+        unavailable and match nothing. Then the sensors found before are kept,
+        with their last values, so the device keeps its installed version and
+        the sensors stay watched: the new version shows as soon as it is back.
         """
         found = _FoundSensors()
         for entity in er.async_entries_for_device(ent_reg, device_id):
@@ -253,7 +261,23 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             elif found.model is None and state.state in KNOWN_MODELS:
                 found.model = state.state
                 found.model_entity_id = entity.entity_id
+
+        if (before := self._sensors.get(name)) is not None:
+            if found.version_entity_id is None and self._offline(ent_reg, before.version_entity_id):
+                found.reported = before.reported
+                found.version_entity_id = before.version_entity_id
+            if found.model_entity_id is None and self._offline(ent_reg, before.model_entity_id):
+                found.model = before.model
+                found.model_entity_id = before.model_entity_id
+        self._sensors[name] = found
         return found
+
+    def _offline(self, ent_reg: er.EntityRegistry, entity_id: str | None) -> bool:
+        """The sensor still exists but has no value right now."""
+        if entity_id is None or ent_reg.async_get(entity_id) is None:
+            return False
+        state = self.hass.states.get(entity_id)
+        return state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
 
     @callback
     def _schedule_config_reads(

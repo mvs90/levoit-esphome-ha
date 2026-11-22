@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.levoit_esphome.const import DOMAIN
 from homeassistant.components.update import (
@@ -25,6 +26,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.util import dt as dt_util
 
 from .conftest import MAC, OTHER_MAC, FakeBuilder, add_esphome_device
 
@@ -110,6 +112,54 @@ async def test_new_version_reported_refreshes(
     hass.states.async_set(esphome_devices["purifier"], "1.8.0+abcdef1 esphome")
     await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(UPDATE).state == STATE_OFF
+
+
+async def test_restart_after_update(
+    hass: HomeAssistant, patch_sources: AsyncMock, esphome_devices: dict
+) -> None:
+    """While the device restarts its sensor is unavailable: keep the version,
+    keep watching, and pick up the new version when it is back."""
+    await _setup(hass)
+    assert hass.states.get(UPDATE).attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
+
+    hass.states.async_set(esphome_devices["purifier"], STATE_UNAVAILABLE)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    state = hass.states.get(UPDATE)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
+
+    hass.states.async_set(esphome_devices["purifier"], "1.8.0+abcdef1 esphome")
+    # past the refresh debouncer's cooldown
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=15))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    state = hass.states.get(UPDATE)
+    assert state.state == STATE_OFF
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.8.0+abcdef1"
+
+
+async def test_drops_via_device(
+    hass: HomeAssistant, patch_sources: AsyncMock, esphome_devices: dict
+) -> None:
+    """The "connected via" link of the first version is removed."""
+    entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={})
+    entry.add_to_hass(hass)
+    dev_reg = dr.async_get(hass)
+    esphome_device = next(
+        d
+        for e in hass.config_entries.async_entries("esphome")
+        for d in dr.async_entries_for_config_entry(dev_reg, e.entry_id)
+        if (dr.CONNECTION_NETWORK_MAC, MAC) in d.connections
+    )
+    ours = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, MAC)},
+        via_device_id=esphome_device.id,
+    )
+    assert ours.via_device_id == esphome_device.id
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert dev_reg.async_get(ours.id).via_device_id is None
 
 
 @pytest.mark.usefixtures("esphome_devices")
