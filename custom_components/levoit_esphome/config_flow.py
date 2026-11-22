@@ -8,6 +8,10 @@ Add device makes a Device Builder config from a template of tuct/levoit
 * existing device (in Home Assistant, but no Device Builder config): its name,
   its API key from the ESPHome config entry, its OTA password as entered
 
+Either way the ESP is a template (the config follows it: every update rewrites
+it from the newest builder file) or custom: the model's builder file with the
+user's own board and UART pins, never rewritten.
+
 Wi-Fi comes from the shared wifi_ssid / wifi_password / wifi_ap_password
 secrets, which must exist. Only secret names are read, never values; a secret
 that exists is never overwritten.
@@ -56,6 +60,16 @@ if TYPE_CHECKING:
     from .coordinator import LevoitDevice, LevoitEsphomeCoordinator
 
 WIFI_SECRETS = ("wifi_ssid", "wifi_password", "wifi_ap_password")
+# offered for a custom config; any other ESPHome board name can be typed in
+COMMON_BOARDS = (
+    "seeed_xiao_esp32s3",
+    "seeed_xiao_esp32c3",
+    "seeed_xiao_esp32c6",
+    "esp32dev",
+    "esp32-s3-devkitc-1",
+    "esp32-c3-devkitm-1",
+    "esp32-c6-devkitc-1",
+)
 ESPHOME_DOMAIN = "esphome"
 
 
@@ -116,6 +130,9 @@ class AddDeviceFlow(ConfigSubentryFlow):
         self._model: str | None = None
         self._template: tpl.Template | None = None
         self._existing: LevoitDevice | None = None
+        # custom: the user's own board and pins, on the template's builder file
+        self._custom: tpl.CustomEsp | None = None
+        self._source: str | None = None
 
     @property
     def _coordinator(self) -> LevoitEsphomeCoordinator:
@@ -190,13 +207,17 @@ class AddDeviceFlow(ConfigSubentryFlow):
     async def async_step_variant(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Pick original ESP or ESP32-C3 (skipped when there is only one)."""
+        """Pick the ESP: a template (original, XIAO C3, ...) or custom (own board and pins)."""
         variants = [t for t in self._templates if t.model == self._model]
         if user_input is not None:
+            if user_input["variant"] == tpl.VARIANT_CUSTOM:
+                # the best template to start from: same model, closest to a bare ESP
+                self._template = next(
+                    (t for v in tpl.CUSTOM_BASE for t in variants if t.variant == v), variants[0]
+                )
+                return await self.async_step_custom()
             self._template = next(t for t in variants if t.variant == user_input["variant"])
-            return await self.async_step_details()
-        if len(variants) == 1:
-            self._template = variants[0]
+            self._custom = None
             return await self.async_step_details()
         return self.async_show_form(
             step_id="variant",
@@ -204,7 +225,7 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 {
                     vol.Required("variant"): SelectSelector(
                         SelectSelectorConfig(
-                            options=[t.variant for t in variants],
+                            options=[*(t.variant for t in variants), tpl.VARIANT_CUSTOM],
                             translation_key="variant",
                             mode=SelectSelectorMode.LIST,
                         )
@@ -212,6 +233,67 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 }
             ),
             description_placeholders={"model": variants[0].title},
+        )
+
+    async def async_step_custom(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Board and UART pins of the user's own ESP (a custom config)."""
+        assert self._template is not None
+        if self._source is None:
+            try:
+                self._source = await tpl.async_fetch_template_text(
+                    async_get_clientsession(self.hass), self._template
+                )
+            except (aiohttp.ClientError, TimeoutError):
+                return self.async_abort(reason="templates_unavailable")
+        defaults = tpl.builder_esp(self._source)
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            board = str(user_input["board"]).strip().lower()
+            rx_pin = tpl.normalize_pin(str(user_input["rx_pin"]))
+            tx_pin = tpl.normalize_pin(str(user_input["tx_pin"]))
+            if not tpl.valid_board(board):
+                errors["board"] = "invalid_board"
+            if rx_pin is None:
+                errors["rx_pin"] = "invalid_pin"
+            if tx_pin is None:
+                errors["tx_pin"] = "invalid_pin"
+            elif rx_pin == tx_pin:
+                errors["tx_pin"] = "same_pin"
+            if not errors:
+                assert rx_pin is not None and tx_pin is not None
+                self._custom = tpl.CustomEsp(board=board, rx_pin=rx_pin, tx_pin=tx_pin)
+                return await self.async_step_details()
+            defaults = tpl.CustomEsp(
+                board=str(user_input["board"]),
+                rx_pin=str(user_input["rx_pin"]),
+                tx_pin=str(user_input["tx_pin"]),
+            )
+        boards = list(COMMON_BOARDS)
+        if defaults.board and defaults.board not in boards:
+            boards.insert(0, defaults.board)
+        return self.async_show_form(
+            step_id="custom",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("board", default=defaults.board): SelectSelector(
+                        SelectSelectorConfig(
+                            options=boards,
+                            custom_value=True,
+                            sort=False,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required("rx_pin", default=defaults.rx_pin): TextSelector(),
+                    vol.Required("tx_pin", default=defaults.tx_pin): TextSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "model": self._template.title,
+                "base": tpl.VARIANT_TITLES.get(self._template.variant, self._template.variant),
+            },
         )
 
     async def async_step_details(
@@ -320,21 +402,16 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 placeholders["secret"] = ", ".join(exists)
                 return None
 
-            source = await tpl.async_fetch_template_text(
+            source = self._source or await tpl.async_fetch_template_text(
                 async_get_clientsession(self.hass), self._template
             )
-            content = tpl.render(
-                source,
-                self._template,
-                tpl.ConfigValues(
-                    name=name,
-                    api_key=tpl.Value(secret=api_secret) if api_secret in new_secrets else None,
-                    ota_password=tpl.Value(secret=ota_secret)
-                    if ota_secret in new_secrets
-                    else None,
-                    channel=channel,
-                ),
+            values = tpl.ConfigValues(
+                name=name,
+                api_key=tpl.Value(secret=api_secret) if api_secret in new_secrets else None,
+                ota_password=tpl.Value(secret=ota_secret) if ota_secret in new_secrets else None,
+                channel=channel,
             )
+            content = self._render(source, values)
 
             for key, value in new_secrets.items():
                 if not await async_add_secret(self.hass, builder, key, value):
@@ -356,6 +433,7 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 "configuration": configuration,
                 "template": self._template.file,
                 "existing": self._existing is not None,
+                "custom": self._custom is not None,
             },
             description="existing" if self._existing is not None else None,
             description_placeholders={
@@ -366,6 +444,13 @@ class AddDeviceFlow(ConfigSubentryFlow):
             },
             unique_id=name,
         )
+
+    def _render(self, source: str, values: tpl.ConfigValues) -> str:
+        """The new config: a template config, or a custom one for the user's ESP."""
+        assert self._template is not None
+        if self._custom is not None:
+            return tpl.render_custom(source, self._template, values, self._custom)
+        return tpl.render(source, self._template, values)
 
     def _existing_api_key(self, name: str) -> str | None:
         """The API encryption key Home Assistant uses for the device, if any."""

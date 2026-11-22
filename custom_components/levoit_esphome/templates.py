@@ -38,6 +38,15 @@ VARIANT_S3 = "s3"
 VARIANT_CUSTOM = "custom"
 # the ESP variants this version knows; templates with others are skipped
 VARIANTS = (VARIANT_ORIGINAL, VARIANT_XIAO_C3, VARIANT_C3, VARIANT_S3)
+VARIANT_TITLES = {
+    VARIANT_ORIGINAL: "original ESP",
+    VARIANT_XIAO_C3: "Seeed XIAO ESP32-C3",
+    VARIANT_C3: "ESP32-C3",
+    VARIANT_S3: "Seeed XIAO ESP32-S3",
+}
+# Which template a custom config starts from, best first
+CUSTOM_BASE = (VARIANT_XIAO_C3, VARIANT_C3, VARIANT_S3, VARIANT_ORIGINAL)
+DEVICES_URL = "https://github.com/tuct/levoit/tree/main/devices/"
 
 MARKER_PREFIX = "# levoit-esphome-ha: template="
 _MARKER = re.compile(r"(?m)^# levoit-esphome-ha: template=(\S+)[ \t]*$")
@@ -45,6 +54,8 @@ _GENERATED = re.compile(
     r"(?m)^# Generated from (devices/\S+\.yaml) by devices/make-builder-yaml\.ps1"
 )
 _NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?$")
+_BOARD = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+_PIN = re.compile(r"^(?:gpio)?0*(\d{1,2})$", re.IGNORECASE)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 
@@ -85,6 +96,15 @@ class ConfigValues:
     api_key: Value | None = None  # None: no API encryption
     ota_password: Value | None = None  # None: no OTA password
     channel: str | None = None  # None: as in the template (stable)
+
+
+@dataclass(frozen=True)
+class CustomEsp:
+    """The user's own ESP for a custom config: ESPHome board name and UART pins."""
+
+    board: str
+    rx_pin: str
+    tx_pin: str
 
 
 class TemplateError(ValueError):
@@ -190,12 +210,105 @@ def _sub_once(pattern: str, repl: str, text: str, what: str) -> str:
     return new
 
 
-def render(template_text: str, template: Template, values: ConfigValues) -> str:
-    """The builder file with the device's own values, and the marker line."""
-    text = template_text.replace("\r\n", "\n")
-    text = _MARKER.sub("", text).lstrip("\n")
-    text = f"{MARKER_PREFIX}{template.file}\n{text}"
+def _body(template_text: str) -> str:
+    """A builder file without its leading comments (repo notes, an old marker)."""
+    lines = template_text.replace("\r\n", "\n").split("\n")
+    start = 0
+    while start < len(lines) and (not lines[start].strip() or lines[start].startswith("#")):
+        start += 1
+    return "\n".join(lines[start:])
 
+
+def _folder(template: Template) -> str:
+    return template.file.split("/")[1]
+
+
+def _template_header(template: Template) -> str:
+    variant = VARIANT_TITLES.get(template.variant, template.variant)
+    return "\n".join(
+        [
+            f"{MARKER_PREFIX}{template.file}",
+            f"# Made by Levoit ESPHome from the template above ({template.title}, {variant}).",
+            "# Every update rewrites this file from the newest template, keeping the name,",
+            "# secrets and channel. To change anything else, DELETE THE FIRST LINE first:",
+            "# the config is then your own (custom), and updates only build the newer",
+            "# component it pulls (ref: below).",
+            f"# Wiring and pins: {DEVICES_URL}{_folder(template)}",
+            "",
+            "",
+        ]
+    )
+
+
+def _custom_header(template: Template, esp: CustomEsp) -> str:
+    return "\n".join(
+        [
+            f"# Made by Levoit ESPHome from {template.file} ({template.title})",
+            f"# for your own ESP: board {esp.board}, UART RX {esp.rx_pin} / TX {esp.tx_pin}.",
+            "# A custom config: updates never rewrite it, they only build the newer",
+            "# component it pulls (ref: below).",
+            f"# Wiring and pins: {DEVICES_URL}{_folder(template)}",
+            "",
+            "",
+        ]
+    )
+
+
+def render(template_text: str, template: Template, values: ConfigValues) -> str:
+    """The builder file with the device's own values, under the marker line.
+
+    The repo notes at the top of a builder file (how it is generated) give way
+    to a header that says the file follows the template, and how to make it
+    your own: delete the first line.
+    """
+    return _apply_values(_template_header(template) + _body(template_text), values)
+
+
+def render_custom(
+    template_text: str, template: Template, values: ConfigValues, esp: CustomEsp
+) -> str:
+    """A custom config: a builder file for another board and other UART pins.
+
+    No marker line: it is never rewritten, updates only build the component.
+    """
+    text = _apply_values(_custom_header(template, esp) + _body(template_text), values)
+    text = _sub_once(
+        r"^esp32:[ \t]*\n(?:[ \t]+.*\n|[ \t]*\n)*",
+        f"esp32:\n  board: {esp.board}\n  framework:\n    type: esp-idf\n\n",
+        text,
+        "esp32 block",
+    )
+    text = _sub_once(r"^  rx_pin:.*$", f"  rx_pin: {esp.rx_pin}", text, "rx_pin")
+    return _sub_once(r"^  tx_pin:.*$", f"  tx_pin: {esp.tx_pin}", text, "tx_pin")
+
+
+def builder_esp(template_text: str) -> CustomEsp:
+    """Board and UART pins of a builder file (the defaults for a custom config)."""
+
+    def find(pattern: str) -> str:
+        match = re.search(pattern, template_text, re.MULTILINE)
+        return match.group(1) if match else ""
+
+    return CustomEsp(
+        board=find(r"^esp32:[ \t]*\n(?:[ \t]+.*\n)*?  board:\s*(\S+)"),
+        rx_pin=find(r"^  rx_pin:\s*([^\s#]+)"),
+        tx_pin=find(r"^  tx_pin:\s*([^\s#]+)"),
+    )
+
+
+def valid_board(board: str) -> bool:
+    """An ESPHome board name, e.g. seeed_xiao_esp32s3 or esp32-c6-devkitc-1."""
+    return bool(_BOARD.match(board))
+
+
+def normalize_pin(pin: str) -> str | None:
+    """GPIO5, gpio05 or 5 -> GPIO5; None if it is not a GPIO number."""
+    match = _PIN.match(pin.strip())
+    return f"GPIO{int(match.group(1))}" if match else None
+
+
+def _apply_values(text: str, values: ConfigValues) -> str:
+    """The device's name, API key, OTA password and channel."""
     text = _sub_once(
         r"^  device_name:\s*\S+[ \t]*$", f"  device_name: {values.name}", text, "device_name"
     )

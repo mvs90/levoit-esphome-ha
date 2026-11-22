@@ -263,7 +263,7 @@ async def test_s3_template(
     result = await _step(hass, result, {"model": "CORE300S"})
     assert result["step_id"] == "variant"
     variants = result["data_schema"].schema["variant"].config["options"]
-    assert variants == ["original", "s3"]
+    assert variants == ["original", "s3", "custom"]
 
     # a config made from the S3 template is recognised as one
     values = ConfigValues(name="bedroom-purifier", channel="stable")
@@ -273,3 +273,85 @@ async def test_s3_template(
     await coordinator.async_refresh()
     await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.bedroom_purifier_config_type").state == "s3"
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_custom_new_device(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """Other ESP: own board and pins on the model's builder file, a custom config."""
+    entry = await _setup(hass)
+    result = await _start(hass, entry)
+    result = await _step(hass, result, {"model": "EVERESTAIR"})
+    result = await _step(hass, result, {"variant": "custom"})
+    assert result["step_id"] == "custom"
+    # prefilled from the XIAO C3 builder file
+    schema = {str(key): key for key in result["data_schema"].schema}
+    assert schema["board"].default() == "seeed_xiao_esp32c3"
+    assert schema["rx_pin"].default() == "GPIO05"
+    assert schema["tx_pin"].default() == "GPIO06"
+
+    # bad input is refused
+    result = await _step(hass, result, {"board": "My Board", "rx_pin": "IO5", "tx_pin": "5"})
+    assert result["errors"] == {"board": "invalid_board", "rx_pin": "invalid_pin"}
+    result = await _step(
+        hass, result, {"board": "seeed_xiao_esp32s3", "rx_pin": "5", "tx_pin": "GPIO05"}
+    )
+    assert result["errors"] == {"tx_pin": "same_pin"}
+
+    result = await _step(
+        hass, result, {"board": "seeed_xiao_esp32s3", "rx_pin": "5", "tx_pin": "gpio4"}
+    )
+    assert result["step_id"] == "details"
+    result = await _step(hass, result, {"name": "hall-air", "channel": "stable"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(s for s in entry.subentries.values() if s.unique_id == "hall-air")
+    assert subentry.data["custom"] is True
+
+    text = builder.files.configs["hall-air.yaml"]
+    assert MARKER_PREFIX not in text  # custom: never rewritten
+    assert "board: seeed_xiao_esp32s3" in text
+    assert "  rx_pin: GPIO5\n" in text
+    assert "  tx_pin: GPIO4\n" in text
+    assert config_values(text).api_key == Value(secret="hall_air_api_key")
+    assert "hall_air_ota_password" in builder.files.secrets
+
+
+async def test_custom_existing_device(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """A device on a board without a template keeps its name and key, as a custom config."""
+    hass.config.components.add("esphome")
+    builder.api.configured = []
+    builder.files.configs.clear()
+    add_esphome_device(
+        hass,
+        "core300s-s3",
+        MAC,
+        "Core300S-S3",
+        "1.7.0 esphome",
+        model="CORE300S",
+        noise_psk="ZXhpc3Rpbmcta2V5LW9mLXRoZS1kZXZpY2UtMzJieXRlcyE=",
+    )
+    entry = await _setup(hass)
+    result = await _start(hass, entry)
+    result = await _step(hass, result, {"next_step_id": "existing"})
+    result = await _step(hass, result, {"device": "core300s-s3"})
+    result = await _step(hass, result, {"variant": "custom"})
+    assert result["step_id"] == "custom"
+    result = await _step(
+        hass, result, {"board": "esp32-s3-devkitc-1", "rx_pin": "GPIO5", "tx_pin": "GPIO4"}
+    )
+    assert result["step_id"] == "details_existing"
+    result = await _step(hass, result, {"channel": "main"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    text = builder.files.configs["core300s-s3.yaml"]
+    assert MARKER_PREFIX not in text
+    assert "board: esp32-s3-devkitc-1" in text
+    values = config_values(text)
+    assert values.name == "core300s-s3"
+    assert values.channel == "main"
+    assert values.ota_password is None
+    secrets = builder.files.secrets
+    assert secrets["core300s_s3_api_key"] == "ZXhpc3Rpbmcta2V5LW9mLXRoZS1kZXZpY2UtMzJieXRlcyE="

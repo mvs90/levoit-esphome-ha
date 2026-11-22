@@ -140,9 +140,23 @@
         },
         "variant": {
           "title": "{model}",
-          "description": "Which ESP runs the device?",
+          "description": "Which ESP runs the device? A template config follows tuct/levoit: every update rewrites it from the newest template. Pick Other ESP for a board or pins without a template: that config is your own and is never rewritten.",
           "data": {
             "variant": "ESP"
+          }
+        },
+        "custom": {
+          "title": "{model}: your own ESP",
+          "description": "A custom config, made from the {base} config of tuct/levoit with your board and UART pins. Updates never rewrite it; they only build the newer component it pulls.",
+          "data": {
+            "board": "ESP board",
+            "rx_pin": "RX pin",
+            "tx_pin": "TX pin"
+          },
+          "data_description": {
+            "board": "ESPHome board name, e.g. seeed_xiao_esp32s3, esp32dev or esp32-c6-devkitc-1. Pick one or type another.",
+            "rx_pin": "The ESP pin wired to the MCU's TX, e.g. GPIO5.",
+            "tx_pin": "The ESP pin wired to the MCU's RX, e.g. GPIO4."
           }
         },
         "details": {
@@ -168,6 +182,9 @@
       },
       "error": {
         "invalid_name": "Use lowercase letters, digits and hyphens, at most 31 characters.",
+        "invalid_board": "Use an ESPHome board name: lowercase letters, digits, hyphens, underscores and dots.",
+        "invalid_pin": "Enter a GPIO number, e.g. GPIO5.",
+        "same_pin": "RX and TX must be different pins.",
         "name_taken": "A device or config with this name exists already.",
         "missing_wifi_secrets": "The Device Builder's secrets.yaml has no {missing}. Add them there (Secrets in the Device Builder), then try again.",
         "secret_exists": "secrets.yaml already has {secret}. Remove it there or pick another name.",
@@ -192,7 +209,8 @@
         "original": "Original ESP",
         "xiao_c3": "Seeed XIAO ESP32-C3",
         "c3": "ESP32-C3",
-        "s3": "Seeed XIAO ESP32-S3"
+        "s3": "Seeed XIAO ESP32-S3",
+        "custom": "Other ESP: your own board and pins (custom config)"
       }
     },
     "channel": {
