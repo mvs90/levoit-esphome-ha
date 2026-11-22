@@ -11,6 +11,19 @@
       "single_instance_allowed": "Levoit ESPHome is already set up."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Levoit ESPHome",
+        "data": {
+          "show_panel": "Show in the sidebar"
+        },
+        "data_description": {
+          "show_panel": "A Levoit ESPHome page for admins: every device with its versions, channel and filter, plus compile and upload."
+        }
+      }
+    }
+  },
   "entity": {
     "button": {
       "compile": {

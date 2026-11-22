@@ -151,6 +151,16 @@ def _filter_score(entity: er.RegistryEntry, state: State | None) -> int | None:
     return score
 
 
+@dataclass(frozen=True)
+class BuildResult:
+    """How the last compile / upload of a device ended."""
+
+    ok: bool
+    upload: bool
+    at: datetime
+    error: str | None = None
+
+
 @dataclass
 class LevoitData:
     """Coordinator data."""
@@ -189,6 +199,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         # Device Builders before 2026.6 have no build queue: one compile at a time.
         self.build_lock = asyncio.Lock()
         self._building: set[str] = set()
+        self.last_builds: dict[str, BuildResult] = {}
 
     @property
     def device_builder(self) -> DeviceBuilder | None:
@@ -230,6 +241,16 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             self.templates = await tpl.async_fetch_templates(session)
         except (aiohttp.ClientError, TimeoutError, KeyError, TypeError, ValueError) as err:
             _LOGGER.warning("Could not read the device templates from GitHub: %s", err)
+
+    @property
+    def heads_checked_at(self) -> datetime | None:
+        """When the latest versions were last read from GitHub."""
+        return self._heads_at
+
+    async def async_check_now(self) -> None:
+        """Read the latest versions from GitHub and the devices again, now."""
+        self._heads_at = None
+        await self.async_refresh()
 
     async def async_get_templates(self) -> list[tpl.Template]:
         """The device templates; fetched now if not loaded yet."""
@@ -535,7 +556,6 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         if device.name in self._building:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="already_building")
         configuration = device.configuration
-        placeholders = {"configuration": configuration}
         lock: AbstractAsyncContextManager[Any] = (
             nullcontext() if getattr(builder, "supports_build_queue", False) else self.build_lock
         )
@@ -543,40 +563,61 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         self._building.add(device.name)
         self.async_update_listeners()
         try:
-            if upload and device.template:
-                try:
-                    await self.async_refresh_from_template(builder, configuration)
-                except (
-                    DeviceBuilderCommandError,
-                    tpl.TemplateError,
-                    aiohttp.ClientError,
-                    TimeoutError,
-                ) as err:
-                    raise HomeAssistantError(
-                        translation_domain=DOMAIN,
-                        translation_key="template_refresh_failed",
-                        translation_placeholders={**placeholders, "error": str(err)},
-                    ) from err
-            async with lock:
-                compiled = await builder.api.compile(configuration)
-            if not compiled:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="compile_failed",
-                    translation_placeholders=placeholders,
-                )
-            if upload and not await builder.api.upload(configuration, "OTA"):
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="upload_failed",
-                    translation_placeholders=placeholders,
-                )
+            await self._async_run_build(builder, device, configuration, upload=upload, lock=lock)
+        except (HomeAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            # shown in the panel; the caller still gets the error
+            self.last_builds[device.name] = BuildResult(
+                ok=False, upload=upload, at=dt_util.utcnow(), error=str(err)
+            )
+            raise
+        else:
+            self.last_builds[device.name] = BuildResult(ok=True, upload=upload, at=dt_util.utcnow())
         finally:
             self._building.discard(device.name)
             if upload:
                 self.async_forget_config(configuration)
             self.async_update_listeners()
             await self.async_request_refresh()
+
+    async def _async_run_build(
+        self,
+        builder: DeviceBuilder,
+        device: LevoitDevice,
+        configuration: str,
+        *,
+        upload: bool,
+        lock: AbstractAsyncContextManager[Any],
+    ) -> None:
+        """Template refresh (install), compile, upload (install)."""
+        placeholders = {"configuration": configuration}
+        if upload and device.template:
+            try:
+                await self.async_refresh_from_template(builder, configuration)
+            except (
+                DeviceBuilderCommandError,
+                tpl.TemplateError,
+                aiohttp.ClientError,
+                TimeoutError,
+            ) as err:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="template_refresh_failed",
+                    translation_placeholders={**placeholders, "error": str(err)},
+                ) from err
+        async with lock:
+            compiled = await builder.api.compile(configuration)
+        if not compiled:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="compile_failed",
+                translation_placeholders=placeholders,
+            )
+        if upload and not await builder.api.upload(configuration, "OTA"):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="upload_failed",
+                translation_placeholders=placeholders,
+            )
 
     @callback
     def _track_version_entities(self, devices: dict[str, LevoitDevice]) -> None:

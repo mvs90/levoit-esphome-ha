@@ -25,11 +25,13 @@ from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
+    OptionsFlow,
     SubentryFlowResult,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -40,7 +42,7 @@ from homeassistant.helpers.selector import (
 )
 
 from . import templates as tpl
-from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN
+from .const import CHANNEL_MAIN, CHANNEL_STABLE, CONF_SHOW_PANEL, DOMAIN
 from .device_builder import (
     DeviceBuilderCommandError,
     async_add_secret,
@@ -77,6 +79,32 @@ class LevoitEsphomeConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> dict[str, type[ConfigSubentryFlow]]:
         """The "Add device" button."""
         return {"device": AddDeviceFlow}
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Options: the sidebar panel."""
+        return LevoitEsphomeOptionsFlow()
+
+
+class LevoitEsphomeOptionsFlow(OptionsFlow):
+    """Show the Levoit ESPHome page in the sidebar (admins only)."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """The switch; saving sets the entry up again, which adds or removes the panel."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SHOW_PANEL,
+                        default=self.config_entry.options.get(CONF_SHOW_PANEL, False),
+                    ): BooleanSelector()
+                }
+            ),
+        )
 
 
 class AddDeviceFlow(ConfigSubentryFlow):
