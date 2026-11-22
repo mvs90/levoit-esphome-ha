@@ -50,6 +50,15 @@
       },
       "configuration": {
         "name": "Device Builder config"
+      },
+      "config_kind": {
+        "name": "Config type",
+        "state": {
+          "original": "Template: original ESP",
+          "xiao_c3": "Template: XIAO ESP32-C3",
+          "c3": "Template: ESP32-C3",
+          "custom": "Custom"
+        }
       }
     },
     "update": {
@@ -70,6 +79,100 @@
     },
     "upload_failed": {
       "message": "Uploading {configuration} failed. See the log in the ESPHome Device Builder."
+    },
+    "template_refresh_failed": {
+      "message": "Updating {configuration} from its template failed: {error}"
+    }
+  },
+  "config_subentries": {
+    "device": {
+      "entry_type": "Device config",
+      "initiate_flow": {
+        "user": "Add device"
+      },
+      "step": {
+        "user": {
+          "title": "Add device",
+          "description": "Make an ESPHome Device Builder config from a tuct/levoit template.",
+          "menu_options": {
+            "new": "New device",
+            "existing": "Device already in Home Assistant, without a config"
+          }
+        },
+        "existing": {
+          "title": "Existing device",
+          "description": "Its config gets the device's own name and API encryption key, so Home Assistant keeps the device.",
+          "data": {
+            "device": "Device"
+          }
+        },
+        "new": {
+          "title": "Model",
+          "data": {
+            "model": "Model"
+          }
+        },
+        "variant": {
+          "title": "{model}",
+          "description": "Which ESP runs the device?",
+          "data": {
+            "variant": "ESP"
+          }
+        },
+        "details": {
+          "title": "{model}",
+          "description": "A new API encryption key and OTA password are generated and stored in the Device Builder's secrets.yaml. Wi-Fi comes from its wifi_ssid / wifi_password secrets.",
+          "data": {
+            "name": "Name",
+            "channel": "Update channel"
+          },
+          "data_description": {
+            "name": "ESPHome name: lowercase letters, digits and hyphens.",
+            "channel": "Stable gets releases, main every merge."
+          }
+        },
+        "details_existing": {
+          "title": "{model}: {name}",
+          "description": "The device keeps its name and API encryption key. Enter its OTA password if it has one (it is stored in secrets.yaml); leave it empty if it has none.",
+          "data": {
+            "channel": "Update channel",
+            "ota_password": "OTA password"
+          }
+        }
+      },
+      "error": {
+        "invalid_name": "Use lowercase letters, digits and hyphens, at most 31 characters.",
+        "name_taken": "A device or config with this name exists already.",
+        "missing_wifi_secrets": "The Device Builder's secrets.yaml has no {missing}. Add them there (Secrets in the Device Builder), then try again.",
+        "secret_exists": "secrets.yaml already has {secret}. Remove it there or pick another name.",
+        "config_exists": "The Device Builder already has a config with this name.",
+        "template_failed": "The template could not be read from GitHub or does not have the expected shape.",
+        "cannot_connect": "The ESPHome Device Builder did not answer."
+      },
+      "abort": {
+        "no_device_builder": "The ESPHome Device Builder add-on is not available.",
+        "templates_unavailable": "The device templates could not be read from GitHub.",
+        "cannot_connect": "The ESPHome Device Builder did not answer."
+      },
+      "create_entry": {
+        "default": "Config {configuration} created in the ESPHome Device Builder. Flash it once over USB from there (Install, then plug into this computer); after that, updates come over the air from Home Assistant.",
+        "existing": "Config {configuration} created in the ESPHome Device Builder for {name}, with its own name and keys. The next update installs it over the air."
+      }
+    }
+  },
+  "selector": {
+    "variant": {
+      "options": {
+        "original": "Original ESP",
+        "xiao_c3": "Seeed XIAO ESP32-C3",
+        "c3": "ESP32-C3"
+      }
+    },
+    "channel": {
+      "options": {
+        "stable": "Stable (releases)",
+        "main": "Main (every merge)"
+      }
     }
   }
 }

@@ -34,6 +34,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from . import templates as tpl
 from .const import (
     CHANNEL_STABLE,
     COMPONENTS,
@@ -43,7 +44,13 @@ from .const import (
     KNOWN_MODELS,
     SCAN_INTERVAL,
 )
-from .device_builder import DeviceBuilder, async_get_device_builder
+from .device_builder import (
+    DeviceBuilder,
+    DeviceBuilderCommandError,
+    async_get_device_builder,
+    async_read_config,
+    async_write_config,
+)
 from .github import async_fetch_heads
 from .versions import (
     ChannelHead,
@@ -70,6 +77,10 @@ class ConfigFacts:
     ref: str | None
     read_at: datetime
     deployed_version: str | None
+    # builder file the config was made from; config_kind original / xiao_c3 / c3
+    # for a template config, custom without one, None while unknown
+    template: str | None = None
+    config_kind: str | None = None
 
 
 @dataclass
@@ -94,6 +105,8 @@ class LevoitDevice:
     # True: picked in the "Update channel" select (no config to read it from)
     channel_chosen: bool = False
     ref: str | None = None
+    template: str | None = None
+    config_kind: str | None = None
 
 
 @dataclass
@@ -162,6 +175,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         )
         self._heads: dict[str, ChannelHead] = {}
         self._heads_at: datetime | None = None
+        self.templates: list[tpl.Template] = []
         self._facts: dict[str, ConfigFacts] = {}
         self._facts_task: asyncio.Task[None] | None = None
         # Channel per device name, for devices without a Device Builder config;
@@ -203,13 +217,42 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         now = dt_util.utcnow()
         if self._heads_at is not None and now - self._heads_at < GITHUB_INTERVAL:
             return
+        session = async_get_clientsession(self.hass)
         try:
-            self._heads = await async_fetch_heads(async_get_clientsession(self.hass))
+            self._heads = await async_fetch_heads(session)
         except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
             # Keep the last known heads; try again on the next refresh.
             _LOGGER.warning("Could not read the latest versions from GitHub: %s", err)
             return
         self._heads_at = now
+        try:
+            self.templates = await tpl.async_fetch_templates(session)
+        except (aiohttp.ClientError, TimeoutError, KeyError, TypeError, ValueError) as err:
+            _LOGGER.warning("Could not read the device templates from GitHub: %s", err)
+
+    async def async_get_templates(self) -> list[tpl.Template]:
+        """The device templates; fetched now if not loaded yet."""
+        if not self.templates:
+            self.templates = await tpl.async_fetch_templates(async_get_clientsession(self.hass))
+        return self.templates
+
+    async def async_refresh_from_template(self, builder: DeviceBuilder, configuration: str) -> bool:
+        """Rewrite a template config from the newest builder file; True if it changed.
+
+        Keeps the device's name, secret names (or inline values) and channel.
+        A custom config is left alone. Written only if the file did not change
+        in the meantime (the Device Builder checks `expected`).
+        """
+        text = await async_read_config(self.hass, builder, configuration)
+        template = tpl.template_of(text, await self.async_get_templates())
+        if template is None:
+            return False
+        source = await tpl.async_fetch_template_text(async_get_clientsession(self.hass), template)
+        new = tpl.render(source, template, tpl.config_values(text))
+        if new == text:
+            return False
+        await async_write_config(self.hass, builder, configuration, new, expected=text)
+        return True
 
     @callback
     def _collect_devices(self, configured: dict[str, dict[str, Any]]) -> dict[str, LevoitDevice]:
@@ -276,6 +319,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             device.model = facts.model or device.model
             device.channel = facts.channel
             device.ref = facts.ref
+            device.template = facts.template
+            device.config_kind = facts.config_kind
 
     @callback
     def async_choose_channel(self, name: str, channel: str) -> None:
@@ -377,12 +422,15 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 continue
             # The resolved config contains secrets: keep only model and source.
             source = component_source(config or {})
+            template, kind = await self._async_config_kind(builder, configuration)
             self._facts[configuration] = ConfigFacts(
                 model=component_model(config or {}),
                 channel=source[0] if source else None,
                 ref=source[1] if source else None,
                 read_at=dt_util.utcnow(),
                 deployed_version=deployed,
+                template=template,
+                config_kind=kind,
             )
             changed = True
         if changed and self.data is not None:
@@ -393,6 +441,21 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             for device in devices.values():
                 self._apply_facts(device)
             self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
+
+    async def _async_config_kind(
+        self, builder: DeviceBuilder, configuration: str
+    ) -> tuple[str | None, str | None]:
+        """Template file and kind of a config, from its YAML as written."""
+        if not self.templates:
+            return None, None
+        try:
+            text = await async_read_config(self.hass, builder, configuration)
+        except DeviceBuilderCommandError as err:
+            _LOGGER.debug("Could not read %s as written: %s", configuration, err)
+            return None, None
+        if (template := tpl.template_of(text, self.templates)) is None:
+            return None, tpl.VARIANT_CUSTOM
+        return template.file, template.variant
 
     @callback
     def async_forget_config(self, configuration: str) -> None:

@@ -9,12 +9,15 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.levoit_esphome.device_builder import DeviceBuilderCommandError
+from custom_components.levoit_esphome.templates import Template
 from custom_components.levoit_esphome.versions import ChannelHead
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -50,6 +53,76 @@ PURIFIER_CONFIG = {
 }
 
 
+BUILDER_TEXT = (
+    Path(__file__).parent / "fixtures" / "levoit-everest-air-builder-c3.yaml"
+).read_text(encoding="utf-8")
+EVEREST_C3 = Template(
+    title="Levoit Everest Air",
+    model="EVERESTAIR",
+    variant="xiao_c3",
+    board="seeed_xiao_esp32c3",
+    name="levoit-everest-air-c3",
+    file="devices/levoit-everest-air/levoit-everest-air-builder-c3.yaml",
+    source="devices/levoit-everest-air/levoit-everest-air-c3.yaml",
+)
+EVEREST_ORIGINAL = Template(
+    title="Levoit Everest Air",
+    model="EVERESTAIR",
+    variant="original",
+    board="esp32dev",
+    name="levoit-everest-air",
+    file="devices/levoit-everest-air/levoit-everest-air-builder.yaml",
+    source="devices/levoit-everest-air/levoit-everest-air.yaml",
+)
+CORE300S = Template(
+    title="Levoit Core 300S",
+    model="CORE300S",
+    variant="original",
+    board="esp32dev",
+    name="levoit-core300s",
+    file="devices/levoit-core300s/levoit-core300s-builder.yaml",
+    source="devices/levoit-core300s/levoit-core300s.yaml",
+)
+TEMPLATES = [CORE300S, EVEREST_ORIGINAL, EVEREST_C3]
+CUSTOM_CONFIG = "esphome:\n  name: bedroom-purifier\n"
+WIFI = {"wifi_ssid": "home", "wifi_password": "wifi-pw", "wifi_ap_password": "ap-pw"}
+
+
+@dataclass
+class FakeFiles:
+    """The Device Builder's /ws file commands, on an in-memory config folder."""
+
+    configs: dict[str, str] = field(default_factory=dict)
+    secrets: dict[str, str] = field(default_factory=lambda: dict(WIFI))
+    writes: list[str] = field(default_factory=list)
+
+    async def command(self, command: str, **args: Any) -> Any:
+        if command == "devices/get_config":
+            if args["configuration"] not in self.configs:
+                raise DeviceBuilderCommandError("not_found")
+            return self.configs[args["configuration"]]
+        if command == "devices/update_config":
+            if self.configs.get(args["configuration"]) != args["expected"]:
+                raise DeviceBuilderCommandError("precondition_failed")
+            self.configs[args["configuration"]] = args["content"]
+            self.writes.append(args["configuration"])
+            return None
+        if command == "devices/create":
+            configuration = f"{args['name']}.yaml"
+            if configuration in self.configs:
+                raise DeviceBuilderCommandError("already_exists")
+            self.configs[configuration] = args["file_content"]
+            return {"configuration": configuration}
+        if command == "config/get_secrets":
+            return sorted(self.secrets)
+        if command == "config/set_secret":
+            if args["key"] in self.secrets and not args.get("overwrite", True):
+                return {"created": False}
+            self.secrets[args["key"]] = args["value"]
+            return {"created": True}
+        raise DeviceBuilderCommandError("unknown_command", command)
+
+
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
     """Load custom_components/ in every test."""
@@ -79,6 +152,8 @@ class FakeBuilder:
 
     api: FakeApi
     supports_build_queue: bool = True
+    url: str = "http://device-builder.local:6052"
+    files: FakeFiles = field(default_factory=FakeFiles)
 
 
 @pytest.fixture
@@ -103,7 +178,9 @@ def builder() -> FakeBuilder:
                 },
             ],
             configs={"bedroom-purifier.yaml": PURIFIER_CONFIG},
-        )
+        ),
+        # the purifier's config as written: custom (no template)
+        files=FakeFiles(configs={"bedroom-purifier.yaml": CUSTOM_CONFIG}),
     )
 
 
@@ -111,7 +188,20 @@ def builder() -> FakeBuilder:
 def patch_sources(builder: FakeBuilder) -> Generator[AsyncMock]:
     """Use the fake Device Builder and fixed GitHub heads."""
     heads = AsyncMock(return_value=HEADS)
+
+    async def ws_command(hass: HomeAssistant, b: FakeBuilder, command: str, **args: Any) -> Any:
+        return await b.files.command(command, **args)
+
     with (
+        patch("custom_components.levoit_esphome.device_builder._ws_command", ws_command),
+        patch(
+            "custom_components.levoit_esphome.templates.async_fetch_templates",
+            AsyncMock(return_value=TEMPLATES),
+        ),
+        patch(
+            "custom_components.levoit_esphome.templates.async_fetch_template_text",
+            AsyncMock(return_value=BUILDER_TEXT),
+        ),
         patch(
             "custom_components.levoit_esphome.coordinator.async_get_device_builder",
             return_value=builder,
@@ -134,6 +224,7 @@ def add_esphome_device(
     *,
     model: str | None = None,
     filters: dict[str, str] | None = None,
+    noise_psk: str | None = None,
 ) -> str | None:
     """Register an ESPHome device like the esphome integration does.
 
@@ -141,7 +232,10 @@ def add_esphome_device(
     adds filter sensors (name -> value, `%`, `mdi:air-filter`).
     Returns the entity_id of its version sensor, if it has one.
     """
-    entry = MockConfigEntry(domain="esphome", data={"device_name": name, "host": f"{name}.local"})
+    data = {"device_name": name, "host": f"{name}.local"}
+    if noise_psk is not None:
+        data["noise_psk"] = noise_psk
+    entry = MockConfigEntry(domain="esphome", data=data)
     entry.add_to_hass(hass)
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,

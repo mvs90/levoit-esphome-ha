@@ -19,6 +19,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from .const import CHANNEL_LOCAL, CHANNEL_MAIN, CHANNEL_PINNED, CHANNEL_STABLE
 from .coordinator import LevoitData, LevoitDevice
 from .entity import LevoitEsphomeEntity, async_add_per_device
+from .templates import VARIANT_C3, VARIANT_CUSTOM, VARIANT_ORIGINAL, VARIANT_XIAO_C3
 
 if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -68,6 +69,14 @@ SENSORS: tuple[LevoitSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=[CHANNEL_STABLE, CHANNEL_MAIN, CHANNEL_PINNED, CHANNEL_LOCAL],
         value_fn=lambda device, _: device.channel,
+    ),
+    LevoitSensorDescription(
+        key="config_kind",
+        translation_key="config_kind",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        device_class=SensorDeviceClass.ENUM,
+        options=[VARIANT_ORIGINAL, VARIANT_XIAO_C3, VARIANT_C3, VARIANT_CUSTOM],
+        value_fn=lambda device, _: device.config_kind,
     ),
     LevoitSensorDescription(
         key="configuration",
