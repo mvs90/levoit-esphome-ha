@@ -55,6 +55,55 @@ device* → **Device already in Home Assistant** → the model → **Original ES
 gives it a Device Builder config. It keeps its name and API key (Home Assistant
 keeps the device), and updates come over the air like for any other device.
 
+<details>
+<summary><b>Walkthrough:</b> a Core 400S on its original ESP, from 1.3.1 to 1.7.2</summary>
+
+1. *Add device* → **Device already in Home Assistant, without a config**
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-01-menu.png" width="420" alt="Add device: New device, or Device already in Home Assistant without a config">
+
+2. Pick the device. Its config gets the device's own name and API key
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-02-device.png" width="420" alt="Existing device: Levoit-Core400S">
+
+3. The model: asked here because firmware 1.3.1 has no `model` sensor yet
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-03-model.png" width="420" alt="Model: Levoit Core 400S">
+
+4. **Original ESP**
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-04-esp.png" width="420" alt="ESP: Original ESP, Seeed XIAO ESP32-S3, Seeed XIAO ESP32-C3 or Other ESP">
+
+5. Channel, and the OTA password the device was built with (the API key comes from Home Assistant)
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-05-details.png" width="420" alt="Update channel stable, OTA password entered; the API key is stored as levoit_core400s_api_key">
+
+6. The config is in the Device Builder
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-06-done.png" width="420" alt="Success: config levoit-core400s.yaml created">
+
+7. The sidebar page lists it as **Original ESP** with an update from 1.3.1
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-07-update-available.png" width="720" alt="Core 400S, Original ESP, 1.3.1, Update available">
+
+8. **Update** asks first
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-08-confirm.png" width="560" alt="Compile Levoit-Core400S in the ESPHome Device Builder and upload it over the air?">
+
+9. It compiles in the Device Builder …
+
+   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-09-building.png" width="720" alt="Core 400S building">
+
+10. … uploads over the air (ESPHome 2026.5.3 on the device, 2026.11.0 in the Device Builder) …
+
+    <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-10-uploading.png" width="720" alt="Core 400S uploading, ESPHome 2026.5.3, builder 2026.11.0">
+
+11. … and the purifier runs 1.7.2 and ESPHome 2026.11.0
+
+    <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/original-esp-11-up-to-date.png" width="720" alt="Core 400S, 1.7.2, up to date, uploaded 11:41 PM">
+
+</details>
+
 ### Already running, but no config in the Device Builder
 
 A purifier that runs the `levoit` or `philips` firmware already (extra or
@@ -102,7 +151,7 @@ model, with your board and pins.
 |---|---|---|---|
 | Levoit Core 200S | ✓ | ✓ | not tested yet |
 | Levoit Core 300S | ✓ | ✓ | not tested yet |
-| Levoit Core 400S | ✓ | ✓ | testing soon |
+| Levoit Core 400S | ✓ | ✓ | **works**: 1.3.1 → 1.7.2 ([walkthrough](#original-esp-already-flashed-keep-it-updated)) |
 | Levoit Core 600S | ✓ | ✓ | not tested yet |
 | Levoit Eleva 300X | | | not tested yet (stock ESP32-C3) |
 | Levoit Everest Air | ✓ | | not tested yet |
