@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.entity import Entity
@@ -54,6 +55,18 @@ class LevoitEsphomeEntity(CoordinatorEntity[LevoitEsphomeCoordinator]):
         return super().available and self.device is not None
 
 
+def subentry_for(entry: ConfigEntry, name: str) -> str | None:
+    """The "Add device" sub-entry made for a device (its unique ID is the device name)."""
+    return next(
+        (
+            sub.subentry_id
+            for sub in entry.subentries.values()
+            if sub.subentry_type == "device" and sub.unique_id == name
+        ),
+        None,
+    )
+
+
 def async_add_per_device(
     coordinator: LevoitEsphomeCoordinator,
     async_add_entities: AddConfigEntryEntitiesCallback,
@@ -68,7 +81,12 @@ def async_add_per_device(
         if not new:
             return
         known.update(new)
-        async_add_entities(entity for name in new for entity in factory(coordinator, name))
+        # each device with the "Add device" sub-entry of its config, if any
+        for name in new:
+            async_add_entities(
+                factory(coordinator, name),
+                config_subentry_id=subentry_for(coordinator.config_entry, name),
+            )
 
     _add_new()
     return coordinator.async_add_listener(_add_new)

@@ -20,6 +20,7 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .conftest import BUILDER_TEXT, EVEREST_C3, MAC, FakeBuilder, add_esphome_device
 
@@ -147,6 +148,18 @@ async def test_existing_device(
     secrets = builder.files.secrets
     assert secrets["bedroom_purifier_api_key"] == "ZXhpc3Rpbmcta2V5LW9mLXRoZS1kZXZpY2UtMzJieXRlcyE="
     assert secrets["bedroom_purifier_ota_password"] == "its-ota-pw"
+
+    # the device and its entities move under the new sub-entry (one device, no copy)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    subentry = next(iter(entry.subentries.values()))
+    assert subentry.unique_id == "bedroom-purifier"
+    dev_reg = dr.async_get(hass)
+    ours = dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
+    assert len(ours) == 1
+    assert ours[0].config_subentry_id == subentry.subentry_id
+    entities = er.async_entries_for_device(er.async_get(hass), ours[0].id)
+    assert entities
+    assert all(e.config_subentry_id == subentry.subentry_id for e in entities)
 
 
 async def test_existing_device_without_keys(
