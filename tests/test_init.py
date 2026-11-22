@@ -57,6 +57,13 @@ async def test_setup_finds_our_device(
     assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
     assert state.attributes[ATTR_LATEST_VERSION] == "1.8.0+abcdef1"
 
+    assert (
+        hass.states.get("sensor.bedroom_purifier_installed_component_version").state
+        == "1.7.0+10361cc"
+    )
+    assert (
+        hass.states.get("sensor.bedroom_purifier_latest_component_version").state == "1.8.0+abcdef1"
+    )
     assert hass.states.get("sensor.bedroom_purifier_component_model").state == "CORE300S"
     assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == "stable"
     assert (
@@ -204,6 +211,9 @@ async def test_github_unreachable(hass: HomeAssistant, patch_sources: AsyncMock)
     assert state.state == STATE_UNKNOWN
     assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
     assert state.attributes[ATTR_LATEST_VERSION] is None
+    assert (
+        hass.states.get("sensor.bedroom_purifier_latest_component_version").state == STATE_UNKNOWN
+    )
 
 
 async def test_without_device_builder_config(
