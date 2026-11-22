@@ -4,6 +4,11 @@
 
 const INTEGRATION_PAGE = "/config/integrations/integration/levoit_esphome";
 
+// The version this code was loaded as (panel.py adds ?v=<version>). A browser
+// defines the page element once per session, so after an update the old code
+// keeps running until the page is reloaded; the page then says so.
+const LOADED_VERSION = (/[?&]v=([^&#]+)/.exec(import.meta.url) || [])[1] || null;
+
 const KIND_LABELS = {
   original: "Original ESP",
   xiao_c3: "XIAO ESP32-C3",
@@ -143,6 +148,9 @@ class LevoitEsphomePanel extends HTMLElement {
         break;
       case "navigate":
         this._navigate(path);
+        break;
+      case "reload":
+        location.reload();
         break;
       case "retry":
         this._error = null;
@@ -433,6 +441,13 @@ class LevoitEsphomePanel extends HTMLElement {
         )}<span>Add device</span></button>
       </div>
       <div class="content">
+        ${
+          version && LOADED_VERSION && version !== LOADED_VERSION
+            ? `<div class="notice">Levoit ESPHome was updated to ${esc(version)}; this page still runs ${esc(
+                LOADED_VERSION,
+              )}. <button class="btn primary" data-action="reload">Reload this page</button></div>`
+            : ""
+        }
         <div class="summary">${this._summary()}</div>
         ${this._body()}
         <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""} ·
@@ -549,6 +564,10 @@ select:disabled { opacity: 0.6; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .footer { font-size: 12px; text-align: center; margin: 16px 0 8px; }
+.notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  margin: 0 0 12px; padding: 10px 16px; border-radius: 12px; font-size: 14px;
+  background: rgba(3, 155, 229, 0.12); color: var(--primary-text-color); }
+.notice .btn { margin-left: auto; }
 
 @media (max-width: 1100px) {
   .tb-btn span { display: none; }
