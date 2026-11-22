@@ -182,7 +182,7 @@ The page updates live. It is a plain web component served by the integration;
 nothing is loaded from outside Home Assistant. After updating the integration,
 reload the browser once to get the new page.
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png" width="720" alt="The sidebar page with five devices: updates available, one device building, one without a Device Builder config">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png" width="720" alt="The sidebar page with five devices: three with an update, one XIAO ESP32-S3 just uploaded and up to date, one without a Device Builder config">
 
 
 ## Add device
