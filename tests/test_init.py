@@ -32,6 +32,7 @@ from .conftest import MAC, OTHER_MAC, FakeBuilder, add_esphome_device
 
 UPDATE = "update.bedroom_purifier_component_firmware"
 BUTTON = "button.bedroom_purifier_compile_firmware"
+INSTALL_BUTTON = "button.bedroom_purifier_compile_and_upload"
 SELECT = "select.bedroom_purifier_update_channel"
 
 
@@ -201,6 +202,21 @@ async def test_compile_button(
     await hass.services.async_call("button", "press", {ATTR_ENTITY_ID: BUTTON}, blocking=True)
     builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
     builder.api.upload.assert_not_awaited()
+
+
+async def test_compile_and_upload_button(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder, esphome_devices: dict
+) -> None:
+    """Compile and upload works also when the device is up to date."""
+    hass.states.async_set(esphome_devices["purifier"], "1.8.0+abcdef1 esphome")
+    await _setup(hass)
+    assert hass.states.get(UPDATE).state == STATE_OFF
+    await hass.services.async_call(
+        "button", "press", {ATTR_ENTITY_ID: INSTALL_BUTTON}, blocking=True
+    )
+    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    builder.api.upload.assert_awaited_once_with("bedroom-purifier.yaml", "OTA")
+    assert hass.states.get(INSTALL_BUTTON).state != STATE_UNAVAILABLE  # free again
 
 
 @pytest.mark.usefixtures("esphome_devices")

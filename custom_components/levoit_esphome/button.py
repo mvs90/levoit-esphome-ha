@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager, nullcontext
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
@@ -32,7 +31,10 @@ async def async_setup_entry(
         async_add_per_device(
             entry.runtime_data,
             async_add_entities,
-            lambda coordinator, name: [LevoitCompileButton(coordinator, name)],
+            lambda coordinator, name: [
+                LevoitCompileButton(coordinator, name),
+                LevoitInstallButton(coordinator, name),
+            ],
         )
     )
 
@@ -42,35 +44,33 @@ class LevoitCompileButton(LevoitEsphomeEntity, ButtonEntity):
 
     _attr_entity_category = EntityCategory.CONFIG
     _attr_translation_key = "compile"
+    _upload = False
 
     def __init__(self, coordinator: LevoitEsphomeCoordinator, name: str) -> None:
         """Initialize."""
-        super().__init__(coordinator, name, "compile")
+        super().__init__(coordinator, name, self._attr_translation_key)
 
     @property
     def available(self) -> bool:
-        """Only with a Device Builder config."""
+        """Only with a Device Builder config, and not while a build runs."""
         device = self.device
-        return super().available and device is not None and bool(device.configuration)
+        return (
+            super().available
+            and device is not None
+            and bool(device.configuration)
+            and not self.coordinator.is_building(self._device_name)
+        )
 
     async def async_press(self) -> None:
-        """Compile."""
+        """Build (and install)."""
         device = self.device
-        builder = self.coordinator.device_builder
-        if device is None or not device.configuration:
+        if device is None:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_configuration")
-        if builder is None:
-            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_device_builder")
-        lock: AbstractAsyncContextManager[Any] = (
-            nullcontext()
-            if getattr(builder, "supports_build_queue", False)
-            else self.coordinator.build_lock
-        )
-        async with lock:
-            compiled = await builder.api.compile(device.configuration)
-        if not compiled:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="compile_failed",
-                translation_placeholders={"configuration": device.configuration},
-            )
+        await self.coordinator.async_build(device, upload=self._upload)
+
+
+class LevoitInstallButton(LevoitCompileButton):
+    """Compile and upload over the air, also when the device is up to date."""
+
+    _attr_translation_key = "install"
+    _upload = True
