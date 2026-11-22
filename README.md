@@ -8,15 +8,21 @@ config in the ESPHome Device Builder, and offers an update when the device's
 channel has a newer component version. Installing compiles the config in the
 Device Builder and uploads it over the air.
 
+![The Levoit ESPHome sidebar page: each device with model, ESP, channel, installed and latest version, filter %, status, Compile and Compile & upload](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel.png)
+
 > **Early version.** Part of the
-> [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md),
-> phase 4a.
+> [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
 
 ## What you get
 
 Per purifier, on a device of the same name (its *Visit* link opens the ESPHome Device Builder); Home Assistant lists the purifier's
 ESPHome device under *Linked devices* (same MAC address). Since Home Assistant
 2026.8 an integration cannot add entities to another integration's device.
+
+Devices made with *Add device* sit under their own entry, the others under
+*Devices that don't belong to a sub-entry*:
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/integration-page.png" width="640" alt="The integration page: devices with a Device Builder config under their Add device entry, the others below">
 
 **With a config in the Device Builder** the integration reads model and
 channel from it and can install updates; for a template config the *Update
@@ -64,6 +70,8 @@ nothing is loaded from outside Home Assistant.
 Builder config from a template of tuct/levoit
 ([`devices/templates.json`](https://github.com/tuct/levoit/blob/main/devices/templates.json)):
 pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3).
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
 * **New device:** a name is suggested; a new API encryption key and OTA
   password are generated and stored in the Device Builder's `secrets.yaml` as
