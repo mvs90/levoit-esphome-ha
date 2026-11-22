@@ -63,6 +63,13 @@ class DeviceBuilder(Protocol):
     api: DeviceBuilderApi
     supports_build_queue: bool
     url: str
+    addon_slug: str
+
+
+def builder_page_url(builder: DeviceBuilder | None) -> str | None:
+    """The Device Builder add-on's page in Home Assistant (a relative URL)."""
+    slug = getattr(builder, "addon_slug", None) if builder is not None else None
+    return f"/hassio/ingress/{slug}" if slug else None
 
 
 @callback

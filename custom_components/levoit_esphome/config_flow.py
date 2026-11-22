@@ -47,6 +47,7 @@ from .device_builder import (
     async_create_config,
     async_get_device_builder,
     async_secret_names,
+    builder_page_url,
 )
 
 if TYPE_CHECKING:
@@ -329,7 +330,12 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 "existing": self._existing is not None,
             },
             description="existing" if self._existing is not None else None,
-            description_placeholders={"configuration": configuration, "name": name},
+            description_placeholders={
+                "configuration": configuration,
+                "name": name,
+                "builder_url": builder_page_url(builder)
+                or "/config/integrations/integration/esphome",
+            },
             unique_id=name,
         )
 

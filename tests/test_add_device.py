@@ -67,6 +67,7 @@ async def test_new_device(
     result = await _step(hass, result, {"name": "levoit-everest-air-c3", "channel": "main"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "levoit-everest-air-c3"
+    assert result["description_placeholders"]["builder_url"] == "/hassio/ingress/5c53de3b_esphome"
 
     text = builder.files.configs["levoit-everest-air-c3.yaml"]
     assert text.startswith(f"{MARKER_PREFIX}{EVEREST_C3.file}\n")

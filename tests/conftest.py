@@ -153,6 +153,7 @@ class FakeBuilder:
     api: FakeApi
     supports_build_queue: bool = True
     url: str = "http://device-builder.local:6052"
+    addon_slug: str = "5c53de3b_esphome"
     files: FakeFiles = field(default_factory=FakeFiles)
 
 

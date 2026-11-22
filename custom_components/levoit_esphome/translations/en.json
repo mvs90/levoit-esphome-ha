@@ -155,8 +155,8 @@
         "cannot_connect": "The ESPHome Device Builder did not answer."
       },
       "create_entry": {
-        "default": "Config {configuration} created in the ESPHome Device Builder. Flash it once over USB from there (Install, then plug into this computer); after that, updates come over the air from Home Assistant.",
-        "existing": "Config {configuration} created in the ESPHome Device Builder for {name}, with its own name and keys. The next update installs it over the air."
+        "default": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}). Flash it once over USB from there (Install, then plug into this computer); after that, updates come over the air from Home Assistant.",
+        "existing": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}) for {name}, with its own name and keys. The next update installs it over the air."
       }
     }
   },
