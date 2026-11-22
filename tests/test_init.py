@@ -174,11 +174,31 @@ async def test_drops_via_device(
 
 @pytest.mark.usefixtures("esphome_devices")
 async def test_install(hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder) -> None:
-    """Install compiles, then uploads over the air."""
+    """Install compiles, then uploads over the air; the progress bar follows the steps."""
     await _setup(hass)
+    seen: list[tuple[str, object, object]] = []
+
+    def progress(step: str) -> None:
+        attributes = hass.states.get(UPDATE).attributes
+        seen.append((step, attributes["in_progress"], attributes.get("update_percentage")))
+
+    async def compile_(configuration: str) -> bool:
+        progress("compile")
+        return True
+
+    async def upload(configuration: str, port: str) -> bool:
+        progress("upload")
+        return True
+
+    builder.api.compile.side_effect = compile_
+    builder.api.upload.side_effect = upload
     await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
     builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
     builder.api.upload.assert_awaited_once_with("bedroom-purifier.yaml", "OTA")
+    assert seen == [("compile", True, 10), ("upload", True, 85)]
+    state = hass.states.get(UPDATE)
+    assert state.attributes["in_progress"] is False
+    assert state.attributes.get("update_percentage") is None
 
 
 @pytest.mark.usefixtures("esphome_devices")
