@@ -1,4 +1,4 @@
-"""Diagnostic sensors: model, channel and Device Builder config of a device."""
+"""Diagnostic sensors: versions, model, channel and Device Builder config of a device."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
 from .const import CHANNEL_LOCAL, CHANNEL_MAIN, CHANNEL_PINNED, CHANNEL_STABLE
-from .coordinator import LevoitDevice
+from .coordinator import LevoitData, LevoitDevice
 from .entity import LevoitEsphomeEntity, async_add_per_device
 
 if TYPE_CHECKING:
@@ -31,15 +31,33 @@ PARALLEL_UPDATES = 0
 class LevoitSensorDescription(SensorEntityDescription):
     """A diagnostic value of a device."""
 
-    value_fn: Callable[[LevoitDevice], str | None]
+    value_fn: Callable[[LevoitDevice, LevoitData], str | None]
+
+
+def _latest(device: LevoitDevice, data: LevoitData) -> str | None:
+    """Newest version on the device's channel (None: no channel or no GitHub yet)."""
+    head = data.heads.get(device.channel) if device.channel else None
+    return head.text if head else None
 
 
 SENSORS: tuple[LevoitSensorDescription, ...] = (
     LevoitSensorDescription(
+        key="installed_version",
+        translation_key="installed_version",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda device, _: device.reported.text if device.reported else None,
+    ),
+    LevoitSensorDescription(
+        key="latest_version",
+        translation_key="latest_version",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_latest,
+    ),
+    LevoitSensorDescription(
         key="model",
         translation_key="model",
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda device: device.model,
+        value_fn=lambda device, _: device.model,
     ),
     LevoitSensorDescription(
         key="channel",
@@ -47,13 +65,13 @@ SENSORS: tuple[LevoitSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.ENUM,
         options=[CHANNEL_STABLE, CHANNEL_MAIN, CHANNEL_PINNED, CHANNEL_LOCAL],
-        value_fn=lambda device: device.channel,
+        value_fn=lambda device, _: device.channel,
     ),
     LevoitSensorDescription(
         key="configuration",
         translation_key="configuration",
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda device: device.configuration,
+        value_fn=lambda device, _: device.configuration,
     ),
 )
 
@@ -94,4 +112,6 @@ class LevoitDiagnosticSensor(LevoitEsphomeEntity, SensorEntity):
     def native_value(self) -> str | None:
         """The value, None while unknown."""
         device = self.device
-        return None if device is None else self.entity_description.value_fn(device)
+        if device is None:
+            return None
+        return self.entity_description.value_fn(device, self.coordinator.data)
