@@ -1,0 +1,155 @@
+"""Setup, entities and install, with a stub Device Builder and GitHub."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.levoit_esphome.const import DOMAIN
+from homeassistant.components.update import ATTR_INSTALLED_VERSION, ATTR_LATEST_VERSION
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import ATTR_ENTITY_ID, STATE_OFF, STATE_ON
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+from .conftest import MAC, OTHER_MAC, FakeBuilder
+
+UPDATE = "update.bedroom_purifier_component_firmware"
+BUTTON = "button.bedroom_purifier_compile_firmware"
+
+
+async def _setup(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_setup_finds_our_device(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """The purifier gets entities on its own device; the other device none."""
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+
+    state = hass.states.get(UPDATE)
+    assert state is not None
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
+    assert state.attributes[ATTR_LATEST_VERSION] == "1.8.0+abcdef1"
+
+    assert hass.states.get("sensor.bedroom_purifier_component_model").state == "CORE300S"
+    assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == "stable"
+    assert (
+        hass.states.get("sensor.bedroom_purifier_device_builder_config").state
+        == "bedroom-purifier.yaml"
+    )
+
+    # Attached to the ESPHome device, not a new one
+    dev_reg = dr.async_get(hass)
+    purifier = dev_reg.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, MAC)})
+    assert entry.entry_id in purifier.config_entries
+    ent_reg = er.async_get(hass)
+    assert ent_reg.async_get(UPDATE).device_id == purifier.id
+
+    # The unrelated device is left alone
+    other = dev_reg.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, OTHER_MAC)})
+    assert entry.entry_id not in other.config_entries
+
+    # Only our config was read, once
+    assert builder.api.get_config_calls == ["bedroom-purifier.yaml"]
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_no_secrets_kept(hass: HomeAssistant, patch_sources: AsyncMock) -> None:
+    """The resolved config (with its API key) is not kept anywhere."""
+    entry = await _setup(hass)
+    coordinator = entry.runtime_data
+    assert "c2VjcmV0" not in repr(coordinator.data)
+    assert "c2VjcmV0" not in repr(coordinator._facts)
+
+
+async def test_up_to_date(
+    hass: HomeAssistant, patch_sources: AsyncMock, esphome_devices: dict
+) -> None:
+    """At the channel head: no update."""
+    hass.states.async_set(esphome_devices["purifier"], "1.8.0+abcdef1 esphome")
+    await _setup(hass)
+    state = hass.states.get(UPDATE)
+    assert state.state == STATE_OFF
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.8.0+abcdef1"
+
+
+async def test_new_version_reported_refreshes(
+    hass: HomeAssistant, patch_sources: AsyncMock, esphome_devices: dict
+) -> None:
+    """After an update the device reports the new version; the entity follows."""
+    await _setup(hass)
+    assert hass.states.get(UPDATE).state == STATE_ON
+    hass.states.async_set(esphome_devices["purifier"], "1.8.0+abcdef1 esphome")
+    await hass.async_block_till_done()
+    assert hass.states.get(UPDATE).state == STATE_OFF
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_install(hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder) -> None:
+    """Install compiles, then uploads over the air."""
+    await _setup(hass)
+    await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    builder.api.upload.assert_awaited_once_with("bedroom-purifier.yaml", "OTA")
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_install_compile_fails(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """A failed build never uploads."""
+    builder.api.compile.return_value = False
+    await _setup(hass)
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    builder.api.upload.assert_not_awaited()
+    assert hass.states.get(UPDATE).attributes["in_progress"] is False
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_compile_button(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """The button compiles without uploading."""
+    await _setup(hass)
+    await hass.services.async_call("button", "press", {ATTR_ENTITY_ID: BUTTON}, blocking=True)
+    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    builder.api.upload.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_github_unreachable(hass: HomeAssistant, patch_sources: AsyncMock) -> None:
+    """Without GitHub the device is listed, with no update offered."""
+    patch_sources.side_effect = TimeoutError
+    await _setup(hass)
+    state = hass.states.get(UPDATE)
+    assert state.state == STATE_OFF
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_setup_retries_without_device_builder(hass: HomeAssistant) -> None:
+    """No Device Builder yet: retry later."""
+    from unittest.mock import patch  # noqa: PLC0415
+
+    with patch(
+        "custom_components.levoit_esphome.coordinator.async_get_device_builder",
+        return_value=None,
+    ):
+        entry = MockConfigEntry(domain=DOMAIN, title="Levoit ESPHome", data={})
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_RETRY
