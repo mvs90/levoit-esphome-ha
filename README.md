@@ -51,9 +51,11 @@ pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3).
   password are generated and stored in the Device Builder's `secrets.yaml` as
   `<name>_api_key` / `<name>_ota_password`. Flash it once over USB from the
   Device Builder; after that, updates come over the air
-* **Device already in Home Assistant without a config:** it keeps its name,
-  its API encryption key (from Home Assistant's ESPHome entry) and the OTA
-  password you enter, so Home Assistant keeps the device
+* **Device already in Home Assistant without a config:** it keeps its name
+  and its API encryption key, which is taken from Home Assistant's ESPHome
+  connection to the device (none there: no encryption) and stored as
+  `<name>_api_key`. Home Assistant does not know the OTA password, so the
+  flow asks for it (leave it empty if the device has none)
 * Wi-Fi comes from the shared `wifi_ssid`, `wifi_password` and
   `wifi_ap_password` secrets, which must exist. The integration reads secret
   **names** only, never values, and never overwrites an existing secret

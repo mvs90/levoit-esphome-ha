@@ -101,7 +101,7 @@
         },
         "existing": {
           "title": "Existing device",
-          "description": "Its config gets the device's own name and API encryption key, so Home Assistant keeps the device.",
+          "description": "Its config gets the device's own name, and its API encryption key taken from Home Assistant's ESPHome connection to the device, so Home Assistant keeps the device.",
           "data": {
             "device": "Device"
           }
@@ -121,7 +121,7 @@
         },
         "details": {
           "title": "{model}",
-          "description": "A new API encryption key and OTA password are generated and stored in the Device Builder's secrets.yaml. Wi-Fi comes from its wifi_ssid / wifi_password secrets.",
+          "description": "A new API encryption key and OTA password are generated and stored in the Device Builder's secrets.yaml under the device's name, e.g. levoit_everest_air_c3_api_key and levoit_everest_air_c3_ota_password. Wi-Fi comes from its wifi_ssid / wifi_password / wifi_ap_password secrets.",
           "data": {
             "name": "Name",
             "channel": "Update channel"
@@ -133,7 +133,7 @@
         },
         "details_existing": {
           "title": "{model}: {name}",
-          "description": "The device keeps its name and API encryption key. Enter its OTA password if it has one (it is stored in secrets.yaml); leave it empty if it has none.",
+          "description": "The device keeps its name. Its API encryption key is taken from Home Assistant's ESPHome connection to the device (no key there: no encryption) and stored in the Device Builder's secrets.yaml as {api_secret}. Home Assistant does not know the OTA password: enter it if the device has one, leave it empty if not.",
           "data": {
             "channel": "Update channel",
             "ota_password": "OTA password"
@@ -155,8 +155,8 @@
         "cannot_connect": "The ESPHome Device Builder did not answer."
       },
       "create_entry": {
-        "default": "Config {configuration} created in the ESPHome Device Builder. Flash it once over USB from there (Install, then plug into this computer); after that, updates come over the air from Home Assistant.",
-        "existing": "Config {configuration} created in the ESPHome Device Builder for {name}, with its own name and keys. The next update installs it over the air."
+        "default": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}). Flash it once over USB from there (Install, then plug into this computer); after that, updates come over the air from Home Assistant.",
+        "existing": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}) for {name}, with its own name and keys. The next update installs it over the air."
       }
     }
   },

@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import LevoitDevice, LevoitEsphomeCoordinator
+from .device_builder import builder_page_url
 
 
 class LevoitEsphomeEntity(CoordinatorEntity[LevoitEsphomeCoordinator]):
@@ -38,6 +39,9 @@ class LevoitEsphomeEntity(CoordinatorEntity[LevoitEsphomeCoordinator]):
             manufacturer="tuct/levoit",
             model="ESPHome component",
         )
+        # "Visit" on the device page opens the Device Builder add-on
+        if page := builder_page_url(coordinator.device_builder):
+            self._attr_device_info["configuration_url"] = f"homeassistant:/{page}"
 
     @property
     def device(self) -> LevoitDevice | None:

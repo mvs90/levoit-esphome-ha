@@ -67,6 +67,7 @@ async def test_new_device(
     result = await _step(hass, result, {"name": "levoit-everest-air-c3", "channel": "main"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "levoit-everest-air-c3"
+    assert result["description_placeholders"]["builder_url"] == "/hassio/ingress/5c53de3b_esphome"
 
     text = builder.files.configs["levoit-everest-air-c3.yaml"]
     assert text.startswith(f"{MARKER_PREFIX}{EVEREST_C3.file}\n")
@@ -136,6 +137,8 @@ async def test_existing_device(
     assert result["step_id"] == "variant"
     result = await _step(hass, result, {"variant": "xiao_c3"})
     assert result["step_id"] == "details_existing"
+    # the form says which secret the key from Home Assistant goes into
+    assert result["description_placeholders"]["api_secret"] == "bedroom_purifier_api_key"
     result = await _step(hass, result, {"channel": "stable", "ota_password": "its-ota-pw"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
