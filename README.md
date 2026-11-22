@@ -48,6 +48,13 @@ Installing and compiling need the config.
 A newer **ESPHome** version is already offered by Home Assistant's own ESPHome
 firmware update; this integration adds the component version.
 
+Component updates show in **Settings → Updates** under *Levoit ESPHome*, like
+other firmware updates: install them one by one or with *Update all*. A device
+without a Device Builder config is not listed there, as there is nothing to
+install yet.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/updates-page.png" width="560" alt="Settings, Updates: the Levoit ESPHome card with Update all and four purifiers on component 1.7.2, one installing">
+
 ## Sidebar page
 
 Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
@@ -62,7 +69,11 @@ Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
   the latest versions from GitHub without waiting for the 6 hours
 
 The page updates live. It is a plain web component served by the integration;
-nothing is loaded from outside Home Assistant.
+nothing is loaded from outside Home Assistant. After updating the integration,
+reload the browser once to get the new page.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png" width="720" alt="The sidebar page with five devices: updates available, one device building, one without a Device Builder config">
+
 
 ## Add device
 
