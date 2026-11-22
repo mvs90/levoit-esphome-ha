@@ -13,7 +13,7 @@ config in the ESPHome Device Builder, and offers an update when the device's
 channel has a newer component version. Installing compiles the config in the
 Device Builder and uploads it over the air.
 
-![The Levoit ESPHome sidebar page: each device with model, ESP, channel, installed and latest version, filter %, status, Compile and Compile & upload](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel.png)
+![The Levoit ESPHome sidebar page: each device with model, ESP, channel, installed and latest version, filter %, status, Update, Compile and Compile & upload](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel.png)
 
 > **Early version.** Part of the
 > [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
