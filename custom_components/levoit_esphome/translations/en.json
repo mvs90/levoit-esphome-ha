@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Levoit ESPHome",
+        "description": "Finds every ESPHome device that runs the levoit or philips component, links it to its config in the ESPHome Device Builder, and offers an update when its channel (stable or main) has a newer component version. Updates compile and upload through the Device Builder."
+      }
+    },
+    "abort": {
+      "no_device_builder": "The ESPHome Device Builder add-on was not found. Install it and set up the ESPHome integration first.",
+      "single_instance_allowed": "Levoit ESPHome is already set up."
+    }
+  },
+  "entity": {
+    "button": {
+      "compile": {
+        "name": "Compile firmware"
+      }
+    },
+    "sensor": {
+      "model": {
+        "name": "Component model"
+      },
+      "channel": {
+        "name": "Firmware channel",
+        "state": {
+          "stable": "Stable (releases)",
+          "main": "Main (every merge)",
+          "pinned": "Pinned (other ref or fork)",
+          "local": "Local component"
+        }
+      },
+      "configuration": {
+        "name": "Device Builder config"
+      }
+    },
+    "update": {
+      "firmware": {
+        "name": "Component firmware"
+      }
+    }
+  },
+  "exceptions": {
+    "no_configuration": {
+      "message": "This device has no config in the ESPHome Device Builder."
+    },
+    "no_device_builder": {
+      "message": "The ESPHome Device Builder add-on is not available."
+    },
+    "compile_failed": {
+      "message": "Compiling {configuration} failed. See the build log in the ESPHome Device Builder."
+    },
+    "upload_failed": {
+      "message": "Uploading {configuration} failed. See the log in the ESPHome Device Builder."
+    }
+  }
+}

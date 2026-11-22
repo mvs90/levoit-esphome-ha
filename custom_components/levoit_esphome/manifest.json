@@ -1,0 +1,14 @@
+{
+  "domain": "levoit_esphome",
+  "name": "Levoit ESPHome",
+  "codeowners": ["@tuct"],
+  "config_flow": true,
+  "dependencies": ["esphome"],
+  "documentation": "https://github.com/tuct/levoit-esphome-ha",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/tuct/levoit-esphome-ha/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
