@@ -28,6 +28,7 @@ Installing and compiling need the config.
 |--------|----------------------|
 | **Component firmware** (update) | Installed component version against the newest one on the device's channel; release notes; *Install* compiles and uploads |
 | **Compile firmware** (button) | Compiles in the Device Builder without uploading |
+| **Filter life** | The purifier's filter % from its own ESPHome filter sensor (`%` with the `mdi:air-filter` icon or "filter" in its name; HEPA over pre-filter) |
 | **Installed component version** | What the device reports, e.g. `1.7.0` or `1.7.0+3fa21c4` |
 | **Latest component version** | Newest version on the device's channel (release + commit), *unknown* without a channel |
 | **Component model** | `model:` from the config, else from the device's `model` text sensor, e.g. `CORE300S` |

@@ -6,12 +6,28 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, Platform
-from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.const import (
+    ATTR_FRIENDLY_NAME,
+    ATTR_ICON,
+    ATTR_UNIT_OF_MEASUREMENT,
+    PERCENTAGE,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    Platform,
+)
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_state_change_event
@@ -68,6 +84,8 @@ class LevoitDevice:
     reported: Reported | None
     version_entity_id: str | None
     model_entity_id: str | None = None
+    # the device's own filter-life sensor (ESPHome), shown by our Filter life
+    filter_entity_id: str | None = None
     configuration: str | None = None
     esphome_deployed: str | None = None
     esphome_current: str | None = None
@@ -86,6 +104,38 @@ class _FoundSensors:
     version_entity_id: str | None = None
     model: str | None = None
     model_entity_id: str | None = None
+    filter_entity_id: str | None = None
+
+
+_PRE_FILTER = re.compile(r"\bpre[- ]?filter")
+
+
+def _filter_score(entity: er.RegistryEntry, state: State | None) -> int | None:
+    """How well a sensor fits as the device's filter life; None if it does not.
+
+    The levoit / philips filter sensors report `%` with the `mdi:air-filter`
+    icon by default; the name may be anything ("Filter %", "HEPA Filter" ...),
+    so "filter" in the name also counts. With several, the main filter wins:
+    HEPA over the pre-filter, the computed value over the MCU's.
+    """
+    attrs = state.attributes if state is not None else {}
+    unit = entity.unit_of_measurement or attrs.get(ATTR_UNIT_OF_MEASUREMENT)
+    if unit != PERCENTAGE:
+        return None
+    icon = entity.icon or entity.original_icon or attrs.get(ATTR_ICON)
+    name = " ".join(
+        str(n) for n in (entity.name, entity.original_name, attrs.get(ATTR_FRIENDLY_NAME)) if n
+    ).lower()
+    if icon != "mdi:air-filter" and "filter" not in name:
+        return None
+    score = 0
+    if "hepa" in name:
+        score += 2
+    if _PRE_FILTER.search(name):
+        score -= 2
+    if "mcu" in name:
+        score -= 1
+    return score
 
 
 @dataclass
@@ -200,6 +250,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 reported=found.reported,
                 version_entity_id=found.version_entity_id,
                 model_entity_id=found.model_entity_id,
+                filter_entity_id=found.filter_entity_id,
                 model=found.model,
             )
             if config is not None:
@@ -249,10 +300,15 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         the sensors stay watched: the new version shows as soon as it is back.
         """
         found = _FoundSensors()
+        best_filter: int | None = None
         for entity in er.async_entries_for_device(ent_reg, device_id):
             if entity.domain != Platform.SENSOR or entity.platform != ESPHOME_DOMAIN:
                 continue
             state = self.hass.states.get(entity.entity_id)
+            score = _filter_score(entity, state)
+            if score is not None and (best_filter is None or score > best_filter):
+                best_filter = score
+                found.filter_entity_id = entity.entity_id
             if state is None:
                 continue
             if found.reported is None and (reported := parse_reported(state.state)):

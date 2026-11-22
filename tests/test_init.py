@@ -298,3 +298,55 @@ async def test_setup_retries_without_device_builder(hass: HomeAssistant) -> None
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done(wait_background_tasks=True)
     assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+FILTER = "sensor.bedroom_purifier_filter_life"
+
+
+async def test_filter_life(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """The purifier's filter % shows on our device and follows it."""
+    hass.config.components.add("esphome")
+    add_esphome_device(
+        hass,
+        "bedroom-purifier",
+        MAC,
+        "Bedroom purifier",
+        "1.7.0+10361cc esphome",
+        filters={"Filter %": "83"},
+    )
+    await _setup(hass)
+    assert float(hass.states.get(FILTER).state) == 83
+
+    hass.states.async_set(
+        "sensor.bedroom_purifier_filter_0",
+        "82",
+        {"unit_of_measurement": "%", "friendly_name": "Filter %"},
+    )
+    await hass.async_block_till_done()
+    assert float(hass.states.get(FILTER).state) == 82
+
+
+async def test_filter_life_prefers_hepa(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """Philips: HEPA filter over the pre-filter."""
+    hass.config.components.add("esphome")
+    add_esphome_device(
+        hass,
+        "bedroom-purifier",
+        MAC,
+        "Bedroom purifier",
+        "1.7.0+10361cc esphome",
+        filters={"Pre-filter": "40", "HEPA Filter": "90"},
+    )
+    await _setup(hass)
+    assert float(hass.states.get(FILTER).state) == 90
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_no_filter_sensor(hass: HomeAssistant, patch_sources: AsyncMock) -> None:
+    """Without a filter sensor on the device: unavailable."""
+    await _setup(hass)
+    assert hass.states.get(FILTER).state == STATE_UNAVAILABLE
