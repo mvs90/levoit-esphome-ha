@@ -17,9 +17,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # No brand/icon.png yet. The default catalog does not accept ignored
-          # checks, so this goes once the icon is in.
-          ignore: brands
 
   hassfest:
     name: hassfest
