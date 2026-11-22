@@ -153,13 +153,13 @@ model, with your board and pins.
 | Levoit Core 300S | ✓ | ✓ | not tested yet |
 | Levoit Core 400S | ✓ | ✓ | **works**: 1.3.1 → 1.7.2 ([walkthrough](#original-esp-already-flashed-keep-it-updated)) |
 | Levoit Core 600S | ✓ | ✓ | not tested yet |
-| Levoit Eleva 300X | | | not tested yet (stock ESP32-C3) |
-| Levoit Everest Air | ✓ | | not tested yet |
-| Levoit Superior 6000S | | | not tested yet |
+| Levoit Eleva 300X | | ✓ | not tested yet (stock ESP32-C3) |
+| Levoit Everest Air | ✓ | ✓ | not tested yet |
+| Levoit Superior 6000S | | ✓ | not tested yet |
 | Levoit Vital 100S | ✓ | ✓ | not tested yet (stock ESP32-C3) |
 | Levoit Vital 200S | ✓ | ✓ | not tested yet (stock ESP32-C3) |
-| Philips 600 series (AC0650) | ESP32-C3 template | | not possible: secure boot |
-| Philips 900 series (AC0950) | ✓ | | |
+| Philips 600 series (AC0650) | ESP32-C3 template | ✓ | not possible: secure boot |
+| Philips 900 series (AC0950) | ✓ | ✓ | |
 
 > **Running the `levoit` firmware on the original ESP of one of these?**
 > Add it with *Add device* → *Device already in Home Assistant*, install an
