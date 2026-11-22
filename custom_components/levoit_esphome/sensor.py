@@ -1,4 +1,4 @@
-"""Diagnostic sensors: versions, model, channel and Device Builder config of a device."""
+"""Sensors: filter life, and versions, model, channel and config of a device."""
 
 from __future__ import annotations
 
@@ -10,9 +10,11 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
-from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.const import PERCENTAGE, EntityCategory
+from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import CHANNEL_LOCAL, CHANNEL_MAIN, CHANNEL_PINNED, CHANNEL_STABLE
 from .coordinator import LevoitData, LevoitDevice
@@ -87,7 +89,8 @@ async def async_setup_entry(
             entry.runtime_data,
             async_add_entities,
             lambda coordinator, name: [
-                LevoitDiagnosticSensor(coordinator, name, description) for description in SENSORS
+                LevoitFilterSensor(coordinator, name),
+                *(LevoitDiagnosticSensor(coordinator, name, d) for d in SENSORS),
             ],
         )
     )
@@ -115,3 +118,77 @@ class LevoitDiagnosticSensor(LevoitEsphomeEntity, SensorEntity):
         if device is None:
             return None
         return self.entity_description.value_fn(device, self.coordinator.data)
+
+
+class LevoitFilterSensor(LevoitEsphomeEntity, SensorEntity):
+    """The purifier's filter life, from its own ESPHome filter sensor.
+
+    Follows that sensor's state directly (no Device Builder poll); which
+    sensor it is comes from the coordinator (see coordinator._filter_score).
+    """
+
+    _attr_translation_key = "filter_life"
+    _attr_icon = "mdi:air-filter"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: LevoitEsphomeCoordinator, name: str) -> None:
+        """Initialize."""
+        super().__init__(coordinator, name, "filter_life")
+        self._source: str | None = None
+        self._unsub_source: CALLBACK_TYPE | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Start following the source sensor."""
+        await super().async_added_to_hass()
+        self._follow_source()
+        self.async_on_remove(self._stop_following)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """The source may have changed (renamed, re-added)."""
+        self._follow_source()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _follow_source(self) -> None:
+        device = self.device
+        source = device.filter_entity_id if device is not None else None
+        if source == self._source:
+            return
+        self._stop_following()
+        self._source = source
+        if source is not None:
+            self._unsub_source = async_track_state_change_event(
+                self.hass, [source], self._source_changed
+            )
+
+    @callback
+    def _stop_following(self) -> None:
+        if self._unsub_source is not None:
+            self._unsub_source()
+            self._unsub_source = None
+
+    @callback
+    def _source_changed(self, event: Event[EventStateChangedData]) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def available(self) -> bool:
+        """Available while the device's filter sensor has a number."""
+        return super().available and self.native_value is not None
+
+    @property
+    def native_value(self) -> float | None:
+        """The filter sensor's value."""
+        device = self.device
+        if device is None or device.filter_entity_id is None:
+            return None
+        state = self.hass.states.get(device.filter_entity_id)
+        if state is None:
+            return None
+        try:
+            return float(state.state)
+        except ValueError:
+            return None

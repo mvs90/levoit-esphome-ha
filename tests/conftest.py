@@ -133,10 +133,12 @@ def add_esphome_device(
     version: str | None,
     *,
     model: str | None = None,
+    filters: dict[str, str] | None = None,
 ) -> str | None:
     """Register an ESPHome device like the esphome integration does.
 
-    With `model`, it also gets a `model` text sensor reporting it.
+    With `model`, it also gets a `model` text sensor reporting it; `filters`
+    adds filter sensors (name -> value, `%`, `mdi:air-filter`).
     Returns the entity_id of its version sensor, if it has one.
     """
     entry = MockConfigEntry(domain="esphome", data={"device_name": name, "host": f"{name}.local"})
@@ -146,6 +148,23 @@ def add_esphome_device(
         connections={(dr.CONNECTION_NETWORK_MAC, mac)},
         name=title,
     )
+    for key, (filter_name, value) in enumerate((filters or {}).items()):
+        filter_entity = er.async_get(hass).async_get_or_create(
+            "sensor",
+            "esphome",
+            f"{mac}-sensor-filter-{key}",
+            device_id=device.id,
+            config_entry=entry,
+            original_name=filter_name,
+            original_icon="mdi:air-filter",
+            unit_of_measurement="%",
+            suggested_object_id=f"{name}_filter_{key}",
+        )
+        hass.states.async_set(
+            filter_entity.entity_id,
+            value,
+            {"unit_of_measurement": "%", "friendly_name": filter_name},
+        )
     if model is not None:
         model_entity = er.async_get(hass).async_get_or_create(
             "sensor",
