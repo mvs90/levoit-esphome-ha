@@ -27,6 +27,12 @@
       }
     },
     "sensor": {
+      "installed_version": {
+        "name": "Installed component version"
+      },
+      "latest_version": {
+        "name": "Latest component version"
+      },
       "model": {
         "name": "Component model"
       },
