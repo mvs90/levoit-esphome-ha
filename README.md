@@ -14,7 +14,7 @@ Device Builder and uploads it over the air.
 
 ## What you get
 
-Per purifier, on a device of the same name; Home Assistant lists the purifier's
+Per purifier, on a device of the same name (its *Visit* link opens the ESPHome Device Builder); Home Assistant lists the purifier's
 ESPHome device under *Linked devices* (same MAC address). Since Home Assistant
 2026.8 an integration cannot add entities to another integration's device.
 
@@ -28,6 +28,7 @@ Installing and compiling need the config.
 |--------|----------------------|
 | **Component firmware** (update) | Installed component version against the newest one on the device's channel; release notes; *Install* compiles and uploads |
 | **Compile firmware** (button) | Compiles in the Device Builder without uploading |
+| **Compile and upload** (button) | Compiles and uploads over the air at any time, also when the device is up to date (a template config is refreshed from the newest builder file first, like *Install*) |
 | **Filter life** | The purifier's filter % from its own ESPHome filter sensor (`%` with the `mdi:air-filter` icon or "filter" in its name; HEPA over pre-filter) |
 | **Installed component version** | What the device reports, e.g. `1.7.0` or `1.7.0+3fa21c4` |
 | **Latest component version** | Newest version on the device's channel (release + commit), *unknown* without a channel |

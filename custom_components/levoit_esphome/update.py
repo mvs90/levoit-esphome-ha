@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
-
-from aiohttp import ClientError
 
 from homeassistant.components.update import (
     UpdateDeviceClass,
@@ -16,9 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, GITHUB_REPO
-from .device_builder import DeviceBuilderCommandError
 from .entity import LevoitEsphomeEntity, async_add_per_device
-from .templates import TemplateError
 from .versions import ChannelHead, is_behind
 
 if TYPE_CHECKING:
@@ -54,7 +49,6 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
     def __init__(self, coordinator: LevoitEsphomeCoordinator, name: str) -> None:
         """Initialize."""
         super().__init__(coordinator, name, "firmware")
-        self._attr_in_progress = False
 
     @property
     def _head(self) -> ChannelHead | None:
@@ -134,54 +128,14 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
             return head.notes
         return f"Builds from `main`, now at {head.text}. Changes: {self.release_url}"
 
+    @property
+    def in_progress(self) -> bool:
+        """While any build of the device runs (install, compile, compile and upload)."""
+        return self.coordinator.is_building(self._device_name)
+
     async def async_install(self, version: str | None, backup: bool, **kwargs: Any) -> None:
         """Compile in the Device Builder, then upload over the air."""
         device = self.device
-        builder = self.coordinator.device_builder
-        if device is None or not device.configuration:
+        if device is None:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_configuration")
-        if builder is None:
-            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_device_builder")
-        configuration = device.configuration
-        lock: AbstractAsyncContextManager[Any] = (
-            nullcontext()
-            if getattr(builder, "supports_build_queue", False)
-            else self.coordinator.build_lock
-        )
-
-        self._attr_in_progress = True
-        self.async_write_ha_state()
-        try:
-            if device.template:
-                # Original / C3 configs follow the newest builder file; a custom
-                # config only gets the new component through its ref.
-                try:
-                    await self.coordinator.async_refresh_from_template(builder, configuration)
-                except (DeviceBuilderCommandError, TemplateError, ClientError, TimeoutError) as err:
-                    raise HomeAssistantError(
-                        translation_domain=DOMAIN,
-                        translation_key="template_refresh_failed",
-                        translation_placeholders={
-                            "configuration": configuration,
-                            "error": str(err),
-                        },
-                    ) from err
-            async with lock:
-                compiled = await builder.api.compile(configuration)
-            if not compiled:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="compile_failed",
-                    translation_placeholders={"configuration": configuration},
-                )
-            if not await builder.api.upload(configuration, "OTA"):
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="upload_failed",
-                    translation_placeholders={"configuration": configuration},
-                )
-        finally:
-            self._attr_in_progress = False
-            self.coordinator.async_forget_config(configuration)
-            self.async_write_ha_state()
-            await self.coordinator.async_request_refresh()
+        await self.coordinator.async_build(device, upload=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import logging
@@ -28,6 +29,7 @@ from homeassistant.core import (
     State,
     callback,
 )
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_state_change_event
@@ -188,6 +190,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         self._unsub_states: CALLBACK_TYPE | None = None
         # Device Builders before 2026.6 have no build queue: one compile at a time.
         self.build_lock = asyncio.Lock()
+        self._building: set[str] = set()
 
     @property
     def device_builder(self) -> DeviceBuilder | None:
@@ -461,6 +464,69 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
     def async_forget_config(self, configuration: str) -> None:
         """Read a config again on the next refresh (after a build)."""
         self._facts.pop(configuration, None)
+
+    def is_building(self, name: str) -> bool:
+        """Whether a compile / upload of this device is running."""
+        return name in self._building
+
+    async def async_build(self, device: LevoitDevice, *, upload: bool) -> None:
+        """Compile a device's config in the Device Builder; with `upload`, also install it.
+
+        One build per device at a time. Installing first rewrites a template
+        config from the newest builder file (a custom config is built as it
+        is); compiling alone builds the config as it is now. A failed compile
+        never uploads.
+        """
+        builder = self.device_builder
+        if not device.configuration:
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_configuration")
+        if builder is None:
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_device_builder")
+        if device.name in self._building:
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="already_building")
+        configuration = device.configuration
+        placeholders = {"configuration": configuration}
+        lock: AbstractAsyncContextManager[Any] = (
+            nullcontext() if getattr(builder, "supports_build_queue", False) else self.build_lock
+        )
+
+        self._building.add(device.name)
+        self.async_update_listeners()
+        try:
+            if upload and device.template:
+                try:
+                    await self.async_refresh_from_template(builder, configuration)
+                except (
+                    DeviceBuilderCommandError,
+                    tpl.TemplateError,
+                    aiohttp.ClientError,
+                    TimeoutError,
+                ) as err:
+                    raise HomeAssistantError(
+                        translation_domain=DOMAIN,
+                        translation_key="template_refresh_failed",
+                        translation_placeholders={**placeholders, "error": str(err)},
+                    ) from err
+            async with lock:
+                compiled = await builder.api.compile(configuration)
+            if not compiled:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="compile_failed",
+                    translation_placeholders=placeholders,
+                )
+            if upload and not await builder.api.upload(configuration, "OTA"):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="upload_failed",
+                    translation_placeholders=placeholders,
+                )
+        finally:
+            self._building.discard(device.name)
+            if upload:
+                self.async_forget_config(configuration)
+            self.async_update_listeners()
+            await self.async_request_refresh()
 
     @callback
     def _track_version_entities(self, devices: dict[str, LevoitDevice]) -> None:
