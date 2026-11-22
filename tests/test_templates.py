@@ -10,16 +10,21 @@ import pytest
 from custom_components.levoit_esphome.templates import (
     MARKER_PREFIX,
     ConfigValues,
+    CustomEsp,
     Template,
     TemplateError,
     Value,
+    builder_esp,
     config_values,
     new_api_key,
+    normalize_pin,
     parse_templates,
     render,
+    render_custom,
     secret_key,
     suggest_name,
     template_of,
+    valid_board,
     valid_name,
     with_channel,
 )
@@ -78,9 +83,43 @@ def test_render() -> None:
     # Wi-Fi stays on the shared secrets
     assert "!secret wifi_ssid" in text
     assert "!secret wifi_password" in text
-    # everything else untouched
-    assert text.count("\n") == BUILDER.count("\n") + 1
+    # the repo notes give way to a header that says how to make it your own
+    assert "make-builder-yaml" not in text
+    assert "# Generated from" not in text
+    assert "DELETE THE FIRST LINE" in text
+    assert "https://github.com/tuct/levoit/tree/main/devices/levoit-everest-air" in text
+    # everything below the header untouched
+    body = BUILDER[BUILDER.index("substitutions:") :]
+    assert text[text.index("substitutions:") :].count("\n") == body.count("\n")
     assert template_of(text, TEMPLATES) == EVEREST_C3
+
+
+def test_render_custom() -> None:
+    """Own board and pins on the builder file; no marker, so it is never rewritten."""
+    assert builder_esp(BUILDER) == CustomEsp(
+        board="seeed_xiao_esp32c3", rx_pin="GPIO05", tx_pin="GPIO06"
+    )
+    esp = CustomEsp(board="seeed_xiao_esp32s3", rx_pin="GPIO5", tx_pin="GPIO4")
+    text = render_custom(BUILDER, EVEREST_C3, VALUES, esp)
+    assert template_of(text, TEMPLATES) is None  # custom
+    assert MARKER_PREFIX not in text
+    assert "# Generated from" not in text
+    assert text.startswith(f"# Made by Levoit ESPHome from {EVEREST_C3.file}")
+    assert "esp32:\n  board: seeed_xiao_esp32s3\n  framework:\n    type: esp-idf\n\n" in text
+    assert "seeed_xiao_esp32c3" not in text
+    assert "  rx_pin: GPIO5\n" in text
+    assert "  tx_pin: GPIO4\n" in text
+    assert config_values(text) == VALUES  # name, secrets, channel as for a template
+
+
+def test_pins_and_boards() -> None:
+    """Pins are normalised to GPIOn; board names follow ESPHome's."""
+    pins = [normalize_pin(p) for p in ("GPIO05", "5", "gpio21", "IO5", "GPIO123", "")]
+    assert pins == ["GPIO5", "GPIO5", "GPIO21", None, None, None]
+    assert valid_board("seeed_xiao_esp32s3")
+    assert valid_board("esp32-c6-devkitc-1")
+    assert not valid_board("My Board")
+    assert not valid_board("")
 
 
 def test_render_round_trip() -> None:

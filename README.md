@@ -69,7 +69,10 @@ nothing is loaded from outside Home Assistant.
 **Settings → Devices & services → Levoit ESPHome → Add device** makes a Device
 Builder config from a template of tuct/levoit
 ([`devices/templates.json`](https://github.com/tuct/levoit/blob/main/devices/templates.json)):
-pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, Seeed XIAO ESP32-S3).
+pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, Seeed XIAO ESP32-S3),
+or **Other ESP** for a board or pins without a template: enter the ESPHome board
+name (e.g. `seeed_xiao_esp32s3`, `esp32dev`, `esp32-c6-devkitc-1`) and the RX / TX
+pins, and the config is made from the model's builder file with those.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
@@ -87,10 +90,14 @@ pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, Seeed XIAO 
   **names** only, never values, and never overwrites an existing secret
 
 **Template configs follow the templates.** A config made from a template (or a
-pasted builder file) is recognised by its first line. Every update rewrites it
-from the newest builder file first, keeping its name, secrets and channel, then
-compiles and uploads. A **custom** config is never rewritten: updates only build
-the new component it pulls through its `ref:`.
+pasted builder file) is recognised by its first line,
+`# levoit-esphome-ha: template=...`. Every update rewrites it from the newest
+builder file first, keeping its name, secrets and channel, then compiles and
+uploads. The header under that line says so. **To customise such a config,
+delete its first line first**: otherwise the next update overwrites your
+changes. Without it the config is **custom**, like one made with *Other ESP*:
+it is never rewritten, and updates only build the newer component it pulls
+through its `ref:`.
 
 ## Requirements
 
