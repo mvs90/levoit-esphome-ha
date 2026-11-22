@@ -1,7 +1,12 @@
 # Levoit ESPHome
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P4P721ETB5)
+
 A Home Assistant integration for air purifiers and humidifiers running the
-[`levoit`](https://github.com/tuct/levoit) or `philips` ESPHome components.
+`levoit` or `philips` ESPHome components of
+**[tuct/levoit](https://github.com/tuct/levoit)**: the project that takes
+Levoit and Philips purifiers off the cloud, with the components, device
+configs and wiring guides.
 
 It finds every ESPHome device built with those components, links it to its
 config in the ESPHome Device Builder, and offers an update when the device's
@@ -12,6 +17,68 @@ Device Builder and uploads it over the air.
 
 > **Early version.** Part of the
 > [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
+
+## Use cases
+
+Most of these purifiers have an ESP32 for Wi-Fi and a separate MCU that runs
+the purifier, talking over UART. ESPHome can run on that ESP in two ways:
+
+| | **Extra ESP** (recommended) | **Original ESP** |
+|---|---|---|
+| What | A small ESP of your own, wired to the MCU's UART; the original ESP stays on the board, held in reset | The purifier's own ESP, flashed with ESPHome |
+| Hardware | A [Seeed XIAO ESP32-C3](https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html) or [XIAO ESP32-S3](https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html) (or any ESP32 ESPHome supports) and a few wires: power, GND, RX, TX, and the original ESP's EN to GND | None |
+| Back to stock | Remove the wires: the stock firmware was never touched | Restore a backup of the stock flash over its UART pads |
+| First flash | Over USB from the Device Builder, before you wire it in | Over the board's UART pads, usually with the purifier open |
+| Risk | Low: a bad build only hits your ESP, which you can reflash over USB at your desk | A bad build can leave the purifier offline until you open it again |
+| Locked modules | Works with every model, also those whose stock ESP can't be flashed (Philips AC0650: secure boot) | Only modules without secure boot |
+
+**Why extra:** the purifier's stock firmware stays intact, and a broken build
+is never more than a USB cable away from fixed. The XIAO boards are small
+enough to fit inside many of these purifiers (the device guides say where).
+
+### Extra ESP: install it and keep it updated
+
+1. *Add device* → **New device** → the model → **Seeed XIAO ESP32-C3** or
+   **Seeed XIAO ESP32-S3**. For another board pick **Other ESP**: any ESPHome
+   board name and your own RX / TX pins.
+2. The integration makes the Device Builder config: name, API key and OTA
+   password generated, Wi-Fi from your secrets.
+3. Flash it once over USB from the Device Builder, then wire it in (see the
+   model's guide in [tuct/levoit/devices](https://github.com/tuct/levoit/tree/main/devices)).
+4. From then on, every new component version shows up in **Settings →
+   Updates** and installs over the air.
+
+### Original ESP, already flashed: keep it updated
+
+Flashed the purifier's own ESP with the `levoit` component already? *Add
+device* → **Device already in Home Assistant** → the model → **Original ESP**
+gives it a Device Builder config. It keeps its name and API key (Home Assistant
+keeps the device), and updates come over the air like for any other device.
+
+## Devices
+
+The templates *Add device* offers per model (✓). **Other ESP** works for every
+model, with your board and pins.
+
+| Model | XIAO ESP32-C3 | XIAO ESP32-S3 | Original ESP: updates through this integration |
+|---|---|---|---|
+| Levoit Core 200S | ✓ | ✓ | not tested yet |
+| Levoit Core 300S | ✓ | ✓ | not tested yet |
+| Levoit Core 400S | ✓ | ✓ | testing soon |
+| Levoit Core 600S | ✓ | ✓ | not tested yet |
+| Levoit Eleva 300X | | | not tested yet (stock ESP32-C3) |
+| Levoit Everest Air | ✓ | | not tested yet |
+| Levoit Superior 6000S | | | not tested yet |
+| Levoit Vital 100S | ✓ | ✓ | not tested yet (stock ESP32-C3) |
+| Levoit Vital 200S | ✓ | ✓ | not tested yet (stock ESP32-C3) |
+| Philips 600 series (AC0650) | ESP32-C3 template | | not possible: secure boot |
+| Philips 900 series (AC0950) | ✓ | | |
+
+> **Running the `levoit` firmware on the original ESP of one of these?**
+> Add it with *Add device* → *Device already in Home Assistant*, install an
+> update, and [tell us how it went](https://github.com/tuct/levoit-esphome-ha/issues/new?title=Original%20ESP%3A%20%3Cmodel%3E):
+> the model, and whether the update went through. Each report moves a model
+> in this table from *not tested yet* to *works*.
 
 ## What you get
 
