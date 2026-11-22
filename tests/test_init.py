@@ -10,12 +10,18 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.levoit_esphome.const import DOMAIN
 from homeassistant.components.update import ATTR_INSTALLED_VERSION, ATTR_LATEST_VERSION
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import ATTR_ENTITY_ID, STATE_OFF, STATE_ON
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .conftest import MAC, OTHER_MAC, FakeBuilder
+from .conftest import MAC, OTHER_MAC, FakeBuilder, add_esphome_device
 
 UPDATE = "update.bedroom_purifier_component_firmware"
 BUTTON = "button.bedroom_purifier_compile_firmware"
@@ -50,18 +56,14 @@ async def test_setup_finds_our_device(
         == "bedroom-purifier.yaml"
     )
 
-    # Our own device, named like the purifier, linked to its ESPHome device
+    # Our own device, named like the purifier, sharing its MAC (Home Assistant
+    # lists the ESPHome device as linked through that)
     dev_reg = dr.async_get(hass)
     ours = dev_reg.async_get_device_by_identifier((DOMAIN, MAC), entry.entry_id)
     assert ours is not None
     assert ours.name == "Bedroom purifier"
-    esphome_device = next(
-        d
-        for e in hass.config_entries.async_entries("esphome")
-        for d in dr.async_entries_for_config_entry(dev_reg, e.entry_id)
-        if (dr.CONNECTION_NETWORK_MAC, MAC) in d.connections
-    )
-    assert ours.via_device_id == esphome_device.id
+    assert (dr.CONNECTION_NETWORK_MAC, MAC) in ours.connections
+    assert ours.via_device_id is None
     ent_reg = er.async_get(hass)
     assert ent_reg.async_get(UPDATE).device_id == ours.id
 
@@ -139,12 +141,29 @@ async def test_compile_button(
 
 @pytest.mark.usefixtures("esphome_devices")
 async def test_github_unreachable(hass: HomeAssistant, patch_sources: AsyncMock) -> None:
-    """Without GitHub the device is listed, with no update offered."""
+    """Without GitHub the device is listed; whether it is behind is unknown."""
     patch_sources.side_effect = TimeoutError
     await _setup(hass)
     state = hass.states.get(UPDATE)
-    assert state.state == STATE_OFF
+    assert state.state == STATE_UNKNOWN
     assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
+    assert state.attributes[ATTR_LATEST_VERSION] is None
+
+
+async def test_without_device_builder_config(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """Found by its version sensor only: version shown, the rest unknown."""
+    hass.config.components.add("esphome")
+    builder.api.configured = []  # nothing in the Device Builder
+    add_esphome_device(hass, "bedroom-purifier", MAC, "Bedroom purifier", "1.7.0+10361cc esphome")
+    await _setup(hass)
+    state = hass.states.get(UPDATE)
+    assert state.state == STATE_UNKNOWN  # no channel: not "up to date"
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.7.0+10361cc"
+    assert hass.states.get(BUTTON).state == STATE_UNAVAILABLE
+    assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == STATE_UNKNOWN
+    assert builder.api.get_config_calls == []
 
 
 @pytest.mark.usefixtures("esphome_devices")

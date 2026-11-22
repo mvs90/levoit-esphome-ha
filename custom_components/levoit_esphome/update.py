@@ -86,11 +86,14 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
 
     @property
     def latest_version(self) -> str | None:
-        """Head of the device's channel; no channel, no update."""
+        """Head of the device's channel.
+
+        None (state unknown) without a channel (no Device Builder config, a
+        pinned ref) or while GitHub has not answered: "up to date" would be
+        a guess.
+        """
         head = self._head
-        if head is None:
-            return self.installed_version
-        return head.text
+        return None if head is None else head.text
 
     def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
         """Commits decide where both have one (see versions.is_behind)."""
