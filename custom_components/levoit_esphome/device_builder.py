@@ -67,9 +67,13 @@ class DeviceBuilder(Protocol):
 
 
 def builder_page_url(builder: DeviceBuilder | None) -> str | None:
-    """The Device Builder add-on's page in Home Assistant (a relative URL)."""
+    """The Device Builder add-on's page in Home Assistant (a relative URL).
+
+    /app/<slug> is the frontend's add-on panel; it works whether or not the
+    add-on is shown in the sidebar (/<slug>). /hassio/ingress/<slug> is gone.
+    """
     slug = getattr(builder, "addon_slug", None) if builder is not None else None
-    return f"/hassio/ingress/{slug}" if slug else None
+    return f"/app/{slug}" if slug else None
 
 
 @callback
