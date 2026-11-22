@@ -203,10 +203,15 @@ def render(template_text: str, template: Template, values: ConfigValues) -> str:
         )
 
     if values.channel in (CHANNEL_STABLE, CHANNEL_MAIN):
-        text = _sub_once(
-            r"^      ref: \S+[ \t]*$", f"      ref: {values.channel}", text, "component ref"
-        )
+        text = with_channel(text, values.channel)
     return text
+
+
+def with_channel(text: str, channel: str) -> str:
+    """A builder file or template config with its component `ref:` set to `channel`."""
+    if channel not in (CHANNEL_STABLE, CHANNEL_MAIN):
+        raise TemplateError(f"unknown channel {channel}")
+    return _sub_once(r"^      ref: \S+[ \t]*$", f"      ref: {channel}", text, "component ref")
 
 
 # --- names and keys -----------------------------------------------------------

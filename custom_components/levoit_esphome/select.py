@@ -37,12 +37,13 @@ async def async_setup_entry(
 
 
 class LevoitChannelSelect(LevoitEsphomeEntity, SelectEntity, RestoreEntity):
-    """Which channel to compare a device without a config against.
+    """The channel a device follows: stable (releases) or main (every merge).
 
-    With a Device Builder config the component's `ref:` there decides, and this
-    select is unavailable. Without one there is nothing to read the channel
-    from, so the user picks it; the update entity then says whether a newer
-    version is out (installing still needs a config).
+    * No Device Builder config: what the device is compared with (installing
+      still needs a config); restored after a restart.
+    * Template config: rewrites the component's `ref:` in the config; the next
+      install builds from the new channel.
+    * Custom config: unavailable, its own `ref:` decides (edit it there).
     """
 
     _attr_entity_category = EntityCategory.CONFIG
@@ -57,22 +58,26 @@ class LevoitChannelSelect(LevoitEsphomeEntity, SelectEntity, RestoreEntity):
         """Restore the last choice."""
         await super().async_added_to_hass()
         if (last := await self.async_get_last_state()) and last.state in self.options:
+            # only a choice without a config; a config's ref: is read from it
             self.coordinator.async_choose_channel(self._device_name, last.state)
 
     @property
     def available(self) -> bool:
-        """Only for a device without a Device Builder config."""
+        """Without a config, or with a template config."""
         device = self.device
-        return super().available and device is not None and not device.configuration
+        return super().available and device is not None and self.coordinator.can_set_channel(device)
 
     @property
     def current_option(self) -> str | None:
-        """The chosen channel."""
+        """The device's channel (None for a pinned ref)."""
         device = self.device
-        if device is None or not device.channel_chosen:
+        if device is None or device.channel not in self.options:
             return None
         return device.channel
 
     async def async_select_option(self, option: str) -> None:
-        """Choose the channel."""
-        self.coordinator.async_choose_channel(self._device_name, option)
+        """Switch the channel (rewrites a template config's ref:)."""
+        device = self.device
+        if device is None:
+            return
+        await self.coordinator.async_set_channel(device, option)

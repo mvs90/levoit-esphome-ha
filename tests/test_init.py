@@ -283,7 +283,7 @@ async def test_without_device_builder_config(
 async def test_select_unavailable_with_config(
     hass: HomeAssistant, patch_sources: AsyncMock
 ) -> None:
-    """With a Device Builder config the ref decides; the select is off."""
+    """With a custom config its own ref decides; the select is off."""
     await _setup(hass)
     assert hass.states.get(SELECT).state == STATE_UNAVAILABLE
     assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == "stable"

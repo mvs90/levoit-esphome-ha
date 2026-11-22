@@ -20,6 +20,7 @@ from custom_components.levoit_esphome.templates import (
     suggest_name,
     template_of,
     valid_name,
+    with_channel,
 )
 
 BUILDER = (Path(__file__).parent / "fixtures" / "levoit-everest-air-builder-c3.yaml").read_text(
@@ -117,6 +118,18 @@ def test_render_rejects_unknown_shape() -> None:
     """A file without the expected lines is refused, not half-rendered."""
     with pytest.raises(TemplateError):
         render("esphome:\n  name: x\n", EVEREST_C3, VALUES)
+
+
+def test_with_channel() -> None:
+    """Only the component ref changes; unknown channels are refused."""
+    text = render(BUILDER, EVEREST_C3, VALUES)
+    stable = with_channel(text, "stable")
+    assert stable == text.replace("      ref: main\n", "      ref: stable\n")
+    assert with_channel(stable, "stable") == stable
+    with pytest.raises(TemplateError):
+        with_channel(text, "my-branch")
+    with pytest.raises(TemplateError):
+        with_channel("esphome:\n  name: x\n", "main")
 
 
 def test_config_values_of_pasted_builder_file() -> None:

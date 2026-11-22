@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -25,6 +26,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from .conftest import BUILDER_TEXT, EVEREST_C3, MAC, FakeBuilder, add_esphome_device
 
 UPDATE = "update.bedroom_purifier_component_firmware"
+SELECT = "select.bedroom_purifier_update_channel"
 
 
 async def _setup(hass: HomeAssistant) -> MockConfigEntry:
@@ -220,3 +222,32 @@ async def test_install_keeps_custom_config(
     await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
     assert builder.files.writes == []
     builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_channel_of_template_config(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """The select rewrites a template config's ref:, nothing else."""
+    values = ConfigValues(
+        name="bedroom-purifier",
+        api_key=Value(secret="bedroom_purifier_api_key"),
+        ota_password=Value(secret="bedroom_purifier_ota_password"),
+        channel="stable",
+    )
+    old = render(BUILDER_TEXT, EVEREST_C3, values)
+    builder.files.configs["bedroom-purifier.yaml"] = old
+    await _setup(hass)
+    assert hass.states.get(SELECT).state == "stable"
+
+    await hass.services.async_call(
+        "select", "select_option", {ATTR_ENTITY_ID: SELECT, "option": "main"}, blocking=True
+    )
+    new = builder.files.configs["bedroom-purifier.yaml"]
+    assert new == old.replace("      ref: stable\n", "      ref: main\n")
+    assert config_values(new) == replace(values, channel="main")
+    assert hass.states.get(SELECT).state == "main"
+    assert hass.states.get("sensor.bedroom_purifier_firmware_channel").state == "main"
+    # main compares commits: 1.7.0+10361cc is behind main's 1.8.0+1234567
+    assert hass.states.get(UPDATE).attributes["latest_version"] == "1.8.0+1234567"
+    builder.api.compile.assert_not_awaited()
