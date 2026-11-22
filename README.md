@@ -14,7 +14,9 @@ Device Builder and uploads it over the air.
 
 ## What you get
 
-On each purifier's own device page:
+Per purifier, on a device of the same name that is linked to its ESPHome
+device ("connected via"). Since Home Assistant 2026.8 an integration cannot add
+entities to another integration's device.
 
 | Entity | What it shows / does |
 |--------|----------------------|

@@ -1,4 +1,4 @@
-"""Base entity: attached to the device's existing ESPHome device."""
+"""Base entity: on our own device per purifier, linked to its ESPHome device."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .const import DOMAIN
 from .coordinator import LevoitDevice, LevoitEsphomeCoordinator
 
 
@@ -22,11 +23,20 @@ class LevoitEsphomeEntity(CoordinatorEntity[LevoitEsphomeCoordinator]):
         """Initialize."""
         super().__init__(coordinator)
         self._device_name = name
-        mac = coordinator.data.devices[name].mac
-        self._attr_unique_id = f"{mac}-{key}"
-        # Same MAC connection as the ESPHome device: the registry merges them,
-        # so these entities show up on the purifier's own device page.
-        self._attr_device_info = DeviceInfo(connections={(CONNECTION_NETWORK_MAC, mac)})
+        device = coordinator.data.devices[name]
+        self._attr_unique_id = f"{device.mac}-{key}"
+        # Since Home Assistant 2026.8 identifiers and connections are unique per
+        # config entry only: a matching MAC no longer merges into the ESPHome
+        # integration's device. So this is our own device, named like the
+        # purifier and linked to its ESPHome device ("connected via").
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.mac)},
+            connections={(CONNECTION_NETWORK_MAC, device.mac)},
+            name=device.title,
+            manufacturer="tuct/levoit",
+            model="ESPHome component",
+            via_device_id=device.esphome_device_id,
+        )
 
     @property
     def device(self) -> LevoitDevice | None:

@@ -50,16 +50,24 @@ async def test_setup_finds_our_device(
         == "bedroom-purifier.yaml"
     )
 
-    # Attached to the ESPHome device, not a new one
+    # Our own device, named like the purifier, linked to its ESPHome device
     dev_reg = dr.async_get(hass)
-    purifier = dev_reg.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, MAC)})
-    assert entry.entry_id in purifier.config_entries
+    ours = dev_reg.async_get_device_by_identifier((DOMAIN, MAC), entry.entry_id)
+    assert ours is not None
+    assert ours.name == "Bedroom purifier"
+    esphome_device = next(
+        d
+        for e in hass.config_entries.async_entries("esphome")
+        for d in dr.async_entries_for_config_entry(dev_reg, e.entry_id)
+        if (dr.CONNECTION_NETWORK_MAC, MAC) in d.connections
+    )
+    assert ours.via_device_id == esphome_device.id
     ent_reg = er.async_get(hass)
-    assert ent_reg.async_get(UPDATE).device_id == purifier.id
+    assert ent_reg.async_get(UPDATE).device_id == ours.id
 
-    # The unrelated device is left alone
-    other = dev_reg.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, OTHER_MAC)})
-    assert entry.entry_id not in other.config_entries
+    # The unrelated device gets nothing
+    assert dev_reg.async_get_device_by_identifier((DOMAIN, OTHER_MAC), entry.entry_id) is None
+    assert len(dr.async_entries_for_config_entry(dev_reg, entry.entry_id)) == 1
 
     # Only our config was read, once
     assert builder.api.get_config_calls == ["bedroom-purifier.yaml"]

@@ -61,6 +61,7 @@ class LevoitDevice:
     name: str
     mac: str
     title: str
+    esphome_device_id: str
     components: frozenset[str]
     reported: Reported | None
     version_entity_id: str | None
@@ -173,6 +174,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 name=name,
                 mac=mac,
                 title=device.name_by_user or device.name or name,
+                esphome_device_id=device.id,
                 components=components,
                 reported=reported,
                 version_entity_id=version_entity_id,
