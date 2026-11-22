@@ -55,6 +55,44 @@ device* → **Device already in Home Assistant** → the model → **Original ES
 gives it a Device Builder config. It keeps its name and API key (Home Assistant
 keeps the device), and updates come over the air like for any other device.
 
+### Already running, but no config in the Device Builder
+
+A purifier that runs the `levoit` or `philips` firmware already (extra or
+original ESP), but whose config is not in this Device Builder: flashed from a
+PC with the ESPHome CLI, from another Device Builder, or the config is lost.
+
+The integration finds it anyway, by its `esp_version` (or `model`) sensor: it
+shows on the sidebar page with **No config**, and its update entity says when a
+new version is out, but cannot install it yet. To onboard it:
+
+1. *Add device* → **Device already in Home Assistant, without a config** →
+   pick the device. (**Add config** on its row of the sidebar page opens the
+   integration page, where *Add device* is.)
+2. **Model:** skipped when the device reports it; firmware older than 1.7.1
+   has no `model` sensor, so pick it.
+3. **ESP:** the template that matches its hardware (XIAO ESP32-C3, XIAO
+   ESP32-S3, original ESP), or **Other ESP** with its board and the RX / TX
+   pins it uses now. **They must match how the device is wired**: the next
+   update flashes this config, and with wrong pins the ESP can no longer talk
+   to the purifier (with a wrong board it may not start at all). Then only a
+   USB reflash helps. If unsure, take board and pins from the config it was
+   built with.
+4. **Channel**, and its **OTA password** if it has one: Home Assistant does
+   not know it, and the update is uploaded with it. Leave it empty if the
+   device has none.
+
+The config keeps the device's **name**, so Home Assistant keeps the device and
+its history, and its **API encryption key**, taken from Home Assistant's
+connection to the device and stored as `<name>_api_key` in `secrets.yaml`.
+Wi-Fi comes from the `wifi_ssid` / `wifi_password` / `wifi_ap_password`
+secrets, which must exist. The device moves from *No config* to *Update
+available*; the first update builds the new config and installs it over the air.
+
+Have the old config at hand and want to keep it as it is? Paste it into the
+Device Builder instead (under the device's name). The integration picks it up
+as a **custom** config; a pasted builder file of tuct/levoit counts as a
+template.
+
 ## Devices
 
 The templates *Add device* offers per model (✓). **Other ESP** works for every
