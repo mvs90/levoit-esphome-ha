@@ -177,6 +177,17 @@ def add_esphome_device(
         hass.states.async_set(model_entity.entity_id, model)
     if version is None:
         return None
+    # The MCU's own firmware version, registered first like on a real
+    # device: it looks like a version too, but is not the component's.
+    mcu = er.async_get(hass).async_get_or_create(
+        "sensor",
+        "esphome",
+        f"{mac}-text_sensor-mcu_version",
+        device_id=device.id,
+        config_entry=entry,
+        suggested_object_id=f"{name}_mcu_version",
+    )
+    hass.states.async_set(mcu.entity_id, "1.0.2")
     entity = er.async_get(hass).async_get_or_create(
         "sensor",
         "esphome",

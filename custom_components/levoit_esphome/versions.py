@@ -29,7 +29,9 @@ from .const import (
 _REPORTED = re.compile(
     r"^(?P<release>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"
     r"(?:\+(?P<commit>[0-9a-f]{7,40})(?P<dirty>\.dirty)?)?"
-    r"(?: esphome)?$"
+    # always there (every release since 1.1.0); it is what tells the ESP
+    # version apart from the MCU version sensor, e.g. "1.0.2"
+    r" esphome$"
 )
 
 

@@ -24,7 +24,9 @@ FORK = "https://github.com/someone/levoit"
         ("1.7.0 esphome", Reported("1.7.0")),
         ("1.7.0+3fa21c4 esphome", Reported("1.7.0", "3fa21c4")),
         ("1.7.0+3fa21c4.dirty esphome", Reported("1.7.0", "3fa21c4", dirty=True)),
-        ("1.7.0+3fa21c4bb", Reported("1.7.0", "3fa21c4")),
+        ("1.7.0+3fa21c4bb esphome", Reported("1.7.0", "3fa21c4")),
+        ("1.0.2", None),  # MCU version: no " esphome"
+        ("1.7.0+3fa21c4", None),
         ("1.8.0-beta.1+3fa21c4 esphome", Reported("1.8.0-beta.1", "3fa21c4")),
         ("unknown", None),
         ("", None),
