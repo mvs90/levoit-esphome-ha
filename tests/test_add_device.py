@@ -136,6 +136,8 @@ async def test_existing_device(
     assert result["step_id"] == "variant"
     result = await _step(hass, result, {"variant": "xiao_c3"})
     assert result["step_id"] == "details_existing"
+    # the form says which secret the key from Home Assistant goes into
+    assert result["description_placeholders"]["api_secret"] == "bedroom_purifier_api_key"
     result = await _step(hass, result, {"channel": "stable", "ota_password": "its-ota-pw"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
 

@@ -232,6 +232,7 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 }
             )
             placeholders["name"] = self._existing.name
+            placeholders["api_secret"] = tpl.secret_key(self._existing.name, "api_key")
             step_id = "details_existing"
         else:
             default = (user_input or {}).get("name") or tpl.suggest_name(self._template.name, taken)
