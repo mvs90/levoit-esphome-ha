@@ -198,7 +198,7 @@
         "cannot_connect": "The ESPHome Device Builder did not answer."
       },
       "create_entry": {
-        "default": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}). Flash it once over USB from there (Install, then plug into this computer); after that, updates come over the air from Home Assistant.",
+        "default": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}). Next: open the Device Builder, find {configuration}, choose Install, then Plug into this computer, and flash it once over USB. Until then it is listed as Not flashed yet on the Levoit ESPHome sidebar page. Once it is flashed and on your Wi-Fi it is added to the ESPHome integration automatically, and later updates come over the air from Home Assistant.",
         "existing": "Config {configuration} created in the [ESPHome Device Builder]({builder_url}) for {name}, with its own name and keys. The next update installs it over the air."
       }
     }

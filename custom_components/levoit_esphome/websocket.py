@@ -28,12 +28,14 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, SIGNAL_COORDINATOR
 from .device_builder import builder_page_url
+from .templates import VARIANT_CUSTOM
 from .versions import is_behind
 
 if TYPE_CHECKING:
-    from .coordinator import LevoitDevice, LevoitEsphomeCoordinator
+    from .coordinator import LevoitDevice, LevoitEsphomeCoordinator, PendingConfig
 
 ERR_NOT_LOADED = "not_loaded"
+ERR_NOT_FLASHED = "not_flashed"
 
 
 @callback
@@ -108,6 +110,26 @@ def _device_dict(
     }
 
 
+def _pending_dict(coordinator: LevoitEsphomeCoordinator, config: PendingConfig) -> dict[str, Any]:
+    """A config made by Add device that is not flashed yet."""
+    template = next((t for t in coordinator.templates if t.file == config.template), None)
+    kind = VARIANT_CUSTOM if config.custom else (template.variant if template else None)
+    last = coordinator.last_builds.get(config.name)
+    return {
+        "name": config.name,
+        "title": config.name,
+        "configuration": config.configuration,
+        "model": template.model if template else None,
+        "config_kind": kind,
+        "building": coordinator.is_building(config.name),
+        "build_step": coordinator.build_step(config.name),
+        "last_build": None
+        if last is None
+        else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
+        "has_build_log": config.name in coordinator.build_logs,
+    }
+
+
 @callback
 def snapshot(hass: HomeAssistant, coordinator: LevoitEsphomeCoordinator) -> dict[str, Any]:
     """What the panel shows; no secrets (none are kept)."""
@@ -116,6 +138,12 @@ def snapshot(hass: HomeAssistant, coordinator: LevoitEsphomeCoordinator) -> dict
     devices = sorted(data.devices.values(), key=lambda d: d.title.lower()) if data else []
     return {
         "devices": [_device_dict(hass, coordinator, dev_reg, d) for d in devices],
+        "pending": [
+            _pending_dict(coordinator, p)
+            for p in sorted(data.pending.values(), key=lambda p: p.name)
+        ]
+        if data
+        else [],
         "heads": {
             channel: {"version": head.text, "url": head.url}
             for channel, head in (data.heads.items() if data else ())
@@ -194,14 +222,24 @@ def ws_subscribe(
 
 
 def _device(
-    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+    *,
+    pending_ok: bool = False,
 ) -> tuple[LevoitEsphomeCoordinator, LevoitDevice] | None:
-    """The coordinator and the device named in the message; error sent if none."""
+    """The coordinator and the device named in the message; error sent if none.
+
+    With `pending_ok`, a config made by Add device that is not flashed yet counts
+    too (to compile it or read its build log).
+    """
     coordinator = _coordinator(hass)
     if coordinator is None or coordinator.data is None:
         connection.send_error(msg["id"], ERR_NOT_LOADED, "Levoit ESPHome is not set up")
         return None
     device = coordinator.data.devices.get(msg["name"])
+    if device is None and pending_ok:
+        device = coordinator.pending_device(msg["name"])
     if device is None:
         connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "Unknown device")
         return None
@@ -220,10 +258,22 @@ def _device(
 async def ws_build(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Compile, or compile and upload; answers when done (minutes)."""
-    if (found := _device(hass, connection, msg)) is None:
+    """Compile, or compile and upload; answers when done (minutes).
+
+    A config that is not flashed yet can be compiled, not uploaded: there is no
+    device on the network yet.
+    """
+    if (found := _device(hass, connection, msg, pending_ok=True)) is None:
         return
     coordinator, device = found
+    if msg["upload"] and msg["name"] in coordinator.data.pending:
+        connection.send_error(
+            msg["id"],
+            ERR_NOT_FLASHED,
+            "Not flashed yet: flash it once over USB from the Device Builder "
+            "(Install, Plug into this computer); updates go over the air after that",
+        )
+        return
     await coordinator.async_build(device, upload=msg["upload"])
     connection.send_result(msg["id"])
 
@@ -275,7 +325,7 @@ def ws_build_log(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """The output of the device's last (or running) build, newest lines last."""
-    if (found := _device(hass, connection, msg)) is None:
+    if (found := _device(hass, connection, msg, pending_ok=True)) is None:
         return
     coordinator, device = found
     log = coordinator.build_logs.get(device.name)

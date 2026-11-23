@@ -13,10 +13,13 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import (
     ATTR_FRIENDLY_NAME,
     ATTR_ICON,
     ATTR_UNIT_OF_MEASUREMENT,
+    CONF_HOST,
+    CONF_PORT,
     PERCENTAGE,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
@@ -30,15 +33,20 @@ from homeassistant.core import (
     State,
     callback,
 )
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from . import templates as tpl
 from .const import (
+    AUTO_ADD_INTERVAL,
     CHANNEL_STABLE,
     COMPONENTS,
     CONFIG_INTERVAL,
@@ -69,6 +77,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 ESPHOME_DOMAIN = "esphome"
+ESPHOME_API_PORT = 6053
 
 
 @dataclass(frozen=True)
@@ -214,12 +223,25 @@ class BuildResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class PendingConfig:
+    """A config made by Add device whose ESP has not connected yet (not flashed)."""
+
+    name: str
+    configuration: str
+    template: str | None = None  # the builder file it was made from
+    custom: bool = False  # Other ESP: the user's own board and pins
+    address: str | None = None  # where the Device Builder expects it (name.local)
+
+
 @dataclass
 class LevoitData:
     """Coordinator data."""
 
     devices: dict[str, LevoitDevice] = field(default_factory=dict)
     heads: dict[str, ChannelHead] = field(default_factory=dict)
+    # configs made by Add device, flashed not yet: listed until the ESP connects
+    pending: dict[str, PendingConfig] = field(default_factory=dict)
 
 
 class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
@@ -257,6 +279,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         self.last_builds: dict[str, BuildResult] = {}
         # output of each device's last build, newest lines only
         self.build_logs: dict[str, BuildLog] = {}
+        # Auto-add: while configs wait for their first flash, look for them.
+        self._unsub_auto_add: CALLBACK_TYPE | None = None
+        self._auto_add_task: asyncio.Task[None] | None = None
 
     @property
     def device_builder(self) -> DeviceBuilder | None:
@@ -280,7 +305,122 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         devices = self._collect_devices(configured)
         self._schedule_config_reads(builder, devices)
         self._track_version_entities(devices)
-        return LevoitData(devices=devices, heads=dict(self._heads))
+        pending = self._collect_pending(configured, devices)
+        self._watch_pending(pending)
+        return LevoitData(devices=devices, heads=dict(self._heads), pending=pending)
+
+    @callback
+    def _collect_pending(
+        self, configured: dict[str, dict[str, Any]], devices: dict[str, LevoitDevice]
+    ) -> dict[str, PendingConfig]:
+        """Configs made by Add device that have no device yet: not flashed.
+
+        A new device's config exists from Add device on, but the ESP joins Home
+        Assistant only after its first flash over USB. Until then it is listed
+        here, so the sidebar page shows what to do next. A config deleted in the
+        Device Builder is not listed, and neither is one for a device that was
+        already in Home Assistant (it is updated over the air).
+        """
+        pending: dict[str, PendingConfig] = {}
+        for sub in self.config_entry.subentries.values():
+            name = sub.unique_id
+            if sub.subentry_type != "device" or not name or name in devices:
+                continue
+            if sub.data.get("existing"):
+                continue
+            configuration = sub.data.get("configuration")
+            if not configuration or name not in configured:
+                continue
+            pending[name] = PendingConfig(
+                name=name,
+                configuration=configuration,
+                template=sub.data.get("template"),
+                custom=bool(sub.data.get("custom")),
+                address=configured[name].get("address"),
+            )
+        return pending
+
+    @callback
+    def _watch_pending(self, pending: dict[str, PendingConfig]) -> None:
+        """Look for not yet flashed devices every AUTO_ADD_INTERVAL, while any."""
+        if pending and self._unsub_auto_add is None:
+            self._unsub_auto_add = async_track_time_interval(
+                self.hass, self._async_auto_add_tick, AUTO_ADD_INTERVAL
+            )
+        elif not pending and self._unsub_auto_add is not None:
+            self._unsub_auto_add()
+            self._unsub_auto_add = None
+
+    @callback
+    def _async_auto_add_tick(self, _now: datetime) -> None:
+        if self._auto_add_task is not None and not self._auto_add_task.done():
+            return  # the last round is still waiting on a device
+        pending = dict(self.data.pending) if self.data else {}
+        if pending:
+            self._auto_add_task = self.config_entry.async_create_background_task(
+                self.hass, self._async_auto_add(pending), f"{DOMAIN} auto-add"
+            )
+
+    async def _async_auto_add(self, pending: dict[str, PendingConfig]) -> None:
+        """Add freshly flashed devices to the ESPHome integration.
+
+        Home Assistant only offers a flashed ESP as a discovered device, to be
+        confirmed by hand. A device made by Add device is ours, so it is added
+        right away: the ESPHome integration's own flow connects to it, gets its
+        key from the Device Builder and creates the entry, as if the user had
+        typed its address. A device that is not reachable (not flashed yet,
+        not on the Wi-Fi) leaves nothing behind; it is tried again next time.
+        """
+        known = {
+            entry.data.get("device_name")
+            for entry in self.hass.config_entries.async_entries(ESPHOME_DOMAIN)
+        }
+        added = False
+        for config in pending.values():
+            if config.name not in known:
+                added |= await self._async_try_add(config)
+        if added:
+            await self.async_request_refresh()
+
+    async def _async_try_add(self, config: PendingConfig) -> bool:
+        """Start the ESPHome integration's flow for one device; True if added."""
+        flows = self.hass.config_entries.flow
+        host = config.address or f"{config.name}.local"
+        try:
+            result = await flows.async_init(
+                ESPHOME_DOMAIN,
+                context={"source": SOURCE_USER},
+                data={CONF_HOST: host, CONF_PORT: ESPHOME_API_PORT},
+            )
+        except HomeAssistantError as err:
+            _LOGGER.debug("Auto-add of %s failed: %s", config.name, err)
+            return False
+        if result["type"] is FlowResultType.CREATE_ENTRY:
+            _LOGGER.info("Added %s to the ESPHome integration", config.name)
+            return True
+        if result["type"] is FlowResultType.FORM:
+            # not reachable, or it wants input (a key, a name conflict): leave
+            # it to Home Assistant's discovery and the user
+            flows.async_abort(result["flow_id"])
+            _LOGGER.debug("%s not added yet: %s", config.name, result.get("errors"))
+        return False
+
+    def pending_device(self, name: str) -> LevoitDevice | None:
+        """A pending config as a device, to compile it (it cannot be uploaded)."""
+        config = self.data.pending.get(name) if self.data else None
+        if config is None:
+            return None
+        return LevoitDevice(
+            name=config.name,
+            mac="",
+            title=config.name,
+            esphome_device_id="",
+            components=frozenset(),
+            reported=None,
+            version_entity_id=None,
+            configuration=config.configuration,
+            detected=False,
+        )
 
     async def _async_refresh_heads(self) -> None:
         now = dt_util.utcnow()
@@ -417,7 +557,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         devices = {n: replace(d) for n, d in self.data.devices.items()}
         for device in devices.values():
             self._apply_facts(device)
-        self.async_set_updated_data(LevoitData(devices=devices, heads=self.data.heads))
+        self.async_set_updated_data(
+            LevoitData(devices=devices, heads=self.data.heads, pending=self.data.pending)
+        )
 
     def can_set_channel(self, device: LevoitDevice) -> bool:
         """Without a config (the user's choice) or with a template config (its `ref:`).
@@ -773,8 +915,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         await self.async_request_refresh()
 
     async def async_shutdown(self) -> None:
-        """Stop tracking states."""
+        """Stop tracking states and looking for new devices."""
         if self._unsub_states is not None:
             self._unsub_states()
             self._unsub_states = None
+        self._watch_pending({})
         await super().async_shutdown()
