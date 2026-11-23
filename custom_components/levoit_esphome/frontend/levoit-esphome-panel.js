@@ -135,7 +135,10 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _device(name) {
-    return this._data?.devices.find((d) => d.name === name);
+    return (
+      this._data?.devices.find((d) => d.name === name) ||
+      (this._data?.pending || []).find((p) => p.name === name)
+    );
   }
 
   async _onClick(ev) {
@@ -399,7 +402,8 @@ class LevoitEsphomePanel extends HTMLElement {
         <button class="btn" data-action="retry">Try again</button></div>`;
     if (!this._data) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
     const devices = this._data.devices;
-    if (!devices.length)
+    const pending = this._data.pending || [];
+    if (!devices.length && !pending.length)
       return `<div class="card empty">
         <div class="big-icon">${icon("purifier")}</div>
         <p>No Levoit or Philips ESPHome device found yet.</p>
@@ -411,16 +415,56 @@ class LevoitEsphomePanel extends HTMLElement {
       <div class="card-head">
         <span>${devices.length} device${devices.length === 1 ? "" : "s"}${
           updates ? ` · <span class="warn-text">${updates} with an update</span>` : ""
-        }</span>
+        }${pending.length ? ` · ${pending.length} not flashed yet` : ""}</span>
       </div>
       <table>
         <thead><tr>
           <th>Device</th><th>Model</th><th>ESP / config</th><th>Channel</th>
           <th>Installed</th><th>Latest</th><th>Filter</th><th>ESPHome</th><th>Status</th><th></th>
         </tr></thead>
-        <tbody>${devices.map((d) => this._row(d)).join("")}</tbody>
+        <tbody>${devices.map((d) => this._row(d)).join("")}${pending
+          .map((p) => this._pendingRow(p))
+          .join("")}</tbody>
       </table>
     </div>`;
+  }
+
+  // A config made by Add device whose ESP has not connected yet: flash it once
+  // over USB from the Device Builder, then it becomes a normal device row.
+  _pendingRow(p) {
+    const busy = this._busy.has(p.name) || p.building;
+    const builderUrl = this._data?.builder_url;
+    const status = p.building
+      ? `<span class="chip info"><span class="spinner"></span>${
+          BUILD_STEP_LABELS[p.build_step] || "Building…"
+        }</span>`
+      : `<span class="chip info">Not flashed yet</span>`;
+    const none = `<span class="muted">—</span>`;
+    return `<tr class="pending">
+      <td class="device" data-label="Device">
+        <div class="name">${esc(p.title)}</div>
+        <div class="sub">${esc(p.configuration)}</div>
+      </td>
+      <td data-label="Model">${p.model ? esc(p.model) : none}</td>
+      <td data-label="ESP / config">${
+        p.config_kind ? esc(KIND_LABELS[p.config_kind] || p.config_kind) : none
+      }</td>
+      <td data-label="Channel">${none}</td>
+      <td data-label="Installed"><span class="muted">not flashed</span></td>
+      <td data-label="Latest">${none}</td>
+      <td data-label="Filter">${none}</td>
+      <td data-label="ESPHome">${none}</td>
+      <td data-label="Status">${status}${this._lastBuild(p)}
+        <div class="sub hint">Device Builder: open ${esc(p.configuration)}, Install, Plug into this computer</div>
+      </td>
+      <td class="actions">
+        <button class="btn" data-action="compile" data-name="${esc(p.name)}" ${busy ? "disabled" : ""} title="Check that the config builds, before flashing">Compile</button>${
+          builderUrl
+            ? `<button class="btn primary" data-action="navigate" data-path="${esc(builderUrl)}" title="Flash it there over USB: Install, Plug into this computer">Open Device Builder</button>`
+            : ""
+        }
+      </td>
+    </tr>`;
   }
 
   _render() {

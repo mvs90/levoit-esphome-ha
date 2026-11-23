@@ -43,8 +43,12 @@ enough to fit inside many of these purifiers (the device guides say where).
    board name and your own RX / TX pins.
 2. The integration makes the Device Builder config: name, API key and OTA
    password generated, Wi-Fi from your secrets.
-3. Flash it once over USB from the Device Builder, then wire it in (see the
-   model's guide in [tuct/levoit/devices](https://github.com/tuct/levoit/tree/main/devices)).
+3. Flash it once over USB from the Device Builder (the config → **Install** →
+   **Plug into this computer**), then wire it in (see the model's guide in
+   [tuct/levoit/devices](https://github.com/tuct/levoit/tree/main/devices)).
+   Until then the sidebar page lists it as *Not flashed yet*. Once it is on
+   your Wi-Fi, the integration adds it to Home Assistant's ESPHome
+   integration by itself: no *discovered device* to confirm.
 4. From then on, every new component version shows up in **Settings →
    Updates** and installs over the air.
 
@@ -225,6 +229,8 @@ Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
 * **Compile** and **Compile and upload** (*Update* when one is out), with the
   result per device, and the output of the last build under **Log**
 * the channel of a device without a config or with a template config
+* configs made by *Add device* that are **not flashed yet**, with what to do
+  next; they can be compiled, but not uploaded until the first USB flash
 * links to each device, the Device Builder and Add device; *check now* reads
   the latest versions from GitHub without waiting for the 6 hours
 
@@ -250,7 +256,12 @@ pins, and the config is made from the model's builder file with those.
 * **New device:** a name is suggested; a new API encryption key and OTA
   password are generated and stored in the Device Builder's `secrets.yaml` as
   `<name>_api_key` / `<name>_ota_password`. Flash it once over USB from the
-  Device Builder; after that, updates come over the air
+  Device Builder; after that, updates come over the air. As soon as the
+  flashed ESP is on the network (every 30 s it looks for `<name>.local`), the
+  integration adds it to the ESPHome integration with the key from the Device
+  Builder, so there is no discovered device to confirm. If the ESP needs
+  input it cannot give (a different key, a name clash), it is left to Home
+  Assistant's usual discovery
 * **Device already in Home Assistant without a config:** it keeps its name
   and its API encryption key, which is taken from Home Assistant's ESPHome
   connection to the device (none there: no encryption) and stored as

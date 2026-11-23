@@ -42,6 +42,8 @@ CHANNEL_LOCAL = "local"
 
 # Device Builder device list and Home Assistant states.
 SCAN_INTERVAL = timedelta(minutes=5)
+# how often to look for a device made by Add device after its first flash
+AUTO_ADD_INTERVAL = timedelta(seconds=30)
 # Releases and branch heads on GitHub (unauthenticated API: 60 requests/hour).
 GITHUB_INTERVAL = timedelta(hours=6)
 # Model and channel read from each config. Every read runs `esphome config` in
