@@ -5,6 +5,7 @@
 * levoit_esphome/build: compile, or compile and upload (like the buttons)
 * levoit_esphome/set_channel: like the Update channel select
 * levoit_esphome/check: read the latest versions from GitHub now
+* levoit_esphome/build_log: the output of a device's last (or running) build
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_build)
     websocket_api.async_register_command(hass, ws_set_channel)
     websocket_api.async_register_command(hass, ws_check)
+    websocket_api.async_register_command(hass, ws_build_log)
 
 
 def _coordinator(hass: HomeAssistant) -> LevoitEsphomeCoordinator | None:
@@ -102,6 +104,7 @@ def _device_dict(
         "last_build": None
         if last is None
         else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
+        "has_build_log": device.name in coordinator.build_logs,
     }
 
 
@@ -258,3 +261,25 @@ async def ws_check(
         return
     await coordinator.async_check_now()
     connection.send_result(msg["id"])
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/build_log",
+        probatio.Required("name"): str,
+    }
+)
+@callback
+def ws_build_log(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The output of the device's last (or running) build, newest lines last."""
+    if (found := _device(hass, connection, msg)) is None:
+        return
+    coordinator, device = found
+    log = coordinator.build_logs.get(device.name)
+    connection.send_result(
+        msg["id"],
+        {"lines": log.lines if log else [], "building": coordinator.is_building(device.name)},
+    )

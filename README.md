@@ -122,10 +122,11 @@ new version is out, but cannot install it yet. To onboard it:
 3. **ESP:** the template that matches its hardware (XIAO ESP32-C3, XIAO
    ESP32-S3, original ESP), or **Other ESP** with its board and the RX / TX
    pins it uses now. **They must match how the device is wired**: the next
-   update flashes this config, and with wrong pins the ESP can no longer talk
-   to the purifier (with a wrong board it may not start at all). Then only a
-   USB reflash helps. If unsure, take board and pins from the config it was
-   built with.
+   update flashes this config. With wrong pins the ESP still starts and stays
+   on Wi-Fi, but can't talk to the purifier; fix the pins and update again,
+   over the air. With a wrong board the new firmware may not start at all,
+   and then only a USB reflash helps. If unsure, take board and pins from the
+   config it was built with.
 4. **Channel**, and its **OTA password** if it has one: Home Assistant does
    not know it, and the update is uploaded with it. Leave it empty if the
    device has none.
@@ -222,7 +223,7 @@ Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
 * every device: model, ESP / config type, channel, installed and latest
   component version, filter %, ESPHome version, status and the last build
 * **Compile** and **Compile and upload** (*Update* when one is out), with the
-  result per device; the build log stays in the Device Builder
+  result per device, and the output of the last build under **Log**
 * the channel of a device without a config or with a template config
 * links to each device, the Device Builder and Add device; *check now* reads
   the latest versions from GitHub without waiting for the 6 hours
@@ -322,6 +323,47 @@ one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
   release is not behind). Behind on `main`: it runs another commit than the
   head of `main`; a build without a commit in its version (1.7.0 and older) is
   compared by release number. A local `.dirty` build is never offered an update
+
+### How an update reaches the purifier
+
+Everything runs on your Home Assistant host; the purifier only receives the
+finished firmware over Wi-Fi.
+
+1. **Config** (template configs only): the integration rewrites the config in
+   the Device Builder from the newest builder file, through the Device
+   Builder's API, keeping the name, secrets and channel. A custom config is
+   left as it is.
+2. **Compile:** the integration asks the Device Builder (the ESPHome add-on) to
+   compile the config. It fetches the component from GitHub at the config's
+   `ref:` (`stable` or `main`) and builds the firmware on the Home Assistant
+   host. The first build takes a few minutes; later ones are faster. If the
+   compile fails, nothing is uploaded.
+3. **Upload over Wi-Fi:** the Device Builder connects to the purifier's ESP
+   with ESPHome's own OTA protocol (TCP port 3232), finds it by its name
+   (`<name>.local`, mDNS), authenticates with the OTA password from
+   `secrets.yaml` (`<name>_ota_password`), and sends the firmware. The ESP
+   writes it into its **second app partition** while the current firmware keeps
+   running, checks it (SHA-256), switches the boot partition to it and restarts.
+   A connection that drops halfway leaves the old firmware running.
+4. **Back online:** the ESP reconnects to Wi-Fi and to Home Assistant (with its
+   API key), and reports the new version through its `esp_version` sensor. The
+   update entity shows *Up to date*, the sidebar page *Uploaded HH:MM*.
+
+What the upload needs, and what goes wrong otherwise:
+
+| Needed | If not |
+|--------|--------|
+| The Home Assistant host reaches the ESP on TCP 3232 (same network, or routed without a firewall in between) | *Upload failed*; the device keeps its firmware |
+| `<name>.local` resolves from the host (mDNS). Across VLANs or subnets mDNS often doesn't pass | *Upload failed*. Make mDNS pass (a reflector), or give the device a fixed address in a custom config (`wifi: use_address:`) |
+| The OTA password in `secrets.yaml` matches the one the device was built with | *Upload failed*; fix the secret in the Device Builder (*Secrets*) and update again |
+| The new firmware starts on this hardware (right board) | The ESP doesn't come back and needs a USB reflash. The configs don't enable ESPHome's `safe_mode`, so there is no automatic fallback |
+
+The Device Builder streams the compile and upload output to the integration and
+keeps none of it itself. The integration keeps the last 400 lines of each
+device's last build: **Log** on the sidebar page shows them, also while a build
+runs. When a build fails, its error message names the reason (the last error
+line), and the last 40 lines go into Home Assistant's log (*Settings → System →
+Logs*).
 
 ## Development
 

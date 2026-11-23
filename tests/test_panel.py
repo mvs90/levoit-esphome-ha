@@ -13,7 +13,7 @@ from custom_components.levoit_esphome.const import DOMAIN, PANEL_URL_PATH
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.core import HomeAssistant
 
-from .conftest import FakeBuilder
+from .conftest import FakeBuilder, assert_compiled
 
 
 async def _setup(hass: HomeAssistant, options: dict[str, Any] | None = None) -> MockConfigEntry:
@@ -100,22 +100,39 @@ async def test_subscribe_and_build(
         assert msg["success"]
         break
     assert seen_building
-    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    assert_compiled(builder, "bedroom-purifier.yaml")
     builder.api.upload.assert_not_awaited()
     last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
     assert last.ok
     assert not last.upload
 
-    # failed compile: an error, and the failure is kept for the panel
-    builder.api.compile.return_value = False
+    # failed compile: an error naming the cause, the failure and the output kept
+    async def failing_compile(configuration: str, line_received_cb: Any = None) -> bool:
+        for line in (
+            "INFO Compiling app...",
+            "\x1b[31msrc/main.cpp:12: error: 'foo' was not declared\x1b[0m",
+            "========== [FAILED] ==========",
+        ):
+            line_received_cb(line)
+        return False
+
+    builder.api.compile.side_effect = failing_compile
     result = await _call(
         client, {"type": "levoit_esphome/build", "name": "bedroom-purifier", "upload": True}
     )
     assert not result["success"]
     last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
     assert not last.ok
-    assert last.error
+    assert "src/main.cpp:12: error: 'foo' was not declared" in last.error
     builder.api.upload.assert_not_awaited()
+
+    log = await _call(client, {"type": "levoit_esphome/build_log", "name": "bedroom-purifier"})
+    assert log["result"]["building"] is False
+    assert log["result"]["lines"] == [
+        "INFO Compiling app...",
+        "src/main.cpp:12: error: 'foo' was not declared",  # colour codes removed
+        "========== [FAILED] ==========",
+    ]
 
 
 @pytest.mark.usefixtures("esphome_devices")

@@ -60,6 +60,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._unsub = null;
     this._subscribing = false;
     this._deferred = false;
+    this._log = null; // the build log dialog: {name, title, lines, building}
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
@@ -151,6 +152,16 @@ class LevoitEsphomePanel extends HTMLElement {
         break;
       case "reload":
         location.reload();
+        break;
+      case "log":
+        await this._showLog(name);
+        break;
+      case "close-log":
+        // a click inside the dialog bubbles to the backdrop: close only on the
+        // backdrop itself or on the Close button
+        if (target.classList.contains("backdrop") && ev.target !== target) break;
+        this._log = null;
+        this._render();
         break;
       case "retry":
         this._error = null;
@@ -270,13 +281,17 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _lastBuild(d) {
+    const logLink = d.has_build_log
+      ? ` · <a href="#" data-action="log" data-name="${esc(d.name)}">Log</a>`
+      : "";
     const last = d.last_build;
-    if (!last || d.building) return "";
+    if (d.building) return logLink ? `<div class="sub">${logLink.slice(3)}</div>` : "";
+    if (!last) return "";
     const when = esc(this._time(last.at));
     if (last.ok)
-      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}</div>`;
+      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}${logLink}</div>`;
     const what = last.upload ? "Compile and upload" : "Compile";
-    return `<div class="sub bad" title="${esc(last.error)}">${what} failed ${when}: ${esc(
+    return `<div class="sub bad" title="${esc(last.error)}">${what} failed ${when}${logLink}: ${esc(
       last.error,
     )}</div>`;
   }
@@ -451,8 +466,40 @@ class LevoitEsphomePanel extends HTMLElement {
         <div class="summary">${this._summary()}</div>
         ${this._body()}
         <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""} ·
-          builds run in the ESPHome Device Builder; its log is there</div>
-      </div>`;
+          builds run in the ESPHome Device Builder; the last build's output is under Log</div>
+      </div>
+      ${this._logDialog()}`;
+    const pre = this.shadowRoot.querySelector(".log pre");
+    if (pre) pre.scrollTop = pre.scrollHeight; // newest lines in view
+  }
+
+  // --- build log ----------------------------------------------------------------
+
+  async _showLog(name) {
+    const device = this._device(name);
+    try {
+      const result = await this._hass.callWS({ type: "levoit_esphome/build_log", name });
+      this._log = { name, title: device ? device.title : name, ...result };
+    } catch (err) {
+      this._toast(`Log: ${err.message || err}`);
+      return;
+    }
+    this._render();
+  }
+
+  _logDialog() {
+    if (!this._log) return "";
+    const { title, lines, building } = this._log;
+    return `<div class="backdrop" data-action="close-log">
+      <div class="log" role="dialog" aria-label="Build log of ${esc(title)}">
+        <div class="log-head">
+          <span>${esc(title)}: ${building ? "running build" : "last build"}</span>
+          <button class="btn" data-action="log" data-name="${esc(this._log.name)}">Refresh</button>
+          <button class="btn" data-action="close-log">Close</button>
+        </div>
+        <pre>${lines.length ? lines.map(esc).join("\n") : "No output yet."}</pre>
+      </div>
+    </div>`;
   }
 }
 
@@ -568,6 +615,18 @@ select:disabled { opacity: 0.6; }
   margin: 0 0 12px; padding: 10px 16px; border-radius: 12px; font-size: 14px;
   background: rgba(3, 155, 229, 0.12); color: var(--primary-text-color); }
 .notice .btn { margin-left: auto; }
+
+.backdrop { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 16px; }
+.log { background: var(--ha-card-background, var(--card-background-color, #fff));
+  color: var(--primary-text-color); border-radius: 12px; width: min(1000px, 100%);
+  max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
+.log-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  border-bottom: 1px solid var(--divider-color); font-weight: 500; }
+.log-head span { flex: 1; }
+.log pre { margin: 0; padding: 12px 16px; overflow: auto; font-size: 12px; line-height: 1.45;
+  font-family: var(--code-font-family, ui-monospace, Menlo, Consolas, monospace);
+  white-space: pre-wrap; word-break: break-word; }
 
 @media (max-width: 1100px) {
   .tb-btn span { display: none; }

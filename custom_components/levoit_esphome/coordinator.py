@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -169,6 +170,40 @@ BUILD_STEPS = {
 }
 
 
+BUILD_LOG_LINES = 400  # kept per device, the newest
+BUILD_LOG_IN_HA_LOG = 40  # copied into Home Assistant's log when a build fails
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# best first: an error line names the cause, "[FAILED]" only that it failed
+_REASON_LINES = (re.compile(r"\bERROR\b|\berror:"), re.compile(r"\b(FAILED|Failed|failed)\b"))
+
+
+class BuildLog:
+    """The compile / upload output of one build, as the Device Builder streams it."""
+
+    def __init__(self) -> None:
+        """Initialize."""
+        self._lines: deque[str] = deque(maxlen=BUILD_LOG_LINES)
+
+    @callback
+    def add(self, line: str) -> None:
+        """One line of output (colour codes removed)."""
+        self._lines.append(_ANSI.sub("", line).rstrip())
+
+    @property
+    def lines(self) -> list[str]:
+        """The kept lines, oldest first."""
+        return list(self._lines)
+
+    def reason(self) -> str:
+        """The last error line, else the last "failed" line, else the last line."""
+        lines = [line.strip() for line in self._lines if line.strip()]
+        for pattern in _REASON_LINES:
+            for line in reversed(lines):
+                if pattern.search(line):
+                    return line[:300]
+        return lines[-1][:300] if lines else "no output"
+
+
 @dataclass(frozen=True)
 class BuildResult:
     """How the last compile / upload of a device ended."""
@@ -220,6 +255,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         # step of each running build (BUILD_STEPS), for the update's progress bar
         self._build_steps: dict[str, str] = {}
         self.last_builds: dict[str, BuildResult] = {}
+        # output of each device's last build, newest lines only
+        self.build_logs: dict[str, BuildLog] = {}
 
     @property
     def device_builder(self) -> DeviceBuilder | None:
@@ -623,13 +660,24 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         )
 
         self._building.add(device.name)
+        # The Device Builder streams the output to us only; it keeps none of it.
+        log = BuildLog()
+        self.build_logs[device.name] = log
         self.async_update_listeners()
         try:
-            await self._async_run_build(builder, device, configuration, upload=upload, lock=lock)
+            await self._async_run_build(
+                builder, device, configuration, upload=upload, lock=lock, log=log
+            )
         except (HomeAssistantError, aiohttp.ClientError, TimeoutError) as err:
             # shown in the panel; the caller still gets the error
             self.last_builds[device.name] = BuildResult(
                 ok=False, upload=upload, at=dt_util.utcnow(), error=str(err)
+            )
+            _LOGGER.error(
+                "Building %s failed: %s\nLast lines of the build:\n%s",
+                configuration,
+                err,
+                "\n".join(log.lines[-BUILD_LOG_IN_HA_LOG:]),
             )
             raise
         else:
@@ -650,6 +698,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         *,
         upload: bool,
         lock: AbstractAsyncContextManager[Any],
+        log: BuildLog,
     ) -> None:
         """Template refresh (install), compile, upload (install)."""
         placeholders = {"configuration": configuration}
@@ -673,20 +722,20 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             self._async_set_build_step(device.name, BUILD_STEP_WAITING)
         async with lock:
             self._async_set_build_step(device.name, BUILD_STEP_COMPILE)
-            compiled = await builder.api.compile(configuration)
+            compiled = await builder.api.compile(configuration, line_received_cb=log.add)
         if not compiled:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="compile_failed",
-                translation_placeholders=placeholders,
+                translation_placeholders={**placeholders, "reason": log.reason()},
             )
         if upload:
             self._async_set_build_step(device.name, BUILD_STEP_UPLOAD)
-        if upload and not await builder.api.upload(configuration, "OTA"):
+        if upload and not await builder.api.upload(configuration, "OTA", line_received_cb=log.add):
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="upload_failed",
-                translation_placeholders=placeholders,
+                translation_placeholders={**placeholders, "reason": log.reason()},
             )
 
     @callback
