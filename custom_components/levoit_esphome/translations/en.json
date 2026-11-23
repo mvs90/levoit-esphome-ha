@@ -92,10 +92,10 @@
       "message": "The ESPHome Device Builder add-on is not available."
     },
     "compile_failed": {
-      "message": "Compiling {configuration} failed. See the build log in the ESPHome Device Builder."
+      "message": "Compiling {configuration} failed: {reason}. The full log is on the Levoit ESPHome sidebar page (Log) and in Home Assistant's log."
     },
     "upload_failed": {
-      "message": "Uploading {configuration} failed. See the log in the ESPHome Device Builder."
+      "message": "Uploading {configuration} failed: {reason}. The full log is on the Levoit ESPHome sidebar page (Log) and in Home Assistant's log."
     },
     "template_refresh_failed": {
       "message": "Updating {configuration} from its template failed: {error}"

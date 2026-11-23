@@ -23,7 +23,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .conftest import BUILDER_TEXT, CORE300S_S3, EVEREST_C3, MAC, FakeBuilder, add_esphome_device
+from .conftest import (
+    BUILDER_TEXT,
+    CORE300S_S3,
+    EVEREST_C3,
+    MAC,
+    FakeBuilder,
+    add_esphome_device,
+    assert_compiled,
+)
 
 UPDATE = "update.bedroom_purifier_component_firmware"
 SELECT = "select.bedroom_purifier_update_channel"
@@ -209,7 +217,7 @@ async def test_install_refreshes_template_config(
     new = builder.files.configs["bedroom-purifier.yaml"]
     assert new == render(BUILDER_TEXT, EVEREST_C3, values)
     assert config_values(new) == values  # keeps name, secrets, channel
-    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    assert_compiled(builder, "bedroom-purifier.yaml")
 
 
 @pytest.mark.usefixtures("esphome_devices")
@@ -221,7 +229,7 @@ async def test_install_keeps_custom_config(
     assert hass.states.get("sensor.bedroom_purifier_config_type").state == "custom"
     await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
     assert builder.files.writes == []
-    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    assert_compiled(builder, "bedroom-purifier.yaml")
 
 
 @pytest.mark.usefixtures("esphome_devices")

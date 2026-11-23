@@ -29,7 +29,14 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from .conftest import MAC, OTHER_MAC, FakeBuilder, add_esphome_device
+from .conftest import (
+    MAC,
+    OTHER_MAC,
+    FakeBuilder,
+    add_esphome_device,
+    assert_compiled,
+    assert_uploaded,
+)
 
 UPDATE = "update.bedroom_purifier_component_firmware"
 BUTTON = "button.bedroom_purifier_compile_firmware"
@@ -182,19 +189,19 @@ async def test_install(hass: HomeAssistant, patch_sources: AsyncMock, builder: F
         attributes = hass.states.get(UPDATE).attributes
         seen.append((step, attributes["in_progress"], attributes.get("update_percentage")))
 
-    async def compile_(configuration: str) -> bool:
+    async def compile_(configuration: str, **_: object) -> bool:
         progress("compile")
         return True
 
-    async def upload(configuration: str, port: str) -> bool:
+    async def upload(configuration: str, port: str, **_: object) -> bool:
         progress("upload")
         return True
 
     builder.api.compile.side_effect = compile_
     builder.api.upload.side_effect = upload
     await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
-    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
-    builder.api.upload.assert_awaited_once_with("bedroom-purifier.yaml", "OTA")
+    assert_compiled(builder, "bedroom-purifier.yaml")
+    assert_uploaded(builder, "bedroom-purifier.yaml")
     assert seen == [("compile", True, 10), ("upload", True, 85)]
     state = hass.states.get(UPDATE)
     assert state.attributes["in_progress"] is False
@@ -221,7 +228,7 @@ async def test_compile_button(
     """The button compiles without uploading."""
     await _setup(hass)
     await hass.services.async_call("button", "press", {ATTR_ENTITY_ID: BUTTON}, blocking=True)
-    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
+    assert_compiled(builder, "bedroom-purifier.yaml")
     builder.api.upload.assert_not_awaited()
 
 
@@ -235,8 +242,8 @@ async def test_compile_and_upload_button(
     await hass.services.async_call(
         "button", "press", {ATTR_ENTITY_ID: INSTALL_BUTTON}, blocking=True
     )
-    builder.api.compile.assert_awaited_once_with("bedroom-purifier.yaml")
-    builder.api.upload.assert_awaited_once_with("bedroom-purifier.yaml", "OTA")
+    assert_compiled(builder, "bedroom-purifier.yaml")
+    assert_uploaded(builder, "bedroom-purifier.yaml")
     assert hass.states.get(INSTALL_BUTTON).state != STATE_UNAVAILABLE  # free again
 
 

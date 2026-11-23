@@ -314,3 +314,19 @@ def esphome_devices(hass: HomeAssistant) -> dict[str, str | None]:
         ),
         "other": add_esphome_device(hass, "garage-sensor", OTHER_MAC, "Garage sensor", None),
     }
+
+
+def assert_compiled(builder: FakeBuilder, configuration: str) -> None:
+    """Compiled once, with the output streamed to the integration."""
+    builder.api.compile.assert_awaited_once()
+    call = builder.api.compile.await_args
+    assert call.args == (configuration,)
+    assert callable(call.kwargs["line_received_cb"])
+
+
+def assert_uploaded(builder: FakeBuilder, configuration: str) -> None:
+    """Uploaded once over the air, with the output streamed to the integration."""
+    builder.api.upload.assert_awaited_once()
+    call = builder.api.upload.await_args
+    assert call.args == (configuration, "OTA")
+    assert callable(call.kwargs["line_received_cb"])
