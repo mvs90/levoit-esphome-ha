@@ -278,8 +278,10 @@ with the page closed and after a restart.
   one step per hold time (2 minutes); a fast rise in PM2.5 jumps straight to
   max speed.
 * **The purifiers** switch to Manual at their own speed for that level. A
-  3-speed model shares levels, so the top level is always its fastest; *Up to*
-  holds one lower, for example a loud one up to speed 2.
+  3-speed model shares levels, so the top level is always its fastest. The
+  Everest Air counts its Turbo as speed 4, so the top level runs it in Turbo.
+  *Up to* holds one lower, for example a loud one up to speed 2 (or the
+  Everest Air up to 3: no Turbo).
 * **Letting go:** once the air is clean, the group is switched off or deleted,
   or a purifier leaves it, the group sends nothing: each keeps running as it is.
 * **By hand:** if someone changes a purifier, the group leaves that one alone
