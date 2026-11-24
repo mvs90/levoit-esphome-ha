@@ -478,5 +478,5 @@ HA_URL=http://homeassistant.local:8123 HA_TOKEN=<token> python scripts/screensho
 It saves `overview.png`, `device-page.png`, `groups.png`, `group-editor.png` and
 `panel-updates.png` to `images/`. `--device` and `--group` pick which device and
 group, `--only overview groups` takes some, `--dark` uses the dark theme,
-`--hide-sidebar` leaves out Home Assistant's sidebar and `--scale 2` makes them
+`--sidebar` keeps Home Assistant's sidebar and `--scale 2` makes them
 sharper.

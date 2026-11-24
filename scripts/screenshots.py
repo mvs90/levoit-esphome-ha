@@ -7,7 +7,7 @@
         python scripts/screenshots.py
 
 The token is a long-lived access token of an admin (your profile -> Security),
-from HA_TOKEN or else from the file ha_token in the repository (git-ignored);
+from HA_TOKEN or else the first line of ha_token in the repository (git-ignored);
 it is never written anywhere. The pictures go to images/:
 
     overview.png       Devices
@@ -16,7 +16,8 @@ it is never written anywhere. The pictures go to images/:
     group-editor.png   a group's editor (--group, else the first group; none: skipped)
     panel-updates.png  Updates & config
 
-Each picture is as tall as the page, at --width (default 1280) CSS pixels.
+Each picture is as tall as the page, at --width (default 1280) CSS pixels,
+without Home Assistant's sidebar (--sidebar to keep it).
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         "--scale", type=float, default=1, help="device pixel ratio, 2 for sharper pictures"
     )
     p.add_argument("--dark", action="store_true", help="Home Assistant's dark theme")
-    p.add_argument("--hide-sidebar", action="store_true", help="without Home Assistant's sidebar")
+    p.add_argument("--sidebar", action="store_true", help="with Home Assistant's sidebar")
     p.add_argument(
         "--settle", type=float, default=3, help="seconds to wait for live data and history"
     )
@@ -110,7 +111,9 @@ async def main() -> int:  # noqa: PLR0915 - one run, top to bottom
     args = parse_args()
     token = os.environ.get("HA_TOKEN")
     if not token and args.token_file.is_file():
-        token = args.token_file.read_text(encoding="utf-8").strip()
+        # the first line with something on it (a BOM from an editor is dropped)
+        lines = args.token_file.read_text(encoding="utf-8-sig").splitlines()
+        token = next((line.strip() for line in lines if line.strip()), "")
     if not token:
         print(
             f"Set HA_TOKEN, or put the token in {args.token_file}: a long-lived access token"
@@ -135,7 +138,7 @@ async def main() -> int:  # noqa: PLR0915 - one run, top to bottom
             device_scale_factor=args.scale,
             color_scheme="dark" if args.dark else "light",
         )
-        await context.add_init_script(login_script(url, token, args.dark, args.hide_sidebar))
+        await context.add_init_script(login_script(url, token, args.dark, not args.sidebar))
         page = await context.new_page()
         panel = page.locator(TAG)
 
