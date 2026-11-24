@@ -19,14 +19,18 @@ NO_CONFIG_MAC = "de:ad:be:ef:00:02"
 
 
 def _add_entities(hass: HomeAssistant, mac: str, entities: dict[str, str]) -> dict[str, str]:
-    """ESPHome entities on the device with that MAC: 'domain.object_id' -> name."""
-    device = next(
-        d
-        for d in dr.async_get(hass).devices.values()
-        if (dr.CONNECTION_NETWORK_MAC, mac) in d.connections
+    """ESPHome entities on the device with that MAC: 'domain.object_id' -> name.
+
+    The device is found like the integration finds it: through its ESPHome
+    config entry (registry lookups by connection are deprecated).
+    """
+    dev_reg = dr.async_get(hass)
+    entry, device = next(
+        (entry, device)
+        for entry in hass.config_entries.async_entries("esphome")
+        for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
+        if (dr.CONNECTION_NETWORK_MAC, mac) in device.connections
     )
-    entry_id = next(iter(device.config_entries))
-    entry = hass.config_entries.async_get_entry(entry_id)
     ids = {}
     for key, name in entities.items():
         domain, object_id = key.split(".", 1)
