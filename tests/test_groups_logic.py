@@ -20,6 +20,7 @@ from custom_components.levoit_esphome.groups_logic import (
     LevelKeeper,
     Reading,
     air_quality,
+    allowed_speeds,
     member_speed,
     merge_sensors,
     parse_config,
@@ -292,3 +293,16 @@ def test_air_quality() -> None:
     assert air_quality(config, [Reading("sensor.a", PM25, 3)]).level == 0
     assert air_quality(config, [Reading("sensor.a", PM25, None)]).level is None
     assert air_quality(config, []).level is None
+
+
+def test_member_max_speed() -> None:
+    """A purifier limited to 2 spreads the levels over speeds 1 and 2."""
+    config = _config(member_max_speed={"fan.bedroom": 2, "fan.gone": 1})
+    assert config.member_max_speed == {"fan.bedroom": 2}  # members only
+    assert parse_config(config.as_dict()) == config
+    speeds = allowed_speeds(config, "fan.bedroom", 4)
+    assert [member_speed(level, 4, speeds) for level in (1, 2, 3, 4)] == [1, 1, 2, 2]
+    assert allowed_speeds(config, "fan.living_room", 3) == 3
+    assert allowed_speeds(_config(member_max_speed={"fan.bedroom": 4}), "fan.bedroom", 3) == 3
+    with pytest.raises(GroupError):
+        _config(member_max_speed={"fan.bedroom": 5})

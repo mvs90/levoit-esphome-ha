@@ -532,3 +532,20 @@ async def test_group_air_quality(hass: HomeAssistant, hass_ws_client: WebSocketG
     hass.states.async_set("sensor.living_pm25", "unavailable")
     await _settle(hass)
     assert hass.states.get(AIR_QUALITY).state == "unknown"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_member_max_speed(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """A purifier limited to speed 2 never goes above it."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    group = await _save(client, members=MEMBERS, member_max_speed={"fan.bedroom": 2})
+    assert group["member_max_speed"] == {"fan.bedroom": 2}
+    _pm(hass, 783)
+    await _settle(hass)
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 50}),  # speed 2 of 4
+        ("turn_on", "fan.living", {"percentage": 100}),
+    ]

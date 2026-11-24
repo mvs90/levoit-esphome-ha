@@ -153,6 +153,7 @@ const GROUP_DEFAULTS = {
   manual_pause_min: 30,
   mode: "auto",
   manual_level: 1,
+  member_max_speed: {},
 };
 const SENSOR_TYPES = ["pm25", "aqi", "aqi_index"];
 const SENSOR_TYPE_INFO = {
@@ -662,6 +663,17 @@ class LevoitEsphomePanel extends HTMLElement {
         const entity = t.dataset.member;
         t.blur();
         this._setDraft("members", t.checked ? [...d.members, entity] : d.members.filter((m) => m !== entity));
+        return;
+      }
+      if (t.matches?.("select[data-member-max]")) {
+        const entity = t.dataset.memberMax;
+        const p = this._purifier(entity);
+        const limits = { ...(this._edit.draft.member_max_speed || {}) };
+        const value = Number(t.value);
+        if (!p || value >= p.speeds) delete limits[entity];
+        else limits[entity] = value;
+        t.blur();
+        this._setDraft("member_max_speed", limits);
         return;
       }
       if (t.matches?.("input[data-th]")) {
@@ -1918,13 +1930,24 @@ class LevoitEsphomePanel extends HTMLElement {
 
     // Max speed and the speed of each purifier per level
     const members = [...chosen].map((m) => this._purifier(m));
+    const limits = d.member_max_speed || {};
     const mapRows = members
-      .map(
-        (p) =>
-          `<div class="gl">${esc(p.title)} <span class="hint">· ${p.speeds} speeds</span></div>${levels
-            .map((l) => `<div>${esc(this._speedLabel(p, memberSpeed(l, d.max_speed, p.speeds)))}</div>`)
-            .join("")}`,
-      )
+      .map((p) => {
+        const allowed = Math.min(p.speeds, limits[p.entity_id] || p.speeds);
+        const options = Array.from({ length: p.speeds }, (_, i) => i + 1)
+          .map(
+            (n) =>
+              `<option value="${n}"${n === allowed ? " selected" : ""}>${
+                n === p.speeds ? `${esc(this._speedLabel(p, n))} (all)` : n
+              }</option>`,
+          )
+          .join("");
+        return `<div class="gl">${esc(p.title)} <span class="hint">· ${p.speeds} speeds</span></div>${levels
+          .map((l) => `<div>${esc(this._speedLabel(p, memberSpeed(l, d.max_speed, allowed)))}</div>`)
+          .join("")}<div><select class="inp sm" data-member-max="${esc(p.entity_id)}" aria-label="Highest speed of ${esc(
+          p.title,
+        )} in this group">${options}</select></div>`;
+      })
       .join("");
     const speed = `<div class="card section">
       <div class="sec-head"><div><h2>Max speed</h2><div class="hint">The highest level the group will use</div></div>
@@ -1936,12 +1959,12 @@ class LevoitEsphomePanel extends HTMLElement {
         )}</div>
       ${
         members.length
-          ? `<div class="tbl-scroll"><div class="grid-tbl" style="--cols:${d.max_speed}"><div class="gh gl">Group level →</div>${levels
+          ? `<div class="tbl-scroll"><div class="grid-tbl" style="--cols:${d.max_speed + 1}"><div class="gh gl">Group level →</div>${levels
               .map((l) => `<div class="gh">${l}</div>`)
-              .join("")}${mapRows}</div></div>`
+              .join("")}<div class="gh">Up to</div>${mapRows}</div></div>`
           : ""
       }
-      <div class="hint pad">Purifiers with fewer speeds share levels, so the top level is always their fastest speed.</div>
+      <div class="hint pad">Purifiers with fewer speeds share levels, so the top level is always their fastest speed. <b>Up to</b> limits one purifier in this group, for example a loud one to speed 2: it spreads the levels over its allowed speeds.</div>
     </div>`;
 
     // When to step in
@@ -3386,6 +3409,7 @@ details.section[open] > summary { padding-bottom: 8px; }
   text-align: right; font-variant-numeric: tabular-nums; }
 .inp:focus, .num:focus { outline: 2px solid var(--primary-color); outline-offset: -1px; border-color: transparent; }
 .num-unit { display: inline-flex; align-items: center; gap: 8px; }
+.inp.sm { height: 32px; font-size: 13px; padding: 0 6px; }
 .num-unit .hint { margin: 0; }
 .ged-modes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .sec-head .tag { margin-left: 8px; vertical-align: middle; }

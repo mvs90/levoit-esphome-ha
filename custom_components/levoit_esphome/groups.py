@@ -75,6 +75,7 @@ from .groups_logic import (
     LevelKeeper,
     Reading,
     air_quality,
+    allowed_speeds,
     evaluate,
     member_speed,
     merge_sensors,
@@ -474,7 +475,9 @@ class GroupManager:
                 {
                     "entity_id": m,
                     "speeds": (speeds := speeds_of(self.hass, m)),
-                    "speed": member_speed(level, config.max_speed, speeds),
+                    "speed": member_speed(
+                        level, config.max_speed, allowed_speeds(config, m, speeds)
+                    ),
                 }
                 for m in config.members
             ],
@@ -702,7 +705,10 @@ class GroupRunner:
                 ATTR_PERCENTAGE: state.attributes.get(ATTR_PERCENTAGE),
             }
         speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
-        speed = member_speed(level, self.config.max_speed, speeds)
+        # a member with a limit spreads the levels over its allowed speeds
+        speed = member_speed(
+            level, self.config.max_speed, allowed_speeds(self.config, member, speeds)
+        )
         self._targets[member] = speed
         if is_on and _in_manual(state) and _current_speed(state) == speed:
             return
