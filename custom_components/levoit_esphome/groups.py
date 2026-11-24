@@ -356,10 +356,18 @@ class GroupManager:
 
     async def async_set_enabled(self, group_id: str, enabled: bool) -> None:
         """Turn the group's control on or off (its switch)."""
+        await self.async_change(group_id, enabled=enabled)
+
+    async def async_change(self, group_id: str, **changes: Any) -> None:
+        """Change some settings of a group (its switch and fan); raises GroupError.
+
+        manual_level is clamped to max_speed, as in the editor.
+        """
         if (config := self.groups.get(group_id)) is None:
             raise GroupError(ERR_NOT_FOUND, "Unknown group")
-        if config.enabled != enabled:
-            await self._async_apply(replace(config, enabled=enabled))
+        changed = parse_config({**config.as_dict(), **changes}, check_members=False)
+        if changed != config:
+            await self._async_apply(changed)
 
     async def _async_apply(self, config: GroupConfig) -> None:
         old = self.groups.get(config.id)

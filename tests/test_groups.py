@@ -14,6 +14,7 @@ from custom_components.levoit_esphome.const import DOMAIN
 from custom_components.levoit_esphome.groups import STORAGE_KEY
 from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.setup import async_setup_component
 
 from .conftest import MAC, add_esphome_device
 
@@ -23,6 +24,7 @@ PRESETS = ["Manual", "Sleep", "Auto"]
 LEVEL = "sensor.living_room_level"
 CONTROL = "switch.living_room_control"
 ACTIVE = "binary_sensor.living_room_active"
+GROUP_FAN = "fan.living_room"
 MEMBERS = ["fan.bedroom", "fan.living"]
 
 type Calls = list[tuple[str, str, dict[str, Any]]]
@@ -86,8 +88,13 @@ def _purifiers(hass: HomeAssistant) -> None:
     hass.states.async_set("sensor.living_pm25", "5", UNIT)
 
 
-def _fake_fans(hass: HomeAssistant) -> Calls:
-    """Fan services that act like the purifiers: the state follows, with the call's context."""
+async def _fake_fans(hass: HomeAssistant) -> Calls:
+    """Fan services that act like the purifiers: the state follows, with the call's context.
+
+    The fan integration is set up first, so its services (registered once)
+    do not replace these when the integration's group fans load.
+    """
+    assert await async_setup_component(hass, "fan", {})
     calls: Calls = []
 
     async def handle(call: ServiceCall) -> None:
@@ -163,7 +170,7 @@ async def test_group_takes_over_and_hands_back(
     freezer: FrozenDateTimeFactory,
 ) -> None:
     """Bad air: all members in Manual at their speed; clean air: one level per hold, then back."""
-    calls = _fake_fans(hass)
+    calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
@@ -233,7 +240,7 @@ async def test_manual_change_pauses_that_member(
     freezer: FrozenDateTimeFactory,
 ) -> None:
     """A person's change pauses the group for that purifier only, for manual_pause_min."""
-    calls = _fake_fans(hass)
+    calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
@@ -266,7 +273,7 @@ async def test_control_switch_and_manual_mode(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
     """The switch hands back and pauses; Manual mode runs one level, sensors ignored."""
-    calls = _fake_fans(hass)
+    calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
@@ -303,7 +310,7 @@ async def test_control_switch_and_manual_mode(
 @pytest.mark.usefixtures("patch_sources")
 async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
     """Subscribe, validation, preview, dismiss and delete."""
-    calls = _fake_fans(hass)
+    calls = await _fake_fans(hass)
     _purifiers(hass)
     entry = await _setup(hass)
     client = await hass_ws_client(hass)
@@ -402,7 +409,7 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
 @pytest.mark.usefixtures("patch_sources")
 async def test_hand_back_after_restart(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
     """A restart mid-episode keeps the snapshots: clean air still restores the members."""
-    calls = _fake_fans(hass)
+    calls = await _fake_fans(hass)
     _purifiers(hass)
     hass.states.async_set(
         "fan.bedroom",
@@ -434,3 +441,59 @@ async def test_hand_back_after_restart(hass: HomeAssistant, hass_storage: dict[s
     # stored groups keep their sensors as saved: none here, so no number to go on
     assert hass.states.get(LEVEL).state == "0"
     assert calls == [("set_preset_mode", "fan.bedroom", {"preset_mode": "Sleep"})]
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_group_fan(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """The group as one fan: on / off is its control, Auto / Manual, speeds set the manual level."""
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    # no rising-fast jump: the level follows the thresholds
+    await _save(client, members=MEMBERS, rise={"enabled": False})
+    await _settle(hass)
+
+    fan = hass.states.get(GROUP_FAN)
+    assert fan.state == "on"
+    assert fan.attributes["preset_modes"] == ["Auto", "Manual"]
+    assert fan.attributes["preset_mode"] == "Auto"
+    assert fan.attributes["percentage"] == 0  # clean air
+    assert fan.attributes["percentage_step"] == 25
+
+    _pm(hass, 60)  # level 3 in Auto
+    await _settle(hass)
+    assert hass.states.get(GROUP_FAN).attributes["percentage"] == 75
+
+    await hass.services.async_call(
+        "fan", "set_percentage", {"entity_id": GROUP_FAN, "percentage": 50}, blocking=True
+    )
+    await _settle(hass)
+    fan = hass.states.get(GROUP_FAN)
+    assert fan.attributes["preset_mode"] == "Manual"
+    assert fan.attributes["percentage"] == 50
+    assert hass.states.get(LEVEL).state == "2"
+
+    await hass.services.async_call(
+        "fan", "set_preset_mode", {"entity_id": GROUP_FAN, "preset_mode": "Auto"}, blocking=True
+    )
+    await _settle(hass)
+    assert hass.states.get(GROUP_FAN).attributes["preset_mode"] == "Auto"
+
+    await hass.services.async_call("fan", "turn_off", {"entity_id": GROUP_FAN}, blocking=True)
+    await _settle(hass)
+    assert hass.states.get(GROUP_FAN).state == "off"
+    assert hass.states.get(CONTROL).state == "off"
+
+    await hass.services.async_call(
+        "fan", "turn_on", {"entity_id": GROUP_FAN, "percentage": 100}, blocking=True
+    )
+    await _settle(hass)
+    fan = hass.states.get(GROUP_FAN)
+    assert fan.state == "on"
+    assert fan.attributes["preset_mode"] == "Manual"
+    assert fan.attributes["percentage"] == 100
+    assert hass.states.get(CONTROL).state == "on"
+
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    (group,) = msg["result"]["groups"]
+    assert (group["mode"], group["manual_level"], group["enabled"]) == ("manual", 4, True)
