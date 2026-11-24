@@ -8,6 +8,8 @@
 * levoit_esphome/build_log: the output of a device's last (or running) build
 * levoit_esphome/device_controls: which entity is which setting, for the
   device page
+
+Purifier groups have their own commands, in groups_websocket.py.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, SIGNAL_COORDINATOR
 from .controls import match_controls, page_supported
 from .device_builder import builder_page_url
+from .groups_websocket import async_register as async_register_groups
 from .templates import VARIANT_CUSTOM
 from .versions import is_behind
 
@@ -50,6 +53,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_check)
     websocket_api.async_register_command(hass, ws_build_log)
     websocket_api.async_register_command(hass, ws_device_controls)
+    async_register_groups(hass)
 
 
 def _coordinator(hass: HomeAssistant) -> LevoitEsphomeCoordinator | None:

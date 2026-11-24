@@ -76,6 +76,8 @@ from .versions import (
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
+    from .groups import GroupManager
+
 _LOGGER = logging.getLogger(__name__)
 
 ESPHOME_DOMAIN = "esphome"
@@ -288,6 +290,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         # Auto-add: while configs wait for their first flash, look for them.
         self._unsub_auto_add: CALLBACK_TYPE | None = None
         self._auto_add_task: asyncio.Task[None] | None = None
+        # purifier groups; set up with the entry
+        self.groups: GroupManager
 
     @property
     def device_builder(self) -> DeviceBuilder | None:

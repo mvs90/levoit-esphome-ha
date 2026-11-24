@@ -11,15 +11,24 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 
 from . import websocket
 from .const import CONF_SHOW_PANEL, DOMAIN, SIGNAL_COORDINATOR
 from .coordinator import LevoitEsphomeCoordinator
 from .entity import subentry_for
+from .groups import GroupManager
 from .panel import async_register_panel, async_remove_panel
 
-PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR, Platform.UPDATE]
+PLATFORMS = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.UPDATE,
+]
 
 type LevoitEsphomeConfigEntry = ConfigEntry[LevoitEsphomeCoordinator]
 
@@ -82,8 +91,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LevoitEsphomeConfigEntry
     coordinator = LevoitEsphomeCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    coordinator.groups = GroupManager(hass, coordinator)
+    await coordinator.groups.async_load()
     _async_move_to_subentries(hass, entry, coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # purifier groups run once the fans and sensors are set up
+    entry.async_on_unload(coordinator.groups.async_stop)
+    entry.async_on_unload(coordinator.groups.async_stop_with_hass())
+    entry.async_on_unload(async_at_started(hass, coordinator.groups.async_start))
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     if entry.options.get(CONF_SHOW_PANEL):
         await async_register_panel(hass)

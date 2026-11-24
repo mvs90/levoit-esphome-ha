@@ -1,10 +1,13 @@
-"""Sensors: filter life, and versions, model, channel and config of a device."""
+"""Sensors: filter life, and versions, model, channel and config of a device.
+
+Also the level of each purifier group.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -19,6 +22,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from .const import CHANNEL_LOCAL, CHANNEL_MAIN, CHANNEL_PINNED, CHANNEL_STABLE
 from .coordinator import LevoitData, LevoitDevice
 from .entity import LevoitEsphomeEntity, async_add_per_device
+from .group_entity import LevoitGroupEntity, async_add_per_group
 from .templates import VARIANT_CUSTOM, VARIANTS
 
 if TYPE_CHECKING:
@@ -26,6 +30,7 @@ if TYPE_CHECKING:
 
     from . import LevoitEsphomeConfigEntry
     from .coordinator import LevoitEsphomeCoordinator
+    from .groups import GroupManager
 
 PARALLEL_UPDATES = 0
 
@@ -94,7 +99,7 @@ async def async_setup_entry(
     entry: LevoitEsphomeConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the diagnostic sensors per device."""
+    """Set up the diagnostic sensors per device, and the level per group."""
     entry.async_on_unload(
         async_add_per_device(
             entry.runtime_data,
@@ -103,6 +108,13 @@ async def async_setup_entry(
                 LevoitFilterSensor(coordinator, name),
                 *(LevoitDiagnosticSensor(coordinator, name, d) for d in SENSORS),
             ],
+        )
+    )
+    entry.async_on_unload(
+        async_add_per_group(
+            entry.runtime_data.groups,
+            async_add_entities,
+            lambda manager, group_id: [GroupLevelSensor(manager, group_id)],
         )
     )
 
@@ -203,3 +215,33 @@ class LevoitFilterSensor(LevoitEsphomeEntity, SensorEntity):
             return float(state.state)
         except ValueError:
             return None
+
+
+class GroupLevelSensor(LevoitGroupEntity, SensorEntity):
+    """A purifier group's level: 0 (air is clean) to its max speed."""
+
+    _attr_translation_key = "group_level"
+    _attr_icon = "mdi:air-purifier"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, manager: GroupManager, group_id: str) -> None:
+        """Initialize."""
+        super().__init__(manager, group_id, "level")
+
+    @property
+    def native_value(self) -> int | None:
+        """The level."""
+        return self.group_state["level"] if self.group is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Status, why, the worst sensor and the members in control."""
+        if self.group is None:
+            return None
+        state = self.group_state
+        return {
+            "status": state["status"],
+            "reason": state["reason"],
+            "worst_sensor": state["worst"],
+            "members_in_control": [m["entity_id"] for m in state["members"] if m["in_control"]],
+        }

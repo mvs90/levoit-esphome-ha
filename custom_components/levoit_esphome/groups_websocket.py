@@ -1,0 +1,223 @@
+"""WebSocket commands for purifier groups (admins only).
+
+* levoit_esphome/groups/subscribe: groups with their live state, and the
+  purifiers that can be in one; sent again whenever that changes
+* levoit_esphome/groups/list: the same, once
+* levoit_esphome/groups/save: create (no id) or change a group
+* levoit_esphome/groups/delete: delete a group (its members are handed back)
+* levoit_esphome/groups/preview: the editor's "Right now" for an unsaved config
+* levoit_esphome/groups/dismiss: hide the group suggestion for an area
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+import probatio
+
+from homeassistant.components import websocket_api
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+
+from .const import DOMAIN, SIGNAL_COORDINATOR
+from .groups import GroupManager, speeds_of
+from .groups_logic import GroupError
+
+if TYPE_CHECKING:
+    from .coordinator import LevoitEsphomeCoordinator
+
+ERR_NOT_LOADED = "not_loaded"
+
+
+@callback
+def async_register(hass: HomeAssistant) -> None:
+    """Register the commands (once, at integration setup)."""
+    websocket_api.async_register_command(hass, ws_subscribe)
+    websocket_api.async_register_command(hass, ws_list)
+    websocket_api.async_register_command(hass, ws_save)
+    websocket_api.async_register_command(hass, ws_delete)
+    websocket_api.async_register_command(hass, ws_preview)
+    websocket_api.async_register_command(hass, ws_dismiss)
+
+
+def _manager(hass: HomeAssistant) -> GroupManager | None:
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        return None
+    coordinator: LevoitEsphomeCoordinator = entries[0].runtime_data
+    return coordinator.groups
+
+
+def _manager_or_error(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> GroupManager | None:
+    if (manager := _manager(hass)) is None:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Levoit ESPHome is not set up")
+    return manager
+
+
+@callback
+def groups_snapshot(manager: GroupManager) -> dict[str, Any]:
+    """Groups with their state, and every purifier that can be in a group."""
+    hass = manager.hass
+    return {
+        "groups": [
+            {**config.as_dict(), "state": manager.state(group_id)}
+            for group_id, config in sorted(
+                manager.groups.items(), key=lambda item: item[1].name.lower()
+            )
+        ],
+        "purifiers": [
+            {
+                "entity_id": fan.entity_id,
+                "name": fan.name,
+                "title": fan.title,
+                "model": fan.model,
+                "device_id": fan.device_id,
+                "area_id": fan.area_id,
+                "speeds": speeds_of(hass, fan.entity_id),
+                "sensors": [{"entity_id": s.entity_id, "type": s.type} for s in fan.sensors],
+                "group_id": group.id if (group := manager.group_of(fan.entity_id)) else None,
+            }
+            for fan in sorted(manager.levoit_fans().values(), key=lambda f: f.title.lower())
+        ],
+        "dismissed_areas": list(manager.dismissed_areas),
+    }
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({probatio.Required("type"): "levoit_esphome/groups/subscribe"})
+@callback
+def ws_subscribe(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Send the groups now and whenever they or their state change.
+
+    Follows the group manager across a reload of the entry.
+    """
+    msg_id = msg["id"]
+    unsub_manager: CALLBACK_TYPE | None = None
+
+    @callback
+    def send() -> None:
+        if (manager := _manager(hass)) is not None:
+            connection.send_message(websocket_api.event_message(msg_id, groups_snapshot(manager)))
+
+    @callback
+    def attach() -> None:
+        nonlocal unsub_manager
+        if unsub_manager is not None:
+            unsub_manager()
+            unsub_manager = None
+        if (manager := _manager(hass)) is not None:
+            unsub_manager = manager.async_add_listener(send)
+        send()
+
+    if _manager_or_error(hass, connection, msg) is None:
+        return
+    unsub_signal = async_dispatcher_connect(hass, SIGNAL_COORDINATOR, attach)
+
+    @callback
+    def unsubscribe() -> None:
+        unsub_signal()
+        if unsub_manager is not None:
+            unsub_manager()
+
+    connection.subscriptions[msg_id] = unsubscribe
+    connection.send_result(msg_id)
+    attach()
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({probatio.Required("type"): "levoit_esphome/groups/list"})
+@callback
+def ws_list(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The groups and purifiers, once."""
+    if (manager := _manager_or_error(hass, connection, msg)) is not None:
+        connection.send_result(msg["id"], groups_snapshot(manager))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/groups/save",
+        probatio.Required("group"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_save(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Create or change a group; answers with it as saved (sensors picked)."""
+    if (manager := _manager_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        config = await manager.async_save_group(msg["group"])
+    except GroupError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"], {**config.as_dict(), "state": manager.state(config.id)})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/groups/delete",
+        probatio.Required("group_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Delete a group; members it controls are handed back first."""
+    if (manager := _manager_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        await manager.async_delete_group(msg["group_id"])
+    except GroupError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"])
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/groups/preview",
+        probatio.Required("group"): dict,
+    }
+)
+@callback
+def ws_preview(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The level, reason and member speeds an unsaved config would run at now."""
+    if (manager := _manager_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        result = manager.preview(msg["group"])
+    except GroupError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/groups/dismiss",
+        probatio.Required("area_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_dismiss(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Hide the "Suggested from your rooms" card of an area."""
+    if (manager := _manager_or_error(hass, connection, msg)) is None:
+        return
+    await manager.async_dismiss_area(msg["area_id"])
+    connection.send_result(msg["id"])
