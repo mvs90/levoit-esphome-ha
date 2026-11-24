@@ -1973,7 +1973,7 @@ class LevoitEsphomePanel extends HTMLElement {
           .join("")}`,
     ).join("");
     const stepIn = `<div class="card section">
-      <div class="sec-head"><div><h2>When to step in${autoOnly}</h2><div class="hint">A reading at or above a value starts that level. Below level 1 the group hands the purifiers back.</div></div></div>
+      <div class="sec-head"><div><h2>When to step in${autoOnly}</h2><div class="hint">A reading at or above a value starts that level. Below level 1 the group lets go: the purifiers keep running as they are.</div></div></div>
       <div class="tbl-scroll"><div class="grid-tbl" style="--cols:4"><div class="gh gl">Sensor</div>${[1, 2, 3, 4]
         .map((l) => `<div class="gh">Level ${l}</div>`)
         .join("")}${thRows}</div></div>

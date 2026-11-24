@@ -4,7 +4,7 @@
   purifiers that can be in one; sent again whenever that changes
 * levoit_esphome/groups/list: the same, once
 * levoit_esphome/groups/save: create (no id) or change a group
-* levoit_esphome/groups/delete: delete a group (its members are handed back)
+* levoit_esphome/groups/delete: delete a group (its purifiers stay as they are)
 * levoit_esphome/groups/preview: the editor's "Right now" for an unsaved config
 * levoit_esphome/groups/dismiss: hide the group suggestion for an area
 """
@@ -172,7 +172,7 @@ async def ws_save(
 async def ws_delete(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Delete a group; members it controls are handed back first."""
+    """Delete a group; its purifiers stay as they are."""
     if (manager := _manager_or_error(hass, connection, msg)) is None:
         return
     try:
