@@ -256,7 +256,7 @@ the group's level: each purifier switches to Manual at its own speed for that
 level (a 3-speed model shares levels, so the top level is always its fastest;
 one purifier can be held lower, for example a loud one up to speed 2)
 and goes back to what it was doing once the air is clean. The level goes up at
-once and down one step per hold time (10 minutes); a fast rise in PM2.5 jumps
+once and down one step per hold time (2 minutes); a fast rise in PM2.5 jumps
 straight to max speed. If someone changes a purifier by hand, the group leaves
 that one alone for 30 minutes. A group can also run in *Manual*: one speed
 for all its purifiers. The editor picks the sensors from the purifiers, takes

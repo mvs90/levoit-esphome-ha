@@ -93,7 +93,7 @@ class GroupConfig:
         default_factory=lambda: dict(DEFAULT_THRESHOLDS)
     )
     rise: Rise = Rise()
-    hold_min: int = 10
+    hold_min: int = 2
     hand_back: str = HAND_BACK_RESTORE
     turn_on: bool = True
     respect_manual: bool = True
@@ -267,7 +267,7 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
             aqi_index=_number(rise, "aqi_index", Rise.aqi_index),
             window_min=_int(rise, "window_min", Rise.window_min, 1, 60),
         ),
-        hold_min=_int(data, "hold_min", 10, 0, 240),
+        hold_min=_int(data, "hold_min", 2, 0, 240),
         hand_back=_choice(data, "hand_back", HAND_BACK_RESTORE, HAND_BACK),
         turn_on=_bool(data, "turn_on", True),
         respect_manual=_bool(data, "respect_manual", True),
