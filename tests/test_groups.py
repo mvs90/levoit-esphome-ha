@@ -445,7 +445,8 @@ async def test_group_fan(hass: HomeAssistant, hass_ws_client: WebSocketGenerator
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
-    await _save(client, members=MEMBERS)
+    # no rising-fast jump: the level follows the thresholds
+    await _save(client, members=MEMBERS, rise={"enabled": False})
     await _settle(hass)
 
     fan = hass.states.get(GROUP_FAN)
