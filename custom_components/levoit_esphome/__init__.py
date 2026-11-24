@@ -24,6 +24,7 @@ from .panel import async_register_panel, async_remove_panel
 PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.FAN,
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,

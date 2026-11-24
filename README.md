@@ -266,8 +266,11 @@ card shows its group (tinted while the group runs it), and its page has a
 banner with the group's status and what a change there does. Groups run in the
 integration, so they keep working with the page closed and after a restart.
 Each group also gets a device with a *Control* switch (off: the group leaves
-its purifiers alone), a *Level* sensor (0–4, with the reason) and an
-*Active* binary sensor, for automations.
+its purifiers alone), a *Level* sensor (0–4, with the reason), an *Active*
+binary sensor, and the group as one **fan**: on / off is the group's control,
+preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers
+(Manual, up to the group's max speed). So dashboards, voice and automations
+can run a whole room like one purifier.
 
 **Updates & config** (the third tab) has:
 
