@@ -232,7 +232,8 @@ Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
 * **a page per device**: click its name. On top, power, mode and speed,
-  with the air quality. Below, the settings grouped instead of one long
+  with the air quality, and its **history**: PM2.5, AQI and CADR over the last
+  24 hours or 7 days, from Home Assistant's statistics. Below, the settings grouped instead of one long
   list: *Automatic* (auto mode, room size only when it applies),
   *Sleep* (the Vital 200S custom profile: quick clean, sleep, then daytime
   mode), *Quiet period* (Eleva 300X, start and end as times), *Timer* (quick

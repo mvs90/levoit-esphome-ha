@@ -64,6 +64,32 @@ const formatMinutes = (minutes) => {
 const formatNumber = (value) =>
   Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
 
+// Device page history: Home Assistant's statistics (the sensors have a
+// state_class), 5-minute means for a day, hourly means for a week.
+const HISTORY_RANGES = {
+  day: { label: "24 h", ms: 24 * 3600e3, period: "5minute", step: 5 * 60e3 },
+  week: { label: "7 days", ms: 7 * 24 * 3600e3, period: "hour", step: 3600e3 },
+};
+const HISTORY_REFRESH_MS = 5 * 60e3;
+// one small chart each, on a shared time axis: different units, never one axis
+const HISTORY_SERIES = [
+  { key: "sensor.pm25", title: "PM2.5" },
+  { key: "sensor.aqi_index", title: "AQI" }, // Eleva: the 0-500 index
+  { key: "sensor.aqi", title: "AQI" }, // the others: the level (only without an index)
+  { key: "sensor.current_cadr", title: "CADR" },
+];
+// plot geometry in viewBox units; the plot stretches to the card's width
+// (preserveAspectRatio none), so all text is HTML beside and under it
+const CHART = { width: 600, height: 76, top: 6, bottom: 6 };
+
+// a round axis maximum at or above value: 1, 2, 2.5, 5 x 10^n
+const niceMax = (value) => {
+  if (!(value > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * magnitude >= value) return m * magnitude;
+  return 10 * magnitude;
+};
+
 // 22.5 -> "22:30" and back (quiet period hours after midnight)
 const hoursToTime = (hours) => {
   const total = Math.round(hours * 60) % (24 * 60);
@@ -103,6 +129,12 @@ class LevoitEsphomePanel extends HTMLElement {
     this._pageLoading = false;
     this._seen = {}; // entity_id -> state object last rendered
     this._infoOpen = true; // the device page's Info section: open until closed
+    // device page history: {name, range, start, end, at, data: {entity_id: [[t, v]]}}
+    this._history = null;
+    this._historyRange = "day";
+    this._historyLoading = false;
+    this._historyError = null;
+    this._hoverT = null; // time under the crosshair
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
@@ -118,6 +150,13 @@ class LevoitEsphomePanel extends HTMLElement {
     this._hass = hass;
     if (!this._unsub && !this._subscribing) this._subscribe();
     if (this._pageName && !this._page && !this._pageLoading && !this._pageError) this._loadPage();
+    if (
+      this._page &&
+      this._history &&
+      !this._historyLoading &&
+      Date.now() - this._history.at > HISTORY_REFRESH_MS
+    )
+      this._loadHistory();
     // the device page shows live states: render when one of its entities changed
     if (first || this._pageStatesChanged()) this._render();
   }
@@ -131,6 +170,9 @@ class LevoitEsphomePanel extends HTMLElement {
       this._page = null;
       this._pageError = null;
       this._seen = {};
+      this._history = null;
+      this._historyError = null;
+      this._hoverT = null;
       if (name && this._hass) this._loadPage();
     }
     this._render();
@@ -145,7 +187,10 @@ class LevoitEsphomePanel extends HTMLElement {
     this._pageLoading = true;
     try {
       const page = await this._hass.callWS({ type: "levoit_esphome/device_controls", name });
-      if (name === this._pageName) this._page = page;
+      if (name === this._pageName) {
+        this._page = page;
+        if (!this._history && !this._historyLoading) this._loadHistory();
+      }
     } catch (err) {
       if (name === this._pageName) this._pageError = err?.message || String(err);
     } finally {
@@ -275,6 +320,14 @@ class LevoitEsphomePanel extends HTMLElement {
           target.dataset.entity,
           JSON.parse(target.dataset.args || "{}"),
         );
+        break;
+      case "history-range":
+        if (target.dataset.range !== this._historyRange) {
+          this._historyRange = target.dataset.range;
+          this._hoverT = null;
+          this._render(); // the old chart stays, dimmed, until the new data is in
+          this._loadHistory();
+        }
         break;
       case "toggle-info":
         ev.preventDefault(); // the open state is ours, not the <details> element's
@@ -597,8 +650,13 @@ class LevoitEsphomePanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     // do not pull an open dropdown or a slider being dragged away from under the pointer
+    // (or the history chart someone steps through with the arrow keys)
     const active = this.shadowRoot.activeElement?.tagName;
-    if (active === "SELECT" || active === "INPUT") {
+    if (
+      active === "SELECT" ||
+      active === "INPUT" ||
+      this.shadowRoot.activeElement?.classList?.contains("hist")
+    ) {
       this._deferred = true;
       return;
     }
@@ -654,6 +712,7 @@ class LevoitEsphomePanel extends HTMLElement {
       for (const entityId of Object.values(this._page.controls))
         this._seen[entityId] = this._hass.states[entityId];
     }
+    this._bindHistory();
   }
 
   // --- device page: control helpers -------------------------------------------
@@ -843,6 +902,7 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       ${this._alerts()}
       ${this._hero()}
+      ${this._historyCard()}
       <div class="sections">
         ${this._autoSection()}
         ${this._sleepSection()}
@@ -1108,6 +1168,237 @@ class LevoitEsphomePanel extends HTMLElement {
     );
   }
 
+  // --- device page: history chart ----------------------------------------------
+
+  // the air quality sensors this device has, one chart each
+  _historySeries() {
+    const controls = this._page?.controls || {};
+    return HISTORY_SERIES.filter(
+      (s) => controls[s.key] && !(s.key === "sensor.aqi" && controls["sensor.aqi_index"]),
+    ).map((s) => ({ ...s, entity: controls[s.key] }));
+  }
+
+  async _loadHistory() {
+    const series = this._historySeries();
+    if (!series.length || !this._hass) return;
+    const name = this._pageName;
+    const rangeKey = this._historyRange;
+    const range = HISTORY_RANGES[rangeKey];
+    const end = Date.now();
+    const start = end - range.ms;
+    this._historyLoading = true;
+    try {
+      const result = await this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: new Date(start).toISOString(),
+        end_time: new Date(end).toISOString(),
+        statistic_ids: series.map((s) => s.entity),
+        period: range.period,
+        types: ["mean"],
+      });
+      if (name !== this._pageName || rangeKey !== this._historyRange) return;
+      const data = {};
+      for (const s of series)
+        data[s.entity] = (result?.[s.entity] || [])
+          .map((p) => [typeof p.start === "number" ? p.start : Date.parse(p.start), p.mean])
+          .filter(([t, v]) => Number.isFinite(t) && v !== null && v !== undefined);
+      this._history = { name, range: rangeKey, start, end, at: Date.now(), data };
+      this._historyError = null;
+    } catch (err) {
+      if (name === this._pageName) this._historyError = err?.message || String(err);
+    } finally {
+      this._historyLoading = false;
+      this._render();
+    }
+  }
+
+  _historyCard() {
+    const series = this._historySeries();
+    if (!series.length) return "";
+    const h = this._history;
+    const ranges = Object.entries(HISTORY_RANGES)
+      .map(
+        ([key, r]) =>
+          `<button class="seg${key === this._historyRange ? " on" : ""}" data-action="history-range" data-range="${key}">${esc(
+            r.label,
+          )}</button>`,
+      )
+      .join("");
+    let body;
+    if (this._historyError && !h)
+      body = `<div class="muted pad">History not available: ${esc(this._historyError)}</div>`;
+    else if (!h) body = `<div class="muted pad"><span class="spinner"></span> Loading…</div>`;
+    else {
+      const stale = this._historyLoading || h.range !== this._historyRange;
+      body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="Air quality history, ${esc(
+        HISTORY_RANGES[h.range].label,
+      )}; arrow keys move through the readings">
+        ${series.map((s) => this._chartPanel(s, h)).join("")}
+        ${this._timeAxis(h)}
+        <div class="hist-tip" hidden></div>
+      </div>`;
+    }
+    return `<div class="card history">
+      <div class="sec-head hist-head"><span>History</span><div class="segs">${ranges}</div></div>
+      ${body}
+    </div>`;
+  }
+
+  _x(t, h) {
+    return ((t - h.start) / (h.end - h.start)) * CHART.width;
+  }
+
+  _chartPanel(s, h) {
+    const { width, height, top, bottom } = CHART;
+    const points = h.data[s.entity] || [];
+    const st = this._hass?.states?.[s.entity];
+    const unit = st?.attributes?.unit_of_measurement || "";
+    const now = this._usable(st) ? `${formatNumber(parseFloat(st.state))}${unit ? ` ${unit}` : ""}` : "—";
+    const head = `<div class="hist-title"><span>${esc(s.title)}</span><span class="hist-now">${esc(now)}</span></div>`;
+    if (!points.length)
+      return `${head}<div class="hist-empty muted">No history yet</div>`;
+    const max = niceMax(Math.max(...points.map(([, v]) => v)));
+    const y = (v) => top + (1 - v / max) * (height - top - bottom);
+    const base = y(0);
+    // a gap of more than two periods (device offline) breaks the line
+    const gap = HISTORY_RANGES[h.range].step * 2.5;
+    const runs = [];
+    for (const p of points) {
+      const run = runs[runs.length - 1];
+      if (run && p[0] - run[run.length - 1][0] <= gap) run.push(p);
+      else runs.push([p]);
+    }
+    const line = (run) => run.map(([t, v], i) => `${i ? "L" : "M"}${this._x(t, h).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    const area = (run) =>
+      `${line(run)}L${this._x(run[run.length - 1][0], h).toFixed(1)},${base}L${this._x(run[0][0], h).toFixed(1)},${base}Z`;
+    const grid = [0, max / 2, max]
+      .map((v) => `<line class="grid" x1="0" x2="${width}" y1="${y(v)}" y2="${y(v)}"></line>`)
+      .join("");
+    // y labels: 0 and the top, in the column left of the plot
+    const ticks = [max, 0]
+      .map(
+        (v) =>
+          `<span class="ytick" style="top:${((y(v) / height) * 100).toFixed(1)}%">${esc(formatNumber(v))}</span>`,
+      )
+      .join("");
+    // a lone reading (between gaps) is a dot: a zero-length line with round caps
+    const mark = (run) =>
+      run.length > 1
+        ? `<path class="line" d="${line(run)}"></path>`
+        : `<path class="line dot" d="${line(run)}h0.01"></path>`;
+    return `${head}<div class="hist-row"><div class="hist-y">${ticks}</div>
+      <svg class="hist-plot" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(
+        `${s.title}, ${HISTORY_RANGES[h.range].label}, up to ${formatNumber(max)}${unit ? ` ${unit}` : ""}`,
+      )}">
+        ${grid}
+        ${runs.map((run) => `<path class="area" d="${area(run)}"></path>`).join("")}
+        ${runs.map(mark).join("")}
+        <line class="xhair" y1="0" y2="${height}" x1="0" x2="0" visibility="hidden"></line>
+      </svg></div>`;
+  }
+
+  // shared time axis under the charts: every 6 hours, or every day at midnight
+  _timeAxis(h) {
+    const lang = this._hass?.locale?.language;
+    const ticks = [];
+    const first = new Date(h.start);
+    if (h.range === "day") {
+      first.setMinutes(0, 0, 0);
+      first.setHours(Math.ceil((first.getHours() + 1) / 6) * 6);
+      for (let t = first.getTime(); t <= h.end; t += 6 * 3600e3)
+        ticks.push([t, new Date(t).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" })]);
+    } else {
+      first.setHours(24, 0, 0, 0);
+      for (let t = first.getTime(); t <= h.end; t += 24 * 3600e3)
+        ticks.push([t, new Date(t).toLocaleDateString(lang, { weekday: "short" })]);
+    }
+    return `<div class="hist-row"><div class="hist-y"></div><div class="hist-axis" aria-hidden="true">${ticks
+      .map(
+        ([t, text]) =>
+          `<span class="xtick" style="left:${((this._x(t, h) / CHART.width) * 100).toFixed(2)}%">${esc(text)}</span>`,
+      )
+      .join("")}</div></div>`;
+  }
+
+  // the crosshair and tooltip are drawn into the rendered chart, not re-rendered
+  _bindHistory() {
+    const hist = this.shadowRoot?.querySelector?.(".hist");
+    if (!hist || !this._history) return;
+    const timeAt = (clientX) => {
+      const rect = hist.querySelector(".hist-plot")?.getBoundingClientRect();
+      if (!rect || !rect.width) return null;
+      const h = this._history;
+      return h.start + ((clientX - rect.left) / rect.width) * (h.end - h.start);
+    };
+    hist.addEventListener("pointermove", (ev) => this._showHover(timeAt(ev.clientX)));
+    hist.addEventListener("pointerleave", () => this._showHover(null));
+    hist.addEventListener("blur", () => this._showHover(null));
+    hist.addEventListener("keydown", (ev) => {
+      if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+      ev.preventDefault();
+      const h = this._history;
+      const step = HISTORY_RANGES[h.range].step * (ev.key === "ArrowLeft" ? -1 : 1);
+      this._showHover(Math.min(h.end, Math.max(h.start, (this._hoverT ?? h.end) + step)));
+    });
+    if (this._hoverT !== null) this._showHover(this._hoverT);
+  }
+
+  _showHover(t) {
+    const hist = this.shadowRoot?.querySelector?.(".hist");
+    const h = this._history;
+    if (!hist || !h) return;
+    const tip = hist.querySelector(".hist-tip");
+    const hairs = hist.querySelectorAll(".xhair");
+    if (t === null || t < h.start || t > h.end) {
+      this._hoverT = null;
+      tip.hidden = true;
+      hairs.forEach((line) => line.setAttribute("visibility", "hidden"));
+      return;
+    }
+    // snap to the nearest reading of any series
+    let snapped = null;
+    for (const points of Object.values(h.data))
+      for (const [pt] of points) if (snapped === null || Math.abs(pt - t) < Math.abs(snapped - t)) snapped = pt;
+    if (snapped === null) return;
+    this._hoverT = snapped;
+    const x = this._x(snapped, h);
+    hairs.forEach((line) => {
+      line.setAttribute("x1", x);
+      line.setAttribute("x2", x);
+      line.setAttribute("visibility", "visible");
+    });
+    // values lead, names follow; text via textContent
+    const lang = this._hass?.locale?.language;
+    const when = new Date(snapped);
+    tip.textContent = "";
+    const time = document.createElement("div");
+    time.className = "tip-time";
+    time.textContent =
+      h.range === "day"
+        ? when.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" })
+        : when.toLocaleString(lang, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    tip.appendChild(time);
+    const tolerance = HISTORY_RANGES[h.range].step / 2;
+    for (const s of this._historySeries()) {
+      const hit = (h.data[s.entity] || []).find(([pt]) => Math.abs(pt - snapped) <= tolerance);
+      const unit = this._hass?.states?.[s.entity]?.attributes?.unit_of_measurement || "";
+      const row = document.createElement("div");
+      row.className = "tip-row";
+      const value = document.createElement("strong");
+      value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
+      const label = document.createElement("span");
+      label.textContent = s.title;
+      row.append(value, label);
+      tip.appendChild(row);
+    }
+    tip.hidden = false;
+    // keep the tooltip inside the chart: left of the crosshair past the middle.
+    // Positioned in the plot column (the y labels take the first 40px).
+    const share = x / CHART.width;
+    tip.style.left = share > 0.5 ? "" : `calc(40px + (100% - 40px) * ${share.toFixed(4)} + 12px)`;
+    tip.style.right = share > 0.5 ? `calc((100% - 40px) * ${(1 - share).toFixed(4)} + 12px)` : "";
+  }
+
   _infoSection() {
     const rows = [
       this._readout("text_sensor.model", "Model"),
@@ -1367,6 +1658,39 @@ details.section:not([open]) > summary { border-bottom: none; }
 .filter-big .bar span { background: var(--success-color, #43a047); }
 .filter-big.low .bar span { background: var(--warning-color, #ffa600); }
 .filter-big.bad .bar span { background: var(--error-color, #db4437); }
+
+.history { margin-bottom: 16px; }
+.hist-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.hist-head .segs { font-size: 14px; font-weight: 400; }
+.hist { position: relative; margin: 0 16px 12px; outline: none; transition: opacity 0.2s; }
+.hist:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 4px; border-radius: 4px; }
+.hist.stale { opacity: 0.5; }
+.hist-title { display: flex; justify-content: space-between; align-items: baseline;
+  margin: 12px 0 4px 40px; font-size: 13px; color: var(--secondary-text-color); }
+.hist-now { color: var(--primary-text-color); font-weight: 500; font-variant-numeric: tabular-nums; }
+.hist-row { display: grid; grid-template-columns: 40px 1fr; }
+.hist-y { position: relative; }
+.ytick { position: absolute; right: 8px; transform: translateY(-50%); font-size: 11px;
+  color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
+.hist-plot { display: block; width: 100%; height: 76px; overflow: visible; }
+.hist-plot .grid { stroke: var(--divider-color); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.hist-plot .area { fill: var(--primary-color); fill-opacity: 0.1; stroke: none; }
+.hist-plot .line { fill: none; stroke: var(--primary-color); stroke-width: 2; stroke-linejoin: round;
+  stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.hist-plot .line.dot { stroke-width: 4; }
+.hist-plot .xhair { stroke: var(--secondary-text-color); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.hist-empty { margin-left: 40px; padding: 8px 0; font-size: 13px; }
+.hist-axis { position: relative; height: 20px; }
+.xtick { position: absolute; top: 4px; transform: translateX(-50%); font-size: 11px; white-space: nowrap;
+  color: var(--secondary-text-color); }
+.hist-tip { position: absolute; top: 28px; z-index: 1; pointer-events: none; min-width: 120px;
+  padding: 6px 10px; border-radius: 8px; font-size: 12px;
+  background: var(--ha-card-background, var(--card-background-color, #fff));
+  border: 1px solid var(--divider-color); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18); }
+.tip-time { color: var(--secondary-text-color); margin-bottom: 4px; }
+.tip-row { display: flex; justify-content: space-between; gap: 12px; line-height: 1.6; }
+.tip-row strong { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tip-row span { color: var(--secondary-text-color); }
 
 @media (max-width: 600px) {
   .hero-controls { flex-direction: column; align-items: stretch; }
