@@ -266,7 +266,9 @@ card shows its group (tinted while the group runs it), and its page has a
 banner with the group's status and what a change there does. Groups run in the
 integration, so they keep working with the page closed and after a restart.
 Each group also gets a device with a *Control* switch (off: the group leaves
-its purifiers alone), a *Level* sensor (0–4, with the reason), an *Active*
+its purifiers alone), a *Level* sensor (0–4, with the reason), an *Air
+quality* sensor (0–4: the worst sensor on the group's thresholds, 0 below
+level 1; also in Manual or with the group off), an *Active*
 binary sensor, and the group as one **fan**: on / off is the group's control,
 preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers
 (Manual, up to the group's max speed). So dashboards, voice and automations

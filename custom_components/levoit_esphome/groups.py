@@ -74,6 +74,7 @@ from .groups_logic import (
     History,
     LevelKeeper,
     Reading,
+    air_quality,
     evaluate,
     member_speed,
     merge_sensors,
@@ -414,10 +415,19 @@ class GroupManager:
 
     @callback
     def state(self, group_id: str) -> dict[str, Any]:
-        """Status, level, reason and members of a group."""
-        if (runner := self._runners.get(group_id)) is not None:
-            return runner.state()
+        """Status, level, reason, members and air quality of a group."""
         config = self.groups[group_id]
+        runner = self._runners.get(group_id)
+        state = runner.state() if runner is not None else self._idle_state(config)
+        quality = air_quality(config, readings_of(self.hass, config))
+        state["air_quality"] = quality.level
+        state["air_quality_sensor"] = quality.worst.entity_id if quality.worst else None
+        state["air_quality_levels"] = quality.levels
+        return state
+
+    @staticmethod
+    def _idle_state(config: GroupConfig) -> dict[str, Any]:
+        """The state of a group that does not run yet (Home Assistant starting)."""
         return {
             "status": STATUS_PAUSED if not config.enabled else STATUS_WATCHING,
             "level": 0,

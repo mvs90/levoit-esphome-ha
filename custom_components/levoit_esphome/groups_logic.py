@@ -368,6 +368,34 @@ class History:
         return value - min(v for _, v in samples)
 
 
+@dataclass(frozen=True)
+class AirQuality:
+    """The group's air quality on its own thresholds."""
+
+    level: int | None  # 0 (below level 1) to 4; None while no sensor has a number
+    worst: Reading | None
+    levels: dict[str, int]  # per sensor with a number
+
+
+def air_quality(config: GroupConfig, readings: Iterable[Reading]) -> AirQuality:
+    """The worst sensor's level, 0-4, on the group's thresholds.
+
+    What the air is like, not what the group does: no hold time, no rising
+    fast, not capped at max_speed, and the same in Manual or when disabled.
+    """
+    levels: dict[str, int] = {}
+    worst: Reading | None = None
+    worst_level = -1
+    for reading in readings:
+        if reading.value is None or reading.type not in config.thresholds:
+            continue
+        level = sensor_level(reading.value, config.thresholds[reading.type])
+        levels[reading.entity_id] = level
+        if level > worst_level:
+            worst, worst_level = reading, level
+    return AirQuality(level=worst_level if levels else None, worst=worst, levels=levels)
+
+
 def evaluate(config: GroupConfig, readings: Iterable[Reading], history: History) -> Evaluation:
     """The level the sensors ask for (Auto mode)."""
     levels: dict[str, int] = {}
