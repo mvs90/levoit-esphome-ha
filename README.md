@@ -235,6 +235,21 @@ update is out. Click a card for the device's page.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png" width="720" alt="Devices: seven purifiers as cards with power, mode and speed, PM2.5, AQI and CADR; four running, three off, all with an update">
 
+**A page per device** (click its card): on top, power, mode and speed with the
+air quality, and its **history**: PM2.5, AQI and CADR over the last 24 hours
+or 7 days, from Home Assistant's statistics. Below, the settings grouped
+instead of one long list: *Automatic* (auto mode, room size only when it
+applies), *Sleep* (the Vital 200S custom profile: quick clean, sleep, then
+daytime mode), *Quiet period* (Eleva 300X, start and end as times), *Timer*
+(quick picks and the time left), *Display & panel*, *Filter* (life %,
+lifetime, reset) and *Info*. For the Core 200S / 300S / 400S / 600S, Vital
+100S / 200S, Everest Air and Eleva 300X; other models link to Home
+Assistant's device page. It needs no Device Builder config: the settings are
+found by their entity names, as the tuct/levoit configs name them (or as the
+device's config does, when there is one).
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png" width="720" alt="A Core 600S device page: power, mode Manual, speed 2, PM2.5, AQI and CADR; 24 hour history of PM2.5, AQI and CADR; Automatic with Room Size, Timer, Display and panel, Filter at 88 percent, and Info">
+
 **Updates & config** (the second tab) has:
 
 * every device: model, ESP / config type, channel, installed and latest
@@ -244,19 +259,8 @@ update is out. Click a card for the device's page.
 * the channel of a device without a config or with a template config
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
-* **a page per device**: click a card on *Devices*, or a name here. On top, power, mode and speed,
-  with the air quality, and its **history**: PM2.5, AQI and CADR over the last
-  24 hours or 7 days, from Home Assistant's statistics. Below, the settings grouped instead of one long
-  list: *Automatic* (auto mode, room size only when it applies),
-  *Sleep* (the Vital 200S custom profile: quick clean, sleep, then daytime
-  mode), *Quiet period* (Eleva 300X, start and end as times), *Timer* (quick
-  picks and the time left), *Display & panel*, *Filter* (life %, lifetime,
-  reset) and *Info*. For the Core 200S / 300S / 400S / 600S, Vital 100S /
-  200S, Everest Air and Eleva 300X; other models link to Home Assistant's
-  device page. It needs no Device Builder config: the settings are found by
-  their entity names, as the tuct/levoit configs name them (or as the
-  device's config does, when there is one)
-* links to each device, the Device Builder and Add device; *check now* reads
+* a link to each device's page (below)
+* links to the Device Builder and Add device; *check now* reads
   the latest versions from GitHub without waiting for the 6 hours
 
 The page updates live. It is a plain web component served by the integration;
