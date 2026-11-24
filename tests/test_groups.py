@@ -305,7 +305,7 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     """Subscribe, validation, preview, dismiss and delete."""
     calls = _fake_fans(hass)
     _purifiers(hass)
-    await _setup(hass)
+    entry = await _setup(hass)
     client = await hass_ws_client(hass)
 
     await client.send_json_auto_id({"type": "levoit_esphome/groups/subscribe"})
@@ -390,7 +390,10 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     assert ("set_preset_mode", "fan.bedroom", {"preset_mode": "Auto"}) in calls
     assert hass.states.get(LEVEL) is None
     assert (
-        dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"group_{group['id']}")}) is None
+        dr.async_get(hass).async_get_device_by_identifier(
+            (DOMAIN, f"group_{group['id']}"), entry.entry_id
+        )
+        is None
     )
     msg = await _call(client, {"type": "levoit_esphome/groups/delete", "group_id": group["id"]})
     assert msg["error"]["code"] == "not_found"

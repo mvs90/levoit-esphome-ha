@@ -373,7 +373,9 @@ class GroupManager:
             async_dispatcher_send(self.hass, SIGNAL_GROUPS)
         elif old.name != config.name:
             dev_reg = dr.async_get(self.hass)
-            if device := dev_reg.async_get_device(identifiers={group_identifier(config.id)}):
+            if device := dev_reg.async_get_device_by_identifier(
+                group_identifier(config.id), self.coordinator.config_entry.entry_id
+            ):
                 dev_reg.async_update_device(device.id, name=config.name)
         self.async_notify(config.id)
 
@@ -387,7 +389,9 @@ class GroupManager:
         self._runtime.pop(group_id, None)
         await self._async_save()
         dev_reg = dr.async_get(self.hass)
-        if device := dev_reg.async_get_device(identifiers={group_identifier(group_id)}):
+        if device := dev_reg.async_get_device_by_identifier(
+            group_identifier(group_id), self.coordinator.config_entry.entry_id
+        ):
             dev_reg.async_remove_device(device.id)
         self.async_notify()
 
