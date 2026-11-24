@@ -25,6 +25,7 @@ LEVEL = "sensor.living_room_level"
 CONTROL = "switch.living_room_control"
 ACTIVE = "binary_sensor.living_room_active"
 GROUP_FAN = "fan.living_room"
+AIR_QUALITY = "sensor.living_room_air_quality"
 MEMBERS = ["fan.bedroom", "fan.living"]
 
 type Calls = list[tuple[str, str, dict[str, Any]]]
@@ -497,3 +498,37 @@ async def test_group_fan(hass: HomeAssistant, hass_ws_client: WebSocketGenerator
     msg = await _call(client, {"type": "levoit_esphome/groups/list"})
     (group,) = msg["result"]["groups"]
     assert (group["mode"], group["manual_level"], group["enabled"]) == ("manual", 4, True)
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_group_air_quality(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """0-4 from the worst sensor, in Manual and with the group off too."""
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    group = await _save(client, members=MEMBERS, max_speed=2)
+    await _settle(hass)
+    quality = hass.states.get(AIR_QUALITY)
+    assert quality.state == "0"
+    assert quality.attributes["sensor_levels"] == {
+        "sensor.bedroom_pm25": 0,
+        "sensor.living_pm25": 0,
+    }
+
+    _pm(hass, 60)  # level 3, above max speed 2
+    await _settle(hass)
+    quality = hass.states.get(AIR_QUALITY)
+    assert quality.state == "3"
+    assert quality.attributes["worst_sensor"] == "sensor.living_pm25"
+    assert hass.states.get(LEVEL).state == "2"  # the group runs at its max
+
+    await _save(client, id=group["id"], members=MEMBERS, max_speed=2, enabled=False)
+    _pm(hass, 160)
+    await _settle(hass)
+    assert hass.states.get(AIR_QUALITY).state == "4"
+    assert hass.states.get(LEVEL).state == "0"
+
+    hass.states.async_set("sensor.bedroom_pm25", "unavailable")
+    hass.states.async_set("sensor.living_pm25", "unavailable")
+    await _settle(hass)
+    assert hass.states.get(AIR_QUALITY).state == "unknown"

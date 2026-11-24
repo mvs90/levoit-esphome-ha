@@ -99,7 +99,7 @@ async def async_setup_entry(
     entry: LevoitEsphomeConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the diagnostic sensors per device, and the level per group."""
+    """Set up the diagnostic sensors per device, and level and air quality per group."""
     entry.async_on_unload(
         async_add_per_device(
             entry.runtime_data,
@@ -114,7 +114,10 @@ async def async_setup_entry(
         async_add_per_group(
             entry.runtime_data.groups,
             async_add_entities,
-            lambda manager, group_id: [GroupLevelSensor(manager, group_id)],
+            lambda manager, group_id: [
+                GroupLevelSensor(manager, group_id),
+                GroupAirQualitySensor(manager, group_id),
+            ],
         )
     )
 
@@ -244,4 +247,36 @@ class GroupLevelSensor(LevoitGroupEntity, SensorEntity):
             "reason": state["reason"],
             "worst_sensor": state["worst"],
             "members_in_control": [m["entity_id"] for m in state["members"] if m["in_control"]],
+        }
+
+
+class GroupAirQualitySensor(LevoitGroupEntity, SensorEntity):
+    """A purifier group's air quality, 0-4: its worst sensor on the group's thresholds.
+
+    0 is below level 1. Unlike the level, no hold time, no rising-fast jump and
+    no max-speed cap, and it reads the same in Manual or with the group off.
+    """
+
+    _attr_translation_key = "group_air_quality"
+    _attr_icon = "mdi:air-filter"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, manager: GroupManager, group_id: str) -> None:
+        """Initialize."""
+        super().__init__(manager, group_id, "air_quality")
+
+    @property
+    def native_value(self) -> int | None:
+        """0-4; unknown while no sensor has a number."""
+        return self.group_state["air_quality"] if self.group is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """The worst sensor and each sensor's level."""
+        if self.group is None:
+            return None
+        state = self.group_state
+        return {
+            "worst_sensor": state["air_quality_sensor"],
+            "sensor_levels": state["air_quality_levels"],
         }

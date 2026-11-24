@@ -79,6 +79,9 @@
       },
       "group_level": {
         "name": "Level"
+      },
+      "group_air_quality": {
+        "name": "Air quality"
       }
     },
     "update": {

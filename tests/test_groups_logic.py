@@ -19,6 +19,7 @@ from custom_components.levoit_esphome.groups_logic import (
     GroupSensor,
     LevelKeeper,
     Reading,
+    air_quality,
     member_speed,
     merge_sensors,
     parse_config,
@@ -271,3 +272,23 @@ def test_acceptance_three_members() -> None:
     keeper = LevelKeeper()
     keeper.step(config, _pm(783), 0)
     assert [member_speed(keeper.level, config.max_speed, n) for n in (4, 3, 4)] == [4, 3, 4]
+
+
+def test_air_quality() -> None:
+    """The worst sensor on the group's thresholds, 0-4, not capped by max speed."""
+    config = _config(max_speed=2)
+    quality = air_quality(
+        config,
+        [
+            Reading("sensor.a", PM25, 40),  # level 2
+            Reading("sensor.b", AQI, 4),  # level 4, above max speed 2
+            Reading("sensor.c", AQI_INDEX, None),
+        ],
+    )
+    assert quality.level == 4
+    assert quality.worst is not None
+    assert quality.worst.entity_id == "sensor.b"
+    assert quality.levels == {"sensor.a": 2, "sensor.b": 4}
+    assert air_quality(config, [Reading("sensor.a", PM25, 3)]).level == 0
+    assert air_quality(config, [Reading("sensor.a", PM25, None)]).level is None
+    assert air_quality(config, []).level is None
