@@ -231,6 +231,17 @@ Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
 * the channel of a device without a config or with a template config
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
+* **a page per device**: click its name. On top, power, mode and speed,
+  with the air quality. Below, the settings grouped instead of one long
+  list: *Automatic* (auto mode, room size only when it applies),
+  *Sleep* (the Vital 200S custom profile: quick clean, sleep, then daytime
+  mode), *Quiet period* (Eleva 300X, start and end as times), *Timer* (quick
+  picks and the time left), *Display & panel*, *Filter* (life %, lifetime,
+  reset) and *Info*. For the Core 200S / 300S / 400S / 600S, Vital 100S /
+  200S, Everest Air and Eleva 300X; other models link to Home Assistant's
+  device page. It needs no Device Builder config: the settings are found by
+  their entity names, as the tuct/levoit configs name them (or as the
+  device's config does, when there is one)
 * links to each device, the Device Builder and Add device; *check now* reads
   the latest versions from GitHub without waiting for the 6 hours
 

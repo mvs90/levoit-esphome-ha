@@ -6,6 +6,8 @@
 * levoit_esphome/set_channel: like the Update channel select
 * levoit_esphome/check: read the latest versions from GitHub now
 * levoit_esphome/build_log: the output of a device's last (or running) build
+* levoit_esphome/device_controls: which entity is which setting, for the
+  device page
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, SIGNAL_COORDINATOR
+from .controls import SUPPORTED_MODELS, match_controls
 from .device_builder import builder_page_url
 from .templates import VARIANT_CUSTOM
 from .versions import is_behind
@@ -46,6 +49,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_channel)
     websocket_api.async_register_command(hass, ws_check)
     websocket_api.async_register_command(hass, ws_build_log)
+    websocket_api.async_register_command(hass, ws_device_controls)
 
 
 def _coordinator(hass: HomeAssistant) -> LevoitEsphomeCoordinator | None:
@@ -332,4 +336,42 @@ def ws_build_log(
     connection.send_result(
         msg["id"],
         {"lines": log.lines if log else [], "building": coordinator.is_building(device.name)},
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/device_controls",
+        probatio.Required("name"): str,
+    }
+)
+@callback
+def ws_device_controls(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The device's settings as entities, per controls key, for its device page.
+
+    Found by entity name, from its config when there is one, otherwise by the
+    names the tuct/levoit configs use: no Device Builder config needed.
+    """
+    if (found := _device(hass, connection, msg)) is None:
+        return
+    _, device = found
+    controls = match_controls(hass, device.esphome_device_id, device.model, device.control_names)
+    philips = "philips" in device.components
+    supported = device.model in SUPPORTED_MODELS or (
+        device.model is None and not philips and "fan.fan" in controls
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "name": device.name,
+            "title": device.title,
+            "model": device.model,
+            "device_id": device.esphome_device_id,
+            "supported": supported,
+            "from_config": bool(device.control_names),
+            "controls": controls,
+        },
     )
