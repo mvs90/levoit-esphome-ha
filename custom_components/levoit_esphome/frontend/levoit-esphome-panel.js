@@ -102,7 +102,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._pageError = null;
     this._pageLoading = false;
     this._seen = {}; // entity_id -> state object last rendered
-    this._infoOpen = false; // the device page's Info section
+    this._infoOpen = true; // the device page's Info section: open until closed
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
