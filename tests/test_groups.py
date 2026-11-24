@@ -164,13 +164,13 @@ def _pm(hass: HomeAssistant, value: float, sensor: str = "sensor.living_pm25") -
 
 
 @pytest.mark.usefixtures("patch_sources")
-async def test_group_takes_over_and_hands_back(
+async def test_group_takes_over_and_lets_go(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     hass_storage: dict[str, Any],
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Bad air: all members in Manual at their speed; clean air: one level per hold, then back."""
+    """Bad air: all members in Manual at their speed; clean air: one level per hold, then let go."""
     calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
@@ -226,12 +226,11 @@ async def test_group_takes_over_and_hands_back(
 
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "0"
-    # back as they were: bedroom in Auto, living off
-    assert calls == [
-        ("set_preset_mode", "fan.bedroom", {"preset_mode": "Auto"}),
-        ("turn_off", "fan.living", {}),
-    ]
+    # let go: nothing is sent, both keep running on speed 1
+    assert calls == []
+    assert hass.states.get("fan.bedroom").attributes["percentage"] == 25
     assert hass.states.get(ACTIVE).state == "off"
+    assert hass.states.get(LEVEL).attributes["members_in_control"] == []
 
 
 @pytest.mark.usefixtures("patch_sources")
@@ -273,7 +272,7 @@ async def test_manual_change_pauses_that_member(
 async def test_control_switch_and_manual_mode(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """The switch hands back and pauses; Manual mode runs one level, sensors ignored."""
+    """The switch lets go (nothing sent); Manual mode runs one level, sensors ignored."""
     calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
@@ -287,11 +286,7 @@ async def test_control_switch_and_manual_mode(
     await _settle(hass)
     assert hass.states.get(CONTROL).state == "off"
     assert hass.states.get(LEVEL).attributes["status"] == "paused"
-    assert calls == [
-        ("set_preset_mode", "fan.bedroom", {"preset_mode": "Auto"}),
-        ("turn_off", "fan.living", {}),
-    ]
-    calls.clear()
+    assert calls == []
 
     await hass.services.async_call("switch", "turn_on", {"entity_id": CONTROL}, blocking=True)
     await _settle(hass)
@@ -395,7 +390,7 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     msg = await _call(client, {"type": "levoit_esphome/groups/delete", "group_id": group["id"]})
     assert msg["success"], msg
     await _settle(hass)
-    assert ("set_preset_mode", "fan.bedroom", {"preset_mode": "Auto"}) in calls
+    assert calls == []  # the purifiers stay as they are
     assert hass.states.get(LEVEL) is None
     assert (
         dr.async_get(hass).async_get_device_by_identifier(
@@ -408,8 +403,8 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
 
 
 @pytest.mark.usefixtures("patch_sources")
-async def test_hand_back_after_restart(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
-    """A restart mid-episode keeps the snapshots: clean air still restores the members."""
+async def test_old_runtime_is_ignored(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
+    """Snapshots stored by earlier versions are ignored: nothing is restored after a restart."""
     calls = await _fake_fans(hass)
     _purifiers(hass)
     hass.states.async_set(
@@ -441,7 +436,7 @@ async def test_hand_back_after_restart(hass: HomeAssistant, hass_storage: dict[s
     await _settle(hass)
     # stored groups keep their sensors as saved: none here, so no number to go on
     assert hass.states.get(LEVEL).state == "0"
-    assert calls == [("set_preset_mode", "fan.bedroom", {"preset_mode": "Sleep"})]
+    assert calls == []
 
 
 @pytest.mark.usefixtures("patch_sources")

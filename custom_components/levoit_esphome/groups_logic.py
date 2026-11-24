@@ -3,8 +3,9 @@
 A group ties two or more purifiers to shared air sensors. Each sensor's reading
 gives a level from its type's four thresholds; the worst sensor sets the group
 level, and every member runs at its own speed for that level. The level goes up
-at once and down one step per hold time. groups.py runs this against Home
-Assistant states and services.
+at once and down one step per hold time; at level 0 the group lets go and
+leaves the purifiers as they are. groups.py runs this against Home Assistant
+states and services.
 """
 
 from __future__ import annotations
@@ -26,12 +27,6 @@ SOURCE_MANUAL = "manual"  # added by the user
 MODE_AUTO = "auto"  # the sensors pick the level
 MODE_MANUAL = "manual"  # the user picks one level for all members
 
-HAND_BACK_RESTORE = "restore"
-HAND_BACK_AUTO = "auto"
-HAND_BACK_SLEEP = "sleep"
-HAND_BACK_LOW = "low"
-HAND_BACK_OFF = "off"
-HAND_BACK = (HAND_BACK_RESTORE, HAND_BACK_AUTO, HAND_BACK_SLEEP, HAND_BACK_LOW, HAND_BACK_OFF)
 
 MAX_LEVEL = 4
 MIN_MEMBERS = 2
@@ -94,7 +89,6 @@ class GroupConfig:
     )
     rise: Rise = Rise()
     hold_min: int = 2
-    hand_back: str = HAND_BACK_RESTORE
     turn_on: bool = True
     respect_manual: bool = True
     manual_pause_min: int = 30
@@ -124,7 +118,6 @@ class GroupConfig:
                 "window_min": self.rise.window_min,
             },
             "hold_min": self.hold_min,
-            "hand_back": self.hand_back,
             "turn_on": self.turn_on,
             "respect_manual": self.respect_manual,
             "manual_pause_min": self.manual_pause_min,
@@ -268,7 +261,6 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
             window_min=_int(rise, "window_min", Rise.window_min, 1, 60),
         ),
         hold_min=_int(data, "hold_min", 2, 0, 240),
-        hand_back=_choice(data, "hand_back", HAND_BACK_RESTORE, HAND_BACK),
         turn_on=_bool(data, "turn_on", True),
         respect_manual=_bool(data, "respect_manual", True),
         manual_pause_min=_int(data, "manual_pause_min", 30, 1, 1440),

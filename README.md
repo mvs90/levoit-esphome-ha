@@ -255,13 +255,13 @@ shared air sensors, for example everything in one room. The worst sensor sets
 the group's level: each purifier switches to Manual at its own speed for that
 level (a 3-speed model shares levels, so the top level is always its fastest;
 one purifier can be held lower, for example a loud one up to speed 2)
-and goes back to what it was doing once the air is clean. The level goes up at
+and once the air is clean the group lets go: each keeps running as it is. The level goes up at
 once and down one step per hold time (2 minutes); a fast rise in PM2.5 jumps
 straight to max speed. If someone changes a purifier by hand, the group leaves
 that one alone for 30 minutes. A group can also run in *Manual*: one speed
 for all its purifiers. The editor picks the sensors from the purifiers, takes
-others from Home Assistant, sets thresholds, max speed and what happens when
-the air is clean, and shows live what the group would do now. Rooms in Home
+others from Home Assistant, sets thresholds, max speed and the hold time, and
+shows live what the group would do now. Rooms in Home
 Assistant with 2 or more purifiers are suggested. On *Devices* a purifier's
 card shows its group (tinted while the group runs it), and its page has a
 banner with the group's status and what a change there does. Groups run in the

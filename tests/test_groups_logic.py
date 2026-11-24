@@ -95,7 +95,6 @@ def test_parse_defaults() -> None:
     config = _config()
     assert config.max_speed == 4
     assert config.hold_min == 2
-    assert config.hand_back == "restore"
     assert config.mode == "auto"
     assert config.thresholds[AQI] == (2, 3, 4, 4)
     assert config.rise.pm25 == 20
@@ -110,7 +109,6 @@ def test_parse_defaults() -> None:
         ({"name": " "}, ERR_INVALID),
         ({"max_speed": 5}, ERR_INVALID),
         ({"max_speed": 2.5}, ERR_INVALID),
-        ({"hand_back": "later"}, ERR_INVALID),
         ({"mode": "party"}, ERR_INVALID),
         ({"thresholds": {PM25: [12, 35, 30, 150]}}, ERR_THRESHOLDS),
         ({"thresholds": {PM25: [12, 35]}}, ERR_INVALID),
@@ -242,7 +240,7 @@ def test_slow_climb_is_not_rising() -> None:
     assert keeper.level == 1  # 29 µg/m³: level 1
 
 
-def test_no_data_holds_then_hands_back() -> None:
+def test_no_data_holds_then_lets_go() -> None:
     """Every sensor unavailable: hold the level for hold_min, then level 0."""
     config = _config(rise={"enabled": False}, hold_min=10)
     keeper = LevelKeeper()

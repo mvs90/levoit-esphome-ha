@@ -114,7 +114,7 @@ class GroupFan(LevoitGroupEntity, FanEntity):
         await self._async_change(**changes)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Hand the purifiers back and leave them alone."""
+        """Let go of the purifiers; they stay as they are."""
         await self._async_change(enabled=False)
 
     async def async_set_percentage(self, percentage: int) -> None:
