@@ -13,7 +13,11 @@ config in the ESPHome Device Builder, and offers an update when the device's
 channel has a newer component version. Installing compiles the config in the
 Device Builder and uploads it over the air.
 
-![The Levoit ESPHome sidebar page: each device with model, ESP, channel, installed and latest version, filter %, status, Update, Compile and Compile & upload](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel.png)
+Its sidebar page shows every purifier as a card to use it (power, mode, speed,
+PM2.5, AQI and CADR), with a page per device for its settings and air quality
+history.
+
+![The Levoit ESPHome sidebar page: seven purifiers as cards, each with power, mode and speed buttons, PM2.5, AQI and CADR, and an Update chip](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png)
 
 > **Early version.** Part of the
 > [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
@@ -228,6 +232,8 @@ It opens on **Devices**: every purifier as a card, for using them. Each card
 has a small outline of the model, power, mode and speed buttons, PM2.5, AQI
 and the current CADR, the time left when a timer runs, and a chip when an
 update is out. Click a card for the device's page.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png" width="720" alt="Devices: seven purifiers as cards with power, mode and speed, PM2.5, AQI and CADR; three running, four off, all with an update">
 
 **Updates & config** (the second tab) has:
 
