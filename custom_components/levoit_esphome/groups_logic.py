@@ -100,6 +100,8 @@ class GroupConfig:
     manual_pause_min: int = 30
     mode: str = MODE_AUTO
     manual_level: int = 1
+    # per member: its highest speed in this group (absent: all its speeds)
+    member_max_speed: Mapping[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         """The config as saved and sent to the panel."""
@@ -128,6 +130,7 @@ class GroupConfig:
             "manual_pause_min": self.manual_pause_min,
             "mode": self.mode,
             "manual_level": self.manual_level,
+            "member_max_speed": dict(self.member_max_speed),
         }
 
 
@@ -210,6 +213,19 @@ def _entity_ids(data: Any, key: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(data))
 
 
+def _member_max(data: Any, members: Iterable[str]) -> dict[str, int]:
+    """Per-member speed limits, for members of the group only."""
+    if data is None:
+        return {}
+    if not isinstance(data, Mapping):
+        raise GroupError(ERR_INVALID, "member_max_speed must be per purifier")
+    limits: dict[str, int] = {}
+    for member in members:
+        if member in data:
+            limits[member] = _int(data, member, MAX_LEVEL, 1, MAX_LEVEL)
+    return limits
+
+
 def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> GroupConfig:
     """A group config from what the panel sends or the store holds.
 
@@ -258,6 +274,7 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
         manual_pause_min=_int(data, "manual_pause_min", 30, 1, 1440),
         mode=_choice(data, "mode", MODE_AUTO, (MODE_AUTO, MODE_MANUAL)),
         manual_level=_int({"manual_level": manual_level}, "manual_level", 1, 1, max_speed),
+        member_max_speed=_member_max(data.get("member_max_speed"), members),
     )
 
 
@@ -290,6 +307,12 @@ def speed_count(percentage_step: Any) -> int:
     if step <= 0:
         return MAX_LEVEL
     return max(1, round(100 / step))
+
+
+def allowed_speeds(config: GroupConfig, member: str, speeds: int) -> int:
+    """How many of a member's speeds the group may use (its limit, if lower)."""
+    limit = config.member_max_speed.get(member)
+    return min(speeds, limit) if limit else speeds
 
 
 def member_speed(level: int, max_speed: int, speeds: int) -> int:
