@@ -1221,7 +1221,7 @@ class LevoitEsphomePanel extends HTMLElement {
           on ? "Turn off" : "Turn on"
         }" ${dis} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
       : "";
-    // under the name: model, filter, then timer, update or offline
+    // under the name: model and filter; a line below: timer, update, offline and group
     const filter =
       d.filter_life != null && !offline
         ? (() => {
@@ -1248,9 +1248,9 @@ class LevoitEsphomePanel extends HTMLElement {
         <span class="dev-tile">${deviceImage(d.model)}</span>
         <div class="dc-name">
           <div class="name">${esc(d.title)}</div>
-          <div class="dc-sub"><span>${esc(d.model || "Levoit")}</span>${filter ? `<span aria-hidden="true">·</span>${filter}` : ""}${
-            flags ? `<span class="dc-flags">${flags}</span>` : ""
-          }</div>${groupChip ? `<div class="dc-group">${groupChip}</div>` : ""}
+          <div class="dc-sub"><span>${esc(d.model || "Levoit")}</span>${filter ? `<span aria-hidden="true">·</span>${filter}` : ""}</div>${
+            flags || groupChip ? `<div class="dc-flags">${flags}${groupChip}</div>` : ""
+          }
         </div>
         ${power}
       </div>
@@ -3083,7 +3083,7 @@ select:disabled { opacity: 0.6; }
 .dc-name .name { font-size: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 3px;
   font-size: 12px; color: var(--secondary-text-color); }
-.dc-flags { display: inline-flex; gap: 6px; margin-left: auto; }
+.dc-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .dc-filter { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums;
   color: var(--primary-text-color); }
 .dc-filter svg { width: 12px; height: 12px; color: var(--secondary-text-color); }
@@ -3323,7 +3323,6 @@ details.section[open] > summary { padding-bottom: 8px; }
 
 .group-chip { font: inherit; font-size: 12px; font-weight: 500; border: 0; cursor: pointer; }
 .group-chip svg { width: 14px; height: 14px; }
-.dc-group { margin-top: 6px; }
 .group-chip.act { background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--lv-accent-text); }
 .group-chip:hover { filter: brightness(0.95); }
 .group-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 20px; margin-bottom: 16px; }
