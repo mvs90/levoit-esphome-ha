@@ -1,10 +1,11 @@
 """Purifier groups in Home Assistant: stored groups and the loop that runs them.
 
 The rules (levels, speed mapping, hold, rising fast) are in groups_logic.py.
-Here each enabled group follows its sensors and members, puts the members in
-Manual at their speed for the group level, and hands them back when the air is
-clean again. Changes the group made carry its own Context; any other change to a
-member it controls is a person's, and pauses the group for that member.
+Here each enabled group follows its sensors and members and puts the members in
+Manual at their speed for the group level. When the air is clean again (or the
+group is turned off) it lets go: the purifiers keep running as they are.
+Changes the group made carry its own Context; any other change to a member it
+controls is a person's, and pauses the group for that member.
 """
 
 from __future__ import annotations
@@ -25,13 +26,11 @@ from homeassistant.components.fan import (
     ATTR_PRESET_MODE,
     ATTR_PRESET_MODES,
     DOMAIN as FAN_DOMAIN,
-    SERVICE_SET_PRESET_MODE,
 )
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_UNIT_OF_MEASUREMENT,
     EVENT_HOMEASSISTANT_STOP,
-    SERVICE_TURN_OFF,
     SERVICE_TURN_ON,
     STATE_ON,
     STATE_UNAVAILABLE,
@@ -60,10 +59,6 @@ from .groups_logic import (
     AQI,
     AQI_INDEX,
     ERR_MEMBERS,
-    HAND_BACK_AUTO,
-    HAND_BACK_LOW,
-    HAND_BACK_OFF,
-    HAND_BACK_SLEEP,
     MODE_AUTO,
     MODE_MANUAL,
     PM25,
@@ -90,7 +85,6 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_KEY = f"{DOMAIN}.groups"
 STORAGE_VERSION = 1
-SAVE_DELAY = 10
 TICK = timedelta(seconds=30)
 
 # a group added (its entities are created)
@@ -99,8 +93,6 @@ SIGNAL_GROUPS = f"{DOMAIN}_groups"
 ERR_NOT_FOUND = "not_found"
 
 PRESET_MANUAL = "Manual"
-PRESET_AUTO = "Auto"
-PRESET_SLEEP = "Sleep"
 
 # controls.py keys of a purifier's air sensors
 SENSOR_KEYS = {"sensor.pm25": PM25, "sensor.aqi": AQI, "sensor.aqi_index": AQI_INDEX}
@@ -191,8 +183,6 @@ class GroupManager:
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self.groups: dict[str, GroupConfig] = {}
         self.dismissed_areas: list[str] = []
-        # level and member snapshots of groups that are not running (saved)
-        self._runtime: dict[str, dict[str, Any]] = {}
         self._runners: dict[str, GroupRunner] = {}
         self._listeners: list[Callable[[], None]] = []
         self._started = False
@@ -200,7 +190,7 @@ class GroupManager:
     # ---- storage ----
 
     async def async_load(self) -> None:
-        """Read the groups and the snapshots of a hand back still to do."""
+        """Read the groups (a "runtime" part from earlier versions is ignored)."""
         data = await self._store.async_load() or {}
         for raw in data.get("groups", []):
             try:
@@ -211,25 +201,13 @@ class GroupManager:
             if config.id:
                 self.groups[config.id] = config
         self.dismissed_areas = [a for a in data.get("dismissed_areas", []) if isinstance(a, str)]
-        runtime = data.get("runtime")
-        if isinstance(runtime, dict):
-            self._runtime = {k: v for k, v in runtime.items() if k in self.groups}
 
     @callback
     def _data_to_save(self) -> dict[str, Any]:
-        runtime = dict(self._runtime)
-        for group_id, runner in self._runners.items():
-            runtime[group_id] = runner.runtime()
         return {
             "groups": [config.as_dict() for config in self.groups.values()],
             "dismissed_areas": self.dismissed_areas,
-            "runtime": {k: v for k, v in runtime.items() if v.get("snapshots")},
         }
-
-    @callback
-    def async_schedule_save(self) -> None:
-        """Save soon (level and snapshots changed)."""
-        self._store.async_delay_save(self._data_to_save, SAVE_DELAY)
 
     async def _async_save(self) -> None:
         await self._store.async_save(self._data_to_save())
@@ -265,17 +243,15 @@ class GroupManager:
 
     @callback
     def async_stop(self) -> None:
-        """Stop all groups (unload, shutdown); a hand back still to do is kept for later."""
+        """Stop all groups (unload, shutdown); the purifiers stay as they are."""
         self._started = False
-        for group_id, runner in self._runners.items():
-            self._runtime[group_id] = runner.runtime()
+        for runner in self._runners.values():
             runner.stop()
         self._runners.clear()
-        self._store.async_delay_save(self._data_to_save, 0)
 
     @callback
     def _start_runner(self, config: GroupConfig) -> None:
-        runner = GroupRunner(self, config, self._runtime.pop(config.id, None))
+        runner = GroupRunner(self, config)
         self._runners[config.id] = runner
         runner.start()
 
@@ -390,13 +366,12 @@ class GroupManager:
         self.async_notify(config.id)
 
     async def async_delete_group(self, group_id: str) -> None:
-        """Delete a group; the members it controls are handed back first."""
+        """Delete a group; its purifiers stay as they are."""
         if group_id not in self.groups:
             raise GroupError(ERR_NOT_FOUND, "Unknown group")
         if (runner := self._runners.pop(group_id, None)) is not None:
             await runner.async_release()
         del self.groups[group_id]
-        self._runtime.pop(group_id, None)
         await self._async_save()
         dev_reg = dr.async_get(self.hass)
         if device := dev_reg.async_get_device_by_identifier(
@@ -523,35 +498,21 @@ def describe(hass: HomeAssistant, config: GroupConfig, result: Evaluation | None
 class GroupRunner:
     """One group's control loop."""
 
-    def __init__(
-        self, manager: GroupManager, config: GroupConfig, runtime: dict[str, Any] | None
-    ) -> None:
-        """Initialize; `runtime` is what a run before a restart left to hand back."""
+    def __init__(self, manager: GroupManager, config: GroupConfig) -> None:
+        """Initialize."""
         self.hass = manager.hass
         self.manager = manager
         self.config = config
-        runtime = runtime or {}
-        snapshots = runtime.get("snapshots")
-        self.snapshots: dict[str, dict[str, Any]] = (
-            dict(snapshots) if isinstance(snapshots, dict) else {}
-        )
-        level = runtime.get("level")
-        level = min(max(level, 0), config.max_speed) if isinstance(level, int) else 0
-        self.keeper = LevelKeeper(level, _now() if level else None)
+        self.keeper = LevelKeeper()
         self.evaluation: Evaluation | None = None
         self.paused_until: dict[str, float] = {}
-        self._targets: dict[str, int] = {}  # speed set per member
-        self._no_snapshot: set[str] = set()  # came back online mid-episode
+        self._targets: dict[str, int] = {}  # speed set per member the group runs
         self._own: deque[str] = deque(maxlen=64)  # context ids of our calls
         self._lock = asyncio.Lock()
         self._unsubs: list[CALLBACK_TYPE] = []
         self._task: asyncio.Task[None] | None = None
         self._again = False
         self._stopped = False
-
-    def runtime(self) -> dict[str, Any]:
-        """What a hand back after a restart needs."""
-        return {"level": self.keeper.level, "snapshots": dict(self.snapshots)}
 
     @callback
     def start(self) -> None:
@@ -612,10 +573,7 @@ class GroupRunner:
         if new is None or new.state in OFFLINE:
             return
         if old is None or old.state in OFFLINE:
-            # back online: gets the current level, without a snapshot
-            if self.keeper.level > 0 and member not in self.snapshots:
-                self._no_snapshot.add(member)
-            return
+            return  # back online: gets the current level
         if (
             not self.config.respect_manual
             or member not in self._targets
@@ -635,11 +593,10 @@ class GroupRunner:
         self.manager.async_notify(self.config.id)
 
     async def async_update_config(self, config: GroupConfig) -> None:
-        """New settings; members that left are handed back first."""
+        """New settings; members that left are let go (they stay as they are)."""
         async with self._lock:
             old = self.config
-            gone = [m for m in self._controlled() if m not in config.members]
-            await self._async_hand_back(gone, old.hand_back)
+            self._release([m for m in self._targets if m not in config.members])
             for member in set(self.paused_until) - set(config.members):
                 del self.paused_until[member]
             self.config = config
@@ -651,16 +608,19 @@ class GroupRunner:
         self._schedule()
 
     async def async_release(self) -> None:
-        """Hand back every member the group controls and stop (delete)."""
+        """Stop and let go of every member (delete); they stay as they are."""
         self.stop()
         async with self._lock:
-            await self._async_hand_back(self._controlled(), self.config.hand_back)
+            self._release(list(self._targets))
 
-    def _controlled(self) -> list[str]:
-        return list(dict.fromkeys([*self.snapshots, *self._targets]))
+    @callback
+    def _release(self, members: Iterable[str]) -> None:
+        """Let go of members: nothing is sent, they keep running as they are."""
+        for member in members:
+            self._targets.pop(member, None)
 
     async def async_evaluate(self) -> None:
-        """Move the level and apply it, or hand back at level 0."""
+        """Move the level and apply it, or let go at level 0."""
         async with self._lock:
             if self._stopped:
                 return
@@ -669,7 +629,6 @@ class GroupRunner:
             for member, until in list(self.paused_until.items()):
                 if until <= now:
                     del self.paused_until[member]
-            before = self.runtime()
             if not config.enabled:
                 self.keeper.level = 0
                 self.evaluation = None
@@ -680,12 +639,10 @@ class GroupRunner:
                 self.evaluation = self.keeper.step(config, readings_of(self.hass, config), now)
             level = self.keeper.level
             if level == 0:
-                await self._async_hand_back(self._controlled(), config.hand_back)
+                self._release(list(self._targets))
             else:
                 for member in config.members:
                     await self._async_set(member, level)
-            if self.runtime() != before:
-                self.manager.async_schedule_save()
         self.manager.async_notify(config.id)
 
     async def _async_set(self, member: str, level: int) -> None:
@@ -698,12 +655,6 @@ class GroupRunner:
         is_on = state.state == STATE_ON
         if not is_on and not self.config.turn_on and member not in self._targets:
             return
-        if member not in self.snapshots and member not in self._no_snapshot:
-            self.snapshots[member] = {
-                "state": state.state,
-                ATTR_PRESET_MODE: state.attributes.get(ATTR_PRESET_MODE),
-                ATTR_PERCENTAGE: state.attributes.get(ATTR_PERCENTAGE),
-            }
         speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
         # a member with a limit spreads the levels over its allowed speeds
         speed = member_speed(
@@ -719,67 +670,6 @@ class GroupRunner:
                 ATTR_ENTITY_ID: member,
                 ATTR_PERCENTAGE: ranged_value_to_percentage((1, speeds), speed),
             },
-        )
-
-    async def _async_hand_back(self, members: Iterable[str], mode: str) -> None:
-        """Give members back per `hand_back`; paused ones are left to the person."""
-        for member in list(members):
-            snapshot = self.snapshots.pop(member, None)
-            self._targets.pop(member, None)
-            self._no_snapshot.discard(member)
-            if member in self.paused_until:
-                continue
-            state = self.hass.states.get(member)
-            if state is None or state.state in OFFLINE:
-                continue
-            await self._async_hand_back_one(member, state, snapshot, mode)
-
-    async def _async_hand_back_one(
-        self, member: str, state: State, snapshot: dict[str, Any] | None, mode: str
-    ) -> None:
-        presets = state.attributes.get(ATTR_PRESET_MODES) or []
-        speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
-        if mode == HAND_BACK_OFF:
-            if state.state == STATE_ON:
-                await self._async_call(SERVICE_TURN_OFF, {ATTR_ENTITY_ID: member})
-            return
-        if mode == HAND_BACK_LOW:
-            await self._async_call(
-                SERVICE_TURN_ON,
-                {
-                    ATTR_ENTITY_ID: member,
-                    ATTR_PERCENTAGE: ranged_value_to_percentage((1, speeds), 1),
-                },
-            )
-            return
-        preset = {HAND_BACK_AUTO: PRESET_AUTO, HAND_BACK_SLEEP: PRESET_SLEEP}.get(mode)
-        if preset is not None and preset in presets:
-            await self._set_preset(member, state, preset)
-            return
-        # restore (also when the model has no such mode)
-        if snapshot is None:
-            return
-        if snapshot.get("state") != STATE_ON:
-            if state.state == STATE_ON:
-                await self._async_call(SERVICE_TURN_OFF, {ATTR_ENTITY_ID: member})
-            return
-        before = snapshot.get(ATTR_PRESET_MODE)
-        if before not in (None, PRESET_MANUAL) and before in presets:
-            await self._set_preset(member, state, before)
-            return
-        percentage = snapshot.get(ATTR_PERCENTAGE)
-        if isinstance(percentage, (int, float)) and (
-            state.state != STATE_ON or state.attributes.get(ATTR_PERCENTAGE) != percentage
-        ):
-            await self._async_call(
-                SERVICE_TURN_ON, {ATTR_ENTITY_ID: member, ATTR_PERCENTAGE: percentage}
-            )
-
-    async def _set_preset(self, member: str, state: State, preset: str) -> None:
-        if state.state == STATE_ON and state.attributes.get(ATTR_PRESET_MODE) == preset:
-            return
-        await self._async_call(
-            SERVICE_SET_PRESET_MODE, {ATTR_ENTITY_ID: member, ATTR_PRESET_MODE: preset}
         )
 
     async def _async_call(self, service: str, data: dict[str, Any]) -> None:

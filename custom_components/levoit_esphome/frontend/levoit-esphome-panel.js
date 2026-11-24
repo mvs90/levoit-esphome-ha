@@ -145,7 +145,6 @@ const GROUP_DEFAULTS = {
   thresholds: { pm25: [12, 35, 55, 150], aqi: [2, 3, 4, 4], aqi_index: [50, 100, 150, 200] },
   rise: { enabled: true, pm25: 20, aqi_index: 25, window_min: 5 },
   hold_min: 2,
-  hand_back: "restore",
   turn_on: true,
   respect_manual: true,
   manual_pause_min: 30,
@@ -158,13 +157,6 @@ const SENSOR_TYPE_INFO = {
   pm25: { label: "PM2.5", unit: "µg/m³" },
   aqi: { label: "Air quality", unit: "Levoit level 1–4" },
   aqi_index: { label: "AQI index", unit: "0–500" },
-};
-const HAND_BACK_LABELS = {
-  restore: "Goes back to what it was doing",
-  auto: "Switches to Auto",
-  sleep: "Switches to Sleep",
-  low: "Stays on speed 1",
-  off: "Turns off",
 };
 // a member's speed for a group level: fewer speeds share levels, so the top
 // level is always its fastest (as groups_logic.member_speed)
@@ -1723,7 +1715,7 @@ class LevoitEsphomePanel extends HTMLElement {
   async _deleteEdit() {
     const d = this._edit?.draft;
     if (!d?.id) return;
-    if (!confirm(`Delete the group ${d.name}?\n\nPurifiers it controls are handed back first.`)) return;
+    if (!confirm(`Delete the group ${d.name}?\n\nIts purifiers keep running as they are.`)) return;
     try {
       await this._hass.callWS({ type: "levoit_esphome/groups/delete", group_id: d.id });
       this._edit = null;
@@ -1997,20 +1989,12 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
 
     // When the air is clean again
-    const handBack = Object.entries(HAND_BACK_LABELS)
-      .map(([k, l]) => `<option value="${k}"${k === d.hand_back ? " selected" : ""}>${esc(l)}</option>`)
-      .join("");
     const clean = `<div class="card section">
       <div class="sec-head"><h2>When the air is clean again${autoOnly}</h2></div>
       ${this._setting(
         "Stay at a level for at least",
         "Then step down one level at a time",
         `<span class="num-unit">${this._edNumber("hold_min", "Minimum minutes per level")}<span class="hint">min</span></span>`,
-      )}
-      ${this._setting(
-        "Once the air is clean, each purifier",
-        "Also when the group is switched off or deleted, or a purifier leaves it",
-        `<select class="inp" data-ed-field="hand_back" aria-label="When the group lets go">${handBack}</select>`,
       )}
       ${this._setting(
         "Turn purifiers on when needed",
@@ -2074,7 +2058,7 @@ class LevoitEsphomePanel extends HTMLElement {
           : !d.enabled
             ? "Left alone"
             : level === 0
-              ? "Handed back"
+              ? "Left as it is"
               : `Manual · ${this._speedLabel(pur, m.speed)}`;
         return `<div class="now-row"><span>${esc(pur?.title || m.entity_id)}</span><b>${esc(target)}</b></div>`;
       })
