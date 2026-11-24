@@ -93,6 +93,8 @@ SIGNAL_GROUPS = f"{DOMAIN}_groups"
 ERR_NOT_FOUND = "not_found"
 
 PRESET_MANUAL = "Manual"
+# the Everest Air's top speed is a preset, above its 3 fan speeds
+PRESET_TURBO = "Turbo"
 
 # controls.py keys of a purifier's air sensors
 SENSOR_KEYS = {"sensor.pm25": PM25, "sensor.aqi": AQI, "sensor.aqi_index": AQI_INDEX}
@@ -158,10 +160,23 @@ def _fan_view(state: State) -> tuple[Any, ...]:
     )
 
 
+def _has_turbo(state: State) -> bool:
+    """A Turbo preset (Everest Air): one speed above the fan's own."""
+    return PRESET_TURBO in (state.attributes.get(ATTR_PRESET_MODES) or [])
+
+
+def _fan_speeds(state: State) -> int:
+    """The fan's speeds as a group counts them (Turbo is the top one)."""
+    speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
+    return speeds + 1 if _has_turbo(state) else speeds
+
+
 def _current_speed(state: State) -> int:
     """The member's speed now (0 while off)."""
     if state.state != STATE_ON:
         return 0
+    if _has_turbo(state) and state.attributes.get(ATTR_PRESET_MODE) == PRESET_TURBO:
+        return _fan_speeds(state)
     speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
     percentage = state.attributes.get(ATTR_PERCENTAGE) or 0
     return round(percentage * speeds / 100)
@@ -171,6 +186,15 @@ def _in_manual(state: State) -> bool:
     """In Manual, or a fan without modes."""
     presets = state.attributes.get(ATTR_PRESET_MODES) or []
     return not presets or state.attributes.get(ATTR_PRESET_MODE) in (None, PRESET_MANUAL)
+
+
+def _at_speed(state: State, speed: int) -> bool:
+    """On at that speed as a group sets it: Manual, or Turbo for the top one."""
+    if state.state != STATE_ON or _current_speed(state) != speed:
+        return False
+    if _has_turbo(state) and speed == _fan_speeds(state):
+        return state.attributes.get(ATTR_PRESET_MODE) == PRESET_TURBO
+    return _in_manual(state)
 
 
 class GroupManager:
@@ -461,7 +485,7 @@ class GroupManager:
 
 def speeds_of(hass: HomeAssistant, entity_id: str) -> int:
     state = hass.states.get(entity_id)
-    return speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP) if state else None)
+    return _fan_speeds(state) if state else speed_count(None)
 
 
 def readings_of(hass: HomeAssistant, config: GroupConfig) -> list[Reading]:
@@ -581,11 +605,7 @@ class GroupRunner:
             or _fan_view(old) == _fan_view(new)
         ):
             return
-        if (
-            new.state == STATE_ON
-            and _in_manual(new)
-            and _current_speed(new) == self._targets[member]
-        ):
+        if _at_speed(new, self._targets[member]):
             return  # what we set, reported late
         self.paused_until[member] = _now() + self.config.manual_pause_min * 60
         self._targets.pop(member, None)
@@ -646,7 +666,7 @@ class GroupRunner:
         self.manager.async_notify(config.id)
 
     async def _async_set(self, member: str, level: int) -> None:
-        """Put a member in Manual at its speed for the level."""
+        """Put a member in Manual at its speed for the level (or Turbo at the top)."""
         if member in self.paused_until:
             return
         state = self.hass.states.get(member)
@@ -655,20 +675,26 @@ class GroupRunner:
         is_on = state.state == STATE_ON
         if not is_on and not self.config.turn_on and member not in self._targets:
             return
-        speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
+        speeds = _fan_speeds(state)
         # a member with a limit spreads the levels over its allowed speeds
         speed = member_speed(
             level, self.config.max_speed, allowed_speeds(self.config, member, speeds)
         )
         self._targets[member] = speed
-        if is_on and _in_manual(state) and _current_speed(state) == speed:
+        if _at_speed(state, speed):
             return
-        # a speed takes the levoit fan out of Auto / Sleep into Manual
+        if _has_turbo(state) and speed == speeds:
+            await self._async_call(
+                SERVICE_TURN_ON, {ATTR_ENTITY_ID: member, ATTR_PRESET_MODE: PRESET_TURBO}
+            )
+            return
+        # a speed takes the levoit fan out of Auto / Sleep / Turbo into Manual
+        fan_speeds = speed_count(state.attributes.get(ATTR_PERCENTAGE_STEP))
         await self._async_call(
             SERVICE_TURN_ON,
             {
                 ATTR_ENTITY_ID: member,
-                ATTR_PERCENTAGE: ranged_value_to_percentage((1, speeds), speed),
+                ATTR_PERCENTAGE: ranged_value_to_percentage((1, fan_speeds), speed),
             },
         )
 
