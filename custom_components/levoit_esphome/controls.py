@@ -125,6 +125,19 @@ MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
+def page_supported(
+    model: str | None, components: Iterable[str], controls: Mapping[str, str]
+) -> bool:
+    """Whether the device page has sections for this device.
+
+    A known model decides; a device that does not report its model counts when
+    it runs the levoit component and has its fan entity.
+    """
+    if model is not None:
+        return model in SUPPORTED_MODELS
+    return "philips" not in components and "fan.fan" in controls
+
+
 def config_names(config: Mapping[str, Any]) -> dict[str, str]:
     """Entity names per key, from a resolved device config (levoit platform only).
 

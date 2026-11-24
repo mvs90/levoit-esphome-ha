@@ -222,7 +222,14 @@ Each update shows the installed and the latest version, with the release notes
 ## Sidebar page
 
 Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
-Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
+Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only.
+
+It opens on **Devices**: every purifier as a card, for using them. Each card
+has a small outline of the model, power, mode and speed buttons, PM2.5, AQI
+and the current CADR, the time left when a timer runs, and a chip when an
+update is out. Click a card for the device's page.
+
+**Updates & config** (the second tab) has:
 
 * every device: model, ESP / config type, channel, installed and latest
   component version, filter %, ESPHome version, status and the last build
@@ -231,7 +238,7 @@ Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only:
 * the channel of a device without a config or with a template config
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
-* **a page per device**: click its name. On top, power, mode and speed,
+* **a page per device**: click a card on *Devices*, or a name here. On top, power, mode and speed,
   with the air quality, and its **history**: PM2.5, AQI and CADR over the last
   24 hours or 7 days, from Home Assistant's statistics. Below, the settings grouped instead of one long
   list: *Automatic* (auto mode, room size only when it applies),

@@ -45,6 +45,35 @@ const ICONS = {
   chevron: "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z",
 };
 
+// Small outline drawings per purifier family for the overview (48 x 48, drawn
+// in the theme's colours; no product photos). Stroke-only shapes plus a wash.
+const DEVICE_SHAPES = {
+  // Core 200S-600S: a round column with a top grille
+  core: `<rect x="14" y="7" width="20" height="35" rx="8"/><path d="M18 12.5h12M18 16h12M18 19.5h12"/><circle cx="24" cy="31" r="2.2"/>`,
+  // Eleva 300X: a squat round body with rings on top
+  eleva: `<path d="M11 19v17c0 3.3 5.8 6 13 6s13-2.7 13-6V19"/><ellipse cx="24" cy="19" rx="13" ry="5"/><ellipse cx="24" cy="19" rx="7" ry="2.6"/>`,
+  // Vital, Everest Air: a rectangular tower
+  tower: `<rect x="13" y="6" width="22" height="37" rx="4"/><path d="M17 11h14M17 14.5h14"/><rect x="18" y="22" width="12" height="14" rx="2"/>`,
+  // Sprout: a bell with a base
+  sprout: `<path d="M15 39c0-13 3.5-26 9-26s9 13 9 26z"/><path d="M12 42h24"/><circle cx="24" cy="10" r="2"/>`,
+  // Superior 6000S: a humidifier with a drop on top
+  humidifier: `<rect x="12" y="15" width="24" height="28" rx="7"/><path d="M24 4.5c3.2 4 4.4 6.4 4.4 8.2a4.4 4.4 0 0 1-8.8 0c0-1.8 1.2-4.2 4.4-8.2z"/><path d="M17 33h14"/>`,
+  // Philips: a rounded block with a fan
+  philips: `<rect x="11" y="9" width="26" height="34" rx="10"/><circle cx="24" cy="19" r="5"/><path d="M18 34h12"/>`,
+};
+const deviceShape = (model) => {
+  const m = model || "";
+  if (m.startsWith("CORE")) return "core";
+  if (m === "ELEVA300X") return "eleva";
+  if (m.startsWith("VITAL") || m === "EVERESTAIR") return "tower";
+  if (m === "SPROUT") return "sprout";
+  if (m === "SUPERIOR6000S") return "humidifier";
+  if (m.startsWith("AC0")) return "philips";
+  return "core";
+};
+const deviceImage = (model) =>
+  `<svg class="dev-img" viewBox="0 0 48 48" aria-hidden="true">${DEVICE_SHAPES[deviceShape(model)]}</svg>`;
+
 // "2h 30 min", "45 min", "1h 5 min 10 s" -> seconds; anything else -> 0
 const parseDuration = (text) => {
   if (!text) return 0;
@@ -123,6 +152,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._log = null; // the build log dialog: {name, title, lines, building}
     // device page (route /levoit-esphome/<name>): which entity is which setting
     this._route = null;
+    this._view = "overview"; // overview, config or device
     this._pageName = null;
     this._page = null; // levoit_esphome/device_controls result
     this._pageError = null;
@@ -136,6 +166,14 @@ class LevoitEsphomePanel extends HTMLElement {
     this._historyError = null;
     this._hoverT = null; // time under the crosshair
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
+    // an overview card is a link: Enter or Space opens the device
+    this.shadowRoot.addEventListener("keydown", (ev) => {
+      const card = ev.target?.closest?.(".dcard");
+      if (card && ev.target === card && (ev.key === "Enter" || ev.key === " ")) {
+        ev.preventDefault();
+        this._navigate(card.dataset.path);
+      }
+    });
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
       if (this._deferred) {
@@ -161,10 +199,17 @@ class LevoitEsphomePanel extends HTMLElement {
     if (first || this._pageStatesChanged()) this._render();
   }
 
+  // Routes under the panel: "" the device overview, "/config" updates and
+  // configs, "/device/<name>" a device's page ("/<name>" from 0.6.x too).
   set route(route) {
     this._route = route;
-    const match = /^\/([^/]+)/.exec(route?.path || "");
-    const name = match ? decodeURIComponent(match[1]) : null;
+    const parts = (route?.path || "").split("/").filter(Boolean).map(decodeURIComponent);
+    let name = null;
+    if (parts[0] === "config") this._view = "config";
+    else if (parts[0] === "device" && parts[1]) name = parts[1];
+    else if (parts[0]) name = parts[0];
+    if (name) this._view = "device";
+    else if (parts[0] !== "config") this._view = "overview";
     if (name !== this._pageName) {
       this._pageName = name;
       this._page = null;
@@ -199,11 +244,21 @@ class LevoitEsphomePanel extends HTMLElement {
     }
   }
 
+  // the entities shown live: the open device's, or every device's on the overview
+  _watched() {
+    if (this._view === "device") return Object.values(this._page?.controls || {});
+    if (this._view === "overview")
+      return (this._data?.devices || []).flatMap((d) => Object.values(d.controls || {}));
+    return [];
+  }
+
   _pageStatesChanged() {
-    if (!this._page || !this._hass) return false;
-    return Object.values(this._page.controls).some(
-      (entityId) => this._hass.states[entityId] !== this._seen[entityId],
-    );
+    if (!this._hass) return false;
+    return this._watched().some((entityId) => this._hass.states[entityId] !== this._seen[entityId]);
+  }
+
+  _devicePath(name) {
+    return `${this._base}/device/${encodeURIComponent(name)}`;
   }
 
   set narrow(narrow) {
@@ -527,7 +582,7 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _row(d) {
     // the name opens the device page (settings); the HA device page is linked there
-    const pagePath = `${this._base}/${encodeURIComponent(d.name)}`;
+    const pagePath = this._devicePath(d.name);
     const deviceLink = d.device_id
       ? `<a href="${esc(pagePath)}" data-action="navigate" data-path="${esc(pagePath)}" title="Settings of ${esc(d.title)}">${esc(d.title)}</a>`
       : esc(d.title);
@@ -663,9 +718,18 @@ class LevoitEsphomePanel extends HTMLElement {
     const showMenu = this._narrow || this._hass?.dockedSidebar === "always_hidden";
     const builderUrl = this._data?.builder_url;
     const version = this._panel?.config?.version;
-    const onPage = Boolean(this._pageName);
+    const onPage = this._view === "device" && Boolean(this._pageName);
+    const onConfig = this._view === "config";
     const pageTitle =
       this._page?.title || this._device(this._pageName)?.title || this._pageName || "";
+    const tabs = onPage
+      ? ""
+      : `<div class="tabs" role="tablist">
+          <button class="tab${onConfig ? "" : " on"}" role="tab" aria-selected="${!onConfig}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
+          <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config${
+            (this._data?.devices || []).some((d) => d.update_available) ? `<span class="tab-dot" title="Updates available"></span>` : ""
+          }</button>
+        </div>`;
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
       <div class="toolbar">
         ${
@@ -678,11 +742,15 @@ class LevoitEsphomePanel extends HTMLElement {
             : ""
         }
         <div class="title">${onPage ? esc(pageTitle) : "Levoit ESPHome"}</div>
-        <button class="icon-btn" data-action="check" ${this._checking ? "disabled" : ""} title="Check for new versions now" aria-label="Check for new versions now">${
-          this._checking ? `<span class="spinner light"></span>` : icon("refresh")
-        }</button>
         ${
-          builderUrl
+          onConfig
+            ? `<button class="icon-btn" data-action="check" ${this._checking ? "disabled" : ""} title="Check for new versions now" aria-label="Check for new versions now">${
+                this._checking ? `<span class="spinner light"></span>` : icon("refresh")
+              }</button>`
+            : ""
+        }
+        ${
+          builderUrl && onConfig
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="Open the ESPHome Device Builder">${icon(
                 "builder",
               )}<span>Device Builder</span></button>`
@@ -700,19 +768,135 @@ class LevoitEsphomePanel extends HTMLElement {
               )}. <button class="btn primary" data-action="reload">Reload this page</button></div>`
             : ""
         }
-        ${onPage ? this._devicePage() : `<div class="summary">${this._summary()}</div>${this._body()}`}
-        <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""} ·
-          builds run in the ESPHome Device Builder; the last build's output is under Log</div>
+        ${tabs}
+        ${
+          onPage
+            ? this._devicePage()
+            : onConfig
+              ? `<div class="summary">${this._summary()}</div>${this._body()}`
+              : this._overview()
+        }
+        <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""}${
+          onConfig ? " · builds run in the ESPHome Device Builder; the last build's output is under Log" : ""
+        }</div>
       </div>
       ${this._logDialog()}`;
     const pre = this.shadowRoot.querySelector(".log pre");
     if (pre) pre.scrollTop = pre.scrollHeight; // newest lines in view
-    if (this._page && this._hass) {
+    if (this._hass) {
       this._seen = {};
-      for (const entityId of Object.values(this._page.controls))
-        this._seen[entityId] = this._hass.states[entityId];
+      for (const entityId of this._watched()) this._seen[entityId] = this._hass.states[entityId];
     }
     this._bindHistory();
+  }
+
+  // --- overview: every device as a card, for using them --------------------------
+
+  _overview() {
+    const devices = this._data?.devices || [];
+    const pending = this._data?.pending || [];
+    // loading, errors and no devices at all: as on the config tab
+    if (this._error || !this._data || (!devices.length && !pending.length)) return this._body();
+    const cards = devices.map((d) => this._deviceCard(d)).join("");
+    const waiting = pending.length
+      ? `<div class="muted overview-note">${pending.length} device${pending.length === 1 ? "" : "s"} not flashed yet: see <a href="${esc(
+          this._base,
+        )}/config" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</a></div>`
+      : "";
+    return `<div class="overview">${cards}</div>${waiting}`;
+  }
+
+  // a device's state for a controls key, from the subscription's mapping
+  _dstate(d, key) {
+    const entityId = d.controls?.[key];
+    return entityId ? this._hass?.states?.[entityId] || null : null;
+  }
+
+  _deviceCard(d) {
+    const fan = this._dstate(d, "fan.fan");
+    const usable = this._usable(fan);
+    const on = fan?.state === "on";
+    const a = fan?.attributes || {};
+    const step = Number(a.percentage_step) || 25;
+    const count = Math.max(1, Math.round(100 / step));
+    const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
+    const offline = d.online === false || (fan && !usable && fan.state !== "off");
+    // status line: only what the buttons do not show
+    const mode = !fan ? "" : offline ? "Offline" : on ? "" : "Off";
+    // mode and speed, as on the device page (small); a click turns it on too
+    const dis = offline ? "disabled" : "";
+    const modeButtons = (a.preset_modes || [])
+      .map(
+        (m) =>
+          `<button class="seg sm${on && m === a.preset_mode ? " on" : ""}" ${dis} ${this._svc("fan", "set_preset_mode", fan.entity_id, {
+            preset_mode: m,
+          })}>${esc(m)}</button>`,
+      )
+      .join("");
+    const speedButtons = fan
+      ? Array.from({ length: count }, (_, i) => i + 1)
+          .map(
+            (n) =>
+              `<button class="seg sm${n === level ? " on" : ""}" aria-label="Speed ${n}" ${dis} ${this._svc(
+                "fan",
+                "set_percentage",
+                fan.entity_id,
+                { percentage: Math.min(100, Math.floor(n * step)) },
+              )}>${d.model === "ELEVA300X" && n === count ? "Turbo" : n}</button>`,
+          )
+          .join("")
+      : "";
+    const controls =
+      fan && !offline && (modeButtons || speedButtons)
+        ? `<div class="dc-controls">${modeButtons ? `<div class="segs">${modeButtons}</div>` : ""}${
+            speedButtons ? `<div class="segs">${speedButtons}</div>` : ""
+          }</div>`
+        : "";
+    const timerLeft =
+      parseDuration(this._dstate(d, "text_sensor.timer_duration_remaining")?.state) / 60;
+    const stat = (key, label) => {
+      const st = this._dstate(d, key);
+      if (!st) return "";
+      const value = this._usable(st) ? formatNumber(parseFloat(st.state)) : "—";
+      const unit = this._usable(st) ? st.attributes.unit_of_measurement || "" : "";
+      // the unit goes with the label, so the number always fits the tile
+      return `<div class="dc-stat"><div class="dc-val">${esc(value)}</div><div class="dc-label">${esc(label)}${
+        unit ? ` · ${esc(unit)}` : ""
+      }</div></div>`;
+    };
+    const aqiKey = d.controls?.["sensor.aqi_index"] ? "sensor.aqi_index" : "sensor.aqi";
+    const stats = [stat("sensor.pm25", "PM2.5"), stat(aqiKey, "AQI"), stat("sensor.current_cadr", "CADR")].join("");
+    const power = fan
+      ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? `Turn ${esc(d.title)} off` : `Turn ${esc(d.title)} on`}" title="${
+          on ? "Turn off" : "Turn on"
+        }" ${offline ? "disabled" : ""} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
+      : "";
+    const path = this._devicePath(d.name);
+    return `<div class="dcard${on ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0" data-action="navigate" data-path="${esc(
+      path,
+    )}" aria-label="${esc(d.title)}: open its page">
+      <div class="dc-top">
+        ${deviceImage(d.model)}
+        <div class="dc-name">
+          <div class="name">${esc(d.title)}</div>
+          <div class="sub">${esc(d.model || "Levoit")}</div>
+        </div>
+        ${power}
+      </div>
+      ${controls}
+      ${
+        mode || d.update_available || (timerLeft > 0 && on)
+          ? `<div class="dc-mode"><span>${esc(mode)}</span>${
+              timerLeft > 0 && on ? `<span class="chip info">Off in ${esc(formatMinutes(timerLeft))}</span>` : ""
+            }${
+              d.update_available
+                ? `<button class="chip warning chip-btn" data-action="navigate" data-path="${esc(this._base)}/config" title="Open Updates &amp; config">Update</button>`
+                : ""
+            }</div>`
+          : ""
+      }
+      ${stats ? `<div class="dc-stats">${stats}</div>` : ""}
+    </div>`;
   }
 
   // --- device page: control helpers -------------------------------------------
@@ -1574,6 +1758,44 @@ select:disabled { opacity: 0.6; }
 .log pre { margin: 0; padding: 12px 16px; overflow: auto; font-size: 12px; line-height: 1.45;
   font-family: var(--code-font-family, ui-monospace, Menlo, Consolas, monospace);
   white-space: pre-wrap; word-break: break-word; }
+
+/* --- tabs and overview --- */
+.tabs { display: flex; gap: 4px; margin: 0 4px 16px; border-bottom: 1px solid var(--divider-color); }
+.tab { font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; background: none; border: none;
+  padding: 10px 14px; color: var(--secondary-text-color); border-bottom: 2px solid transparent; margin-bottom: -1px;
+  display: inline-flex; align-items: center; gap: 6px; }
+.tab:hover { color: var(--primary-text-color); }
+.tab.on { color: var(--primary-color); border-bottom-color: var(--primary-color); }
+.tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning-color, #ffa600); }
+.overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.overview-note { margin: 16px 4px 0; font-size: 14px; }
+.dcard { padding: 16px; cursor: pointer; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+  background: var(--ha-card-background, var(--card-background-color, #fff));
+  border-radius: var(--ha-card-border-radius, 12px);
+  border: 1px solid var(--ha-card-border-color, var(--divider-color, #e0e0e0)); }
+.dcard:hover { border-color: var(--primary-color); }
+.dcard:focus-visible { box-shadow: 0 0 0 2px var(--primary-color); }
+.dcard.offline { opacity: 0.6; }
+.dc-top { display: flex; align-items: center; gap: 12px; }
+.dev-img { width: 48px; height: 48px; flex: none; fill: rgba(127, 127, 127, 0.08); stroke: var(--secondary-text-color);
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.dcard.on .dev-img { stroke: var(--primary-color); fill: color-mix(in srgb, var(--primary-color) 12%, transparent); }
+.dc-name { flex: 1; min-width: 0; }
+.dc-name .name { font-size: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-name .sub { max-width: none; }
+.chip-btn { font: inherit; font-size: 12px; font-weight: 500; border: none; cursor: pointer; margin-left: auto; }
+.chip-btn:hover { filter: brightness(0.95); }
+.power.small { width: 44px; height: 44px; }
+.power.small svg { width: 24px; height: 24px; }
+.dc-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; font-size: 14px; font-weight: 500; }
+.dc-mode span:empty { display: none; }
+.dc-controls { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.seg.sm { font-size: 12px; padding: 4px 10px; min-width: 30px; }
+.dc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.dc-stat { padding: 8px 10px; border-radius: 10px; background: rgba(127, 127, 127, 0.08); min-width: 0; }
+.dc-val { font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dc-val .unit { font-size: 11px; font-weight: 400; color: var(--secondary-text-color); margin-left: 3px; }
+.dc-label { font-size: 12px; color: var(--secondary-text-color); }
 
 /* --- device page --- */
 .toolbar .back { margin-left: -8px; }

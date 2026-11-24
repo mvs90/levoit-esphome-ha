@@ -29,7 +29,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, SIGNAL_COORDINATOR
-from .controls import SUPPORTED_MODELS, match_controls
+from .controls import match_controls, page_supported
 from .device_builder import builder_page_url
 from .templates import VARIANT_CUSTOM
 from .versions import is_behind
@@ -79,6 +79,9 @@ def _device_dict(
         except ValueError:
             filter_life = None
     last = coordinator.last_builds.get(device.name)
+    # which entity is which setting: the overview shows each device's power,
+    # mode, air quality and timer from these, live from the states
+    controls = match_controls(hass, device.esphome_device_id, device.model, device.control_names)
     return {
         "name": device.name,
         "title": device.title,
@@ -111,6 +114,8 @@ def _device_dict(
         if last is None
         else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
         "has_build_log": device.name in coordinator.build_logs,
+        "controls": controls,
+        "supported": page_supported(device.model, device.components, controls),
     }
 
 
@@ -359,10 +364,7 @@ def ws_device_controls(
         return
     _, device = found
     controls = match_controls(hass, device.esphome_device_id, device.model, device.control_names)
-    philips = "philips" in device.components
-    supported = device.model in SUPPORTED_MODELS or (
-        device.model is None and not philips and "fan.fan" in controls
-    )
+    supported = page_supported(device.model, device.components, controls)
     connection.send_result(
         msg["id"],
         {
