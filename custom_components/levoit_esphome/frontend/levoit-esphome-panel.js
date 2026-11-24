@@ -1212,7 +1212,7 @@ class LevoitEsphomePanel extends HTMLElement {
         dot && ok ? `<span class="aqi-dot q${dot}" title="${esc(AQI_WORDS[dot])}"></span>` : ""
       }</div><div class="dc-label">${esc(label)}${unit ? ` ${esc(unit)}` : ""}</div></div>`;
     };
-    const aqiKey = indexSt || d.controls?.["sensor.aqi_index"] ? "sensor.aqi_index" : "sensor.aqi";
+    const aqiKey = levelSt || d.controls?.["sensor.aqi"] ? "sensor.aqi" : "sensor.aqi_index";
     const stats = [
       stat("sensor.pm25", "PM2.5"),
       stat(aqiKey, "AQI", dotLevel),
@@ -2292,14 +2292,13 @@ class LevoitEsphomePanel extends HTMLElement {
     const fan = this._state("fan.fan");
     const levelSt = this._state("sensor.aqi");
     const level = this._usable(levelSt) ? aqiLevel(levelSt.state) : null;
-    const hasIndex = Boolean(this._state("sensor.aqi_index"));
     const tiles = [
       this._tile("sensor.pm25", "PM2.5"),
       this._tile("sensor.pm1_0", "PM1.0"),
       this._tile("sensor.pm10", "PM10"),
-      // Eleva: the index, with the level's word beside it
-      this._tile("sensor.aqi_index", "AQI", { level }),
-      hasIndex ? "" : this._tile("sensor.aqi", "Air quality", { level }),
+      // the 1-4 level on every model, with its word; the Eleva also has its 0-500 index
+      this._tile("sensor.aqi", "AQI", { level }),
+      this._tile("sensor.aqi_index", "AQI index"),
       this._tile("sensor.current_cadr", "CADR now"),
     ].join("");
     let controls = "";
@@ -2578,9 +2577,8 @@ class LevoitEsphomePanel extends HTMLElement {
     const ok = this._usable(st);
     let now = "—";
     if (ok && s.band) {
-      // the index when there is one, else the level, then the word: "232 Poor", "4 Poor"
-      const index = s.index ? this._hass.states[s.index] : null;
-      const shownValue = this._usable(index) ? formatNumber(Math.round(parseFloat(index.state))) : st.state;
+      // the level and its word, "4 Poor" (the index without a level sensor: "232 Poor")
+      const shownValue = formatNumber(Math.round(parseFloat(st.state)));
       now = `${shownValue} ${AQI_WORDS[this._bandLevel(s, st.state)] || ""}`.trim();
     } else if (ok) {
       const unit = st.attributes.unit_of_measurement || "";
