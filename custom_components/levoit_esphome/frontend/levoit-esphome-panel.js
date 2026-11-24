@@ -112,11 +112,13 @@ const HISTORY_RANGES = {
 const HISTORY_REFRESH_MS = 5 * 60e3;
 // one small chart each, on a shared time axis: different units, never one axis.
 // The 1-4 air quality level is drawn as a coloured band under them.
+// One chart, as in the design: PM2.5 as an area on the left axis, CADR as a
+// dashed line on the right axis, and the air quality level as a band below.
+// The Eleva's 0-500 index is shown with the band (its level when the model has
+// no 1-4 level sensor) and in the tooltip.
 const HISTORY_SERIES = [
-  { key: "sensor.pm25", title: "PM2.5", color: "pm" },
-  { key: "sensor.aqi_index", title: "AQI", color: "aqi" }, // Eleva: the 0-500 index
-  { key: "sensor.current_cadr", title: "CADR", color: "cadr" },
-  { key: "sensor.aqi", title: "Air quality", band: true },
+  { key: "sensor.pm25", title: "PM2.5", color: "pm", axis: "left" },
+  { key: "sensor.current_cadr", title: "CADR", color: "cadr", axis: "right" },
 ];
 
 // the purifiers' air quality level, 1 (very good) to 4 (poor)
@@ -178,7 +180,7 @@ const memberSpeed = (level, max, speeds) => {
 const parseValue = (text) =>
   text === "true" ? true : text === "false" ? false : /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : text;
 
-const CHART = { width: 600, height: 76, top: 6, bottom: 6 };
+const CHART = { width: 1000, height: 150, top: 6, bottom: 2 };
 
 // a round axis maximum at or above value: 1, 2, 2.5, 5 x 10^n
 const niceMax = (value) => {
@@ -2552,7 +2554,17 @@ class LevoitEsphomePanel extends HTMLElement {
   // the air quality sensors this device has, one chart each (and the level band)
   _historySeries() {
     const controls = this._page?.controls || {};
-    return HISTORY_SERIES.filter((s) => controls[s.key]).map((s) => ({ ...s, entity: controls[s.key] }));
+    const series = HISTORY_SERIES.filter((s) => controls[s.key]).map((s) => ({ ...s, entity: controls[s.key] }));
+    const level = controls["sensor.aqi"];
+    const index = controls["sensor.aqi_index"];
+    if (level || index)
+      series.push({ key: "band", title: "AQI", band: true, entity: level || index, fromIndex: !level, index: index || null });
+    return series;
+  }
+
+  // the band's level of a reading: the 1-4 sensor, or the level of the 0-500 index
+  _bandLevel(s, value) {
+    return s.fromIndex ? aqiIndexLevel(value) : aqiLevel(value);
   }
 
   // the ones switched on in the legend
@@ -2565,15 +2577,19 @@ class LevoitEsphomePanel extends HTMLElement {
     const st = this._hass?.states?.[s.entity];
     const ok = this._usable(st);
     let now = "—";
-    if (ok && s.band) now = AQI_WORDS[aqiLevel(st.state)] || st.state;
-    else if (ok) {
+    if (ok && s.band) {
+      // the index when there is one, else the level, then the word: "232 Poor", "4 Poor"
+      const index = s.index ? this._hass.states[s.index] : null;
+      const shownValue = this._usable(index) ? formatNumber(Math.round(parseFloat(index.state))) : st.state;
+      now = `${shownValue} ${AQI_WORDS[this._bandLevel(s, st.state)] || ""}`.trim();
+    } else if (ok) {
       const unit = st.attributes.unit_of_measurement || "";
       now = `${formatNumber(Math.round(parseFloat(st.state)))}${unit ? ` ${unit}` : ""}`;
     }
     const shown = !this._histHidden.has(s.key);
     const swatch = s.band
       ? `<span class="sw band"></span>`
-      : `<span class="sw c-${s.color}"></span>`;
+      : `<span class="sw c-${s.color}${s.axis === "right" ? " line" : ""}"></span>`;
     return `<button class="lg${shown ? "" : " off"}" data-action="toggle-series" data-key="${esc(s.key)}" aria-pressed="${shown}" title="${
       shown ? "Hide" : "Show"
     } ${esc(s.title)}">${swatch}<span>${esc(s.title)}</span><b>${esc(now)}</b></button>`;
@@ -2593,14 +2609,14 @@ class LevoitEsphomePanel extends HTMLElement {
         type: "recorder/statistics_during_period",
         start_time: new Date(start).toISOString(),
         end_time: new Date(end).toISOString(),
-        statistic_ids: series.map((s) => s.entity),
+        statistic_ids: [...new Set(series.flatMap((s) => [s.entity, s.index].filter(Boolean)))],
         period: range.period,
         types: ["mean"],
       });
       if (name !== this._pageName || rangeKey !== this._historyRange) return;
       const data = {};
-      for (const s of series)
-        data[s.entity] = (result?.[s.entity] || [])
+      for (const id of new Set(series.flatMap((s) => [s.entity, s.index].filter(Boolean))))
+        data[id] = (result?.[id] || [])
           .map((p) => [typeof p.start === "number" ? p.start : Date.parse(p.start), p.mean])
           .filter(([t, v]) => Number.isFinite(t) && v !== null && v !== undefined);
       this._history = { name, range: rangeKey, start, end, at: Date.now(), data };
@@ -2633,10 +2649,12 @@ class LevoitEsphomePanel extends HTMLElement {
     else if (!shown.length) body = `<div class="muted pad">Pick a reading above to see its history.</div>`;
     else {
       const stale = this._historyLoading || h.range !== this._historyRange;
+      const band = shown.find((s) => s.band);
       body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="Air quality history, ${esc(
         HISTORY_RANGES[h.range].label,
       )}; arrow keys move through the readings">
-        ${shown.map((s) => (s.band ? this._bandPanel(s, h) : this._chartPanel(s, h))).join("")}
+        ${this._plot(shown.filter((s) => !s.band), h)}
+        ${band ? `<div class="hist-row band-row"><div></div>${this._bandStrip(band, h)}<div></div></div>` : ""}
         ${this._timeAxis(h)}
         <div class="hist-tip" hidden></div>
       </div>`;
@@ -2652,16 +2670,14 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   // the 1-4 level over time: a strip coloured by level (words in the tooltip)
-  _bandPanel(s, h) {
+  _bandStrip(s, h) {
     const points = h.data[s.entity] || [];
-    const head = `<div class="hist-title"><span>${esc(s.title)}</span></div>`;
-    if (!points.length) return `${head}<div class="hist-empty muted">No history yet</div>`;
     // one block per run of the same level (adjoining pieces would show seams);
     // a gap of more than two periods (offline) ends a run
     const step = HISTORY_RANGES[h.range].step;
     const runs = [];
     for (const [t, v] of points) {
-      const lvl = aqiLevel(v);
+      const lvl = this._bandLevel(s, v);
       if (!lvl) continue;
       const run = runs[runs.length - 1];
       if (run && run.lvl === lvl && t - run.end <= step * 2.5) run.end = t + step;
@@ -2674,62 +2690,81 @@ class LevoitEsphomePanel extends HTMLElement {
         return `<rect class="q${lvl}" x="${x.toFixed(1)}" y="0" width="${w.toFixed(2)}" height="10"></rect>`;
       })
       .join("");
-    return `${head}<div class="hist-row"><div class="hist-y"></div>
-      <svg class="hist-band" viewBox="0 0 ${CHART.width} 10" preserveAspectRatio="none" role="img" aria-label="${esc(
-        `${s.title} level, ${HISTORY_RANGES[h.range].label}`,
-      )}">${rects}<line class="xhair" y1="0" y2="10" x1="0" x2="0" visibility="hidden"></line></svg></div>`;
+    return `<svg class="hist-band" viewBox="0 0 ${CHART.width} 10" preserveAspectRatio="none" role="img" aria-label="${esc(
+      `Air quality level, ${HISTORY_RANGES[h.range].label}`,
+    )}">${rects}<line class="xhair" y1="0" y2="10" x1="0" x2="0" visibility="hidden"></line></svg>`;
   }
 
   _x(t, h) {
     return ((t - h.start) / (h.end - h.start)) * CHART.width;
   }
 
-  _chartPanel(s, h) {
+  // PM2.5 (area, left axis) and CADR (dashed line, right axis) in one chart
+  _plot(series, h) {
     const { width, height, top, bottom } = CHART;
-    const points = h.data[s.entity] || [];
-    const st = this._hass?.states?.[s.entity];
-    const unit = st?.attributes?.unit_of_measurement || "";
-    const head = `<div class="hist-title"><span>${esc(s.title)}${unit ? ` · ${esc(unit)}` : ""}</span></div>`;
-    if (!points.length)
-      return `${head}<div class="hist-empty muted">No history yet</div>`;
-    const max = niceMax(Math.max(...points.map(([, v]) => v)));
-    const y = (v) => top + (1 - v / max) * (height - top - bottom);
-    const base = y(0);
-    // a gap of more than two periods (device offline) breaks the line
+    const y = (max) => (v) => top + (1 - v / max) * (height - top - bottom);
+    // a gap of more than two periods (device offline) breaks a line
     const gap = HISTORY_RANGES[h.range].step * 2.5;
-    const runs = [];
-    for (const p of points) {
-      const run = runs[runs.length - 1];
-      if (run && p[0] - run[run.length - 1][0] <= gap) run.push(p);
-      else runs.push([p]);
+    const runsOf = (points) => {
+      const runs = [];
+      for (const pt of points) {
+        const run = runs[runs.length - 1];
+        if (run && pt[0] - run[run.length - 1][0] <= gap) run.push(pt);
+        else runs.push([pt]);
+      }
+      return runs;
+    };
+    const axes = { left: "", right: "" };
+    const paths = [];
+    let any = false;
+    for (const s of series) {
+      const points = h.data[s.entity] || [];
+      if (!points.length) continue;
+      any = true;
+      const max = niceMax(Math.max(...points.map(([, v]) => v)));
+      const yOf = y(max);
+      const base = yOf(0);
+      const line = (run) =>
+        run.map(([t, v], i) => `${i ? "L" : "M"}${this._x(t, h).toFixed(1)},${yOf(v).toFixed(1)}`).join("");
+      const runs = runsOf(points);
+      if (s.axis === "left")
+        paths.push(
+          ...runs.map(
+            (run) =>
+              `<path class="area c-${s.color}" d="${line(run)}L${this._x(run[run.length - 1][0], h).toFixed(1)},${base}L${this._x(run[0][0], h).toFixed(1)},${base}Z"></path>`,
+          ),
+        );
+      // a lone reading (between gaps) is a dot: a zero-length line with round caps
+      paths.push(
+        ...runs.map((run) =>
+          run.length > 1
+            ? `<path class="line c-${s.color}${s.axis === "right" ? " dashed" : ""}" d="${line(run)}"></path>`
+            : `<path class="line dot c-${s.color}" d="${line(run)}h0.01"></path>`,
+        ),
+      );
+      axes[s.axis] = [max, max / 2, 0]
+        .map(
+          (v) =>
+            `<span class="ytick c-${s.color}" style="top:${((yOf(v) / height) * 100).toFixed(1)}%">${esc(formatNumber(v))}</span>`,
+        )
+        .join("");
     }
-    const line = (run) => run.map(([t, v], i) => `${i ? "L" : "M"}${this._x(t, h).toFixed(1)},${y(v).toFixed(1)}`).join("");
-    const area = (run) =>
-      `${line(run)}L${this._x(run[run.length - 1][0], h).toFixed(1)},${base}L${this._x(run[0][0], h).toFixed(1)},${base}Z`;
-    const grid = [0, max / 2, max]
-      .map((v) => `<line class="grid" x1="0" x2="${width}" y1="${y(v)}" y2="${y(v)}"></line>`)
+    if (!any) return `<div class="hist-empty muted">No history yet</div>`;
+    const grid = [top, (top + height - bottom) / 2, height - bottom]
+      .map((v) => `<line class="grid" x1="0" x2="${width}" y1="${v}" y2="${v}"></line>`)
       .join("");
-    // y labels: 0 and the top, in the column left of the plot
-    const ticks = [max, 0]
-      .map(
-        (v) =>
-          `<span class="ytick" style="top:${((y(v) / height) * 100).toFixed(1)}%">${esc(formatNumber(v))}</span>`,
-      )
-      .join("");
-    // a lone reading (between gaps) is a dot: a zero-length line with round caps
-    const mark = (run) =>
-      run.length > 1
-        ? `<path class="line" d="${line(run)}"></path>`
-        : `<path class="line dot" d="${line(run)}h0.01"></path>`;
-    return `${head}<div class="hist-row"><div class="hist-y">${ticks}</div>
-      <svg class="hist-plot c-${s.color}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(
-        `${s.title}, ${HISTORY_RANGES[h.range].label}, up to ${formatNumber(max)}${unit ? ` ${unit}` : ""}`,
+    const label = series.map((s) => `${s.title}${s.axis === "right" ? " (right axis)" : ""}`).join(" and ");
+    // PM2.5 underneath: its area must not cover the CADR line
+    const order = (path) => (path.includes("c-pm") ? 0 : 1);
+    paths.sort((a, b) => order(a) - order(b));
+    return `<div class="hist-row"><div class="hist-y left" aria-hidden="true">${axes.left}</div>
+      <svg class="hist-plot" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(
+        `${label}, ${HISTORY_RANGES[h.range].label}`,
       )}">
         ${grid}
-        ${runs.map((run) => `<path class="area" d="${area(run)}"></path>`).join("")}
-        ${runs.map(mark).join("")}
+        ${paths.join("")}
         <line class="xhair" y1="0" y2="${height}" x1="0" x2="0" visibility="hidden"></line>
-      </svg></div>`;
+      </svg><div class="hist-y right" aria-hidden="true">${axes.right}</div></div>`;
   }
 
   // shared time axis under the charts: every 6 hours, or every day at midnight
@@ -2747,12 +2782,12 @@ class LevoitEsphomePanel extends HTMLElement {
       for (let t = first.getTime(); t <= h.end; t += 24 * 3600e3)
         ticks.push([t, new Date(t).toLocaleDateString(lang, { weekday: "short" })]);
     }
-    return `<div class="hist-row"><div class="hist-y"></div><div class="hist-axis" aria-hidden="true">${ticks
+    return `<div class="hist-row"><div></div><div class="hist-axis" aria-hidden="true">${ticks
       .map(
         ([t, text]) =>
           `<span class="xtick" style="left:${((this._x(t, h) / CHART.width) * 100).toFixed(2)}%">${esc(text)}</span>`,
       )
-      .join("")}</div></div>`;
+      .join("")}</div><div></div></div>`;
   }
 
   // the crosshair and tooltip are drawn into the rendered chart, not re-rendered
@@ -2820,8 +2855,11 @@ class LevoitEsphomePanel extends HTMLElement {
       const row = document.createElement("div");
       row.className = "tip-row";
       const value = document.createElement("strong");
-      if (s.band) value.textContent = hit ? AQI_WORDS[aqiLevel(hit[1])] || "—" : "—";
-      else value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
+      if (s.band) {
+        const index = s.index ? (h.data[s.index] || []).find(([pt]) => Math.abs(pt - snapped) <= tolerance) : null;
+        const word = hit ? AQI_WORDS[this._bandLevel(s, hit[1])] || "—" : "—";
+        value.textContent = index ? `${formatNumber(Math.round(index[1]))} · ${word}` : word;
+      } else value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
       const label = document.createElement("span");
       label.textContent = s.title;
       row.append(value, label);
@@ -2829,10 +2867,10 @@ class LevoitEsphomePanel extends HTMLElement {
     }
     tip.hidden = false;
     // keep the tooltip inside the chart: left of the crosshair past the middle.
-    // Positioned in the plot column (the y labels take the first 40px).
+    // Positioned in the plot column (an axis of 40px and a gap of 8px each side).
     const share = x / CHART.width;
-    tip.style.left = share > 0.5 ? "" : `calc(40px + (100% - 40px) * ${share.toFixed(4)} + 12px)`;
-    tip.style.right = share > 0.5 ? `calc((100% - 40px) * ${(1 - share).toFixed(4)} + 12px)` : "";
+    tip.style.left = share > 0.5 ? "" : `calc(48px + (100% - 96px) * ${share.toFixed(4)} + 12px)`;
+    tip.style.right = share > 0.5 ? `calc(48px + (100% - 96px) * ${(1 - share).toFixed(4)} + 12px)` : "";
   }
 
   _infoSection() {
@@ -2899,7 +2937,6 @@ const STYLE = `
   --lv-track: var(--secondary-background-color, rgba(127, 127, 127, 0.12));
   --lv-tile: rgba(127, 127, 127, 0.08);
   --lv-pm: var(--primary-color);
-  --lv-aqi: #8e24aa;
   --lv-cadr: #e65100;
   /* air quality level 1-4: lighter to darker as well as green to red */
   --lv-q1: #43a047; --lv-q2: #c0ca33; --lv-q3: #ffa000; --lv-q4: #c62828;
@@ -2907,7 +2944,6 @@ const STYLE = `
   --lv-q3-bg: #fff3e0; --lv-q3-fg: #8a4b00; --lv-q4-bg: #ffebee; --lv-q4-fg: #b71c1c;
 }
 :host([dark]) {
-  --lv-aqi: #ce93d8;
   --lv-cadr: #ffa726;
   --lv-q4: #e53935;
   --lv-q1-bg: #1b3a1e; --lv-q1-fg: #a5d6a7; --lv-q2-bg: #2b3a1a; --lv-q2-fg: #c5e1a5;
@@ -3238,33 +3274,38 @@ details.section[open] > summary { padding-bottom: 8px; }
 .lg.off { opacity: 0.45; }
 .lg.off .sw { background: none !important; box-shadow: inset 0 0 0 1.5px var(--secondary-text-color); }
 .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
-.sw.c-pm { background: var(--lv-pm); } .sw.c-aqi { background: var(--lv-aqi); } .sw.c-cadr { background: var(--lv-cadr); }
+.sw.c-pm { background: var(--lv-pm); } .sw.c-cadr { background: var(--lv-cadr); }
 .sw.band { width: 16px; height: 8px; border-radius: 2px;
   background: linear-gradient(90deg, var(--lv-q1) 25%, var(--lv-q2) 25% 50%, var(--lv-q3) 50% 75%, var(--lv-q4) 75%); }
-.hist-plot.c-aqi .line { stroke: var(--lv-aqi); } .hist-plot.c-aqi .area { fill: var(--lv-aqi); }
-.hist-plot.c-cadr .line { stroke: var(--lv-cadr); } .hist-plot.c-cadr .area { fill: var(--lv-cadr); }
-.hist-band { display: block; width: 100%; height: 10px; border-radius: 3px; overflow: hidden; background: var(--lv-track); }
+.hist-band { display: block; width: 100%; height: 8px; border-radius: 4px; overflow: hidden; background: var(--lv-track); }
 .hist-band .q1 { fill: var(--lv-q1); } .hist-band .q2 { fill: var(--lv-q2); }
 .hist-band .q3 { fill: var(--lv-q3); } .hist-band .q4 { fill: var(--lv-q4); }
 .hist-band .xhair { stroke: var(--primary-text-color); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .hist { position: relative; margin: 0 20px 14px; outline: none; transition: opacity 0.2s; }
 .hist:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 4px; border-radius: 4px; }
 .hist.stale { opacity: 0.5; }
-.hist-title { display: flex; justify-content: space-between; align-items: baseline;
-  margin: 12px 0 4px 40px; font-size: 13px; color: var(--secondary-text-color); }
-.hist-now { color: var(--primary-text-color); font-weight: 500; font-variant-numeric: tabular-nums; }
-.hist-row { display: grid; grid-template-columns: 40px 1fr; }
+.hist-row { display: grid; grid-template-columns: 40px 1fr 40px; column-gap: 8px; }
+.band-row { margin-top: 6px; }
 .hist-y { position: relative; }
 .ytick { position: absolute; right: 8px; transform: translateY(-50%); font-size: 11px;
   color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
-.hist-plot { display: block; width: 100%; height: 76px; overflow: visible; }
+.hist-plot { display: block; width: 100%; height: 150px; overflow: visible; }
+.hist-plot .area.c-pm { fill: var(--lv-pm); fill-opacity: 0.14; }
+.hist-plot .line.c-pm { stroke: var(--lv-pm); }
+.hist-plot .line.c-cadr { stroke: var(--lv-cadr); }
+.hist-plot .line.dashed { stroke-dasharray: 5 3; }
+.hist-y.left .ytick { right: 0; }
+.hist-y.right .ytick { left: 0; right: auto; }
+.ytick.c-pm { color: var(--lv-accent-text); }
+.ytick.c-cadr { color: var(--lv-cadr); }
+.sw.c-cadr.line { height: 0; border-radius: 0; background: none; border-top: 2px dashed var(--lv-cadr); width: 14px; }
 .hist-plot .grid { stroke: var(--divider-color); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .hist-plot .area { fill: var(--primary-color); fill-opacity: 0.1; stroke: none; }
 .hist-plot .line { fill: none; stroke: var(--primary-color); stroke-width: 2; stroke-linejoin: round;
   stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .hist-plot .line.dot { stroke-width: 4; }
 .hist-plot .xhair { stroke: var(--secondary-text-color); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.hist-empty { margin-left: 40px; padding: 8px 0; font-size: 13px; }
+.hist-empty { margin-left: 48px; padding: 8px 0; font-size: 13px; }
 .hist-axis { position: relative; height: 20px; }
 .xtick { position: absolute; top: 4px; transform: translateX(-50%); font-size: 11px; white-space: nowrap;
   color: var(--secondary-text-color); }
