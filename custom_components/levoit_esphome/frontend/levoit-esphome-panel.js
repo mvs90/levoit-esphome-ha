@@ -42,6 +42,7 @@ const ICONS = {
   power:
     "M16.56,5.44L15.11,6.89C16.84,7.94 18,9.83 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12C6,9.83 7.16,7.94 8.88,6.88L7.44,5.44C5.36,6.88 4,9.28 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12C20,9.28 18.64,6.88 16.56,5.44M13,3H11V13H13",
   open: "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z",
+  chevron: "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z",
 };
 
 // "2h 30 min", "45 min", "1h 5 min 10 s" -> seconds; anything else -> 0
@@ -101,6 +102,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._pageError = null;
     this._pageLoading = false;
     this._seen = {}; // entity_id -> state object last rendered
+    this._infoOpen = true; // the device page's Info section: open until closed
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
@@ -274,6 +276,11 @@ class LevoitEsphomePanel extends HTMLElement {
           JSON.parse(target.dataset.args || "{}"),
         );
         break;
+      case "toggle-info":
+        ev.preventDefault(); // the open state is ours, not the <details> element's
+        this._infoOpen = !this._infoOpen;
+        this._render();
+        break;
       case "page-retry":
         this._pageError = null;
         this._page = null;
@@ -337,6 +344,8 @@ class LevoitEsphomePanel extends HTMLElement {
       const value = input.type === "time" ? timeToHours(input.value) : Number(input.value);
       input.blur(); // let the page render the new value
       await this._callService("number", "set_value", input.dataset.number, { value });
+      if (input.dataset.also)
+        await this._callService("number", "set_value", input.dataset.also, { value });
       return;
     }
     const select = ev.target.closest("select[data-channel]");
@@ -715,9 +724,11 @@ class LevoitEsphomePanel extends HTMLElement {
     return this._setting(label, hint, `<div class="segs">${buttons}</div>`, dim);
   }
 
-  _slider(key, label, hint, { dim = false, unit } = {}) {
+  // `also`: a second number entity set to the same value (see the room size)
+  _slider(key, label, hint, { dim = false, unit, also } = {}) {
     const st = this._state(key);
     if (!st) return "";
+    const alsoEntity = also ? this._page?.controls?.[also] : null;
     const a = st.attributes;
     const value = parseFloat(st.state);
     const known = !Number.isNaN(value);
@@ -728,7 +739,9 @@ class LevoitEsphomePanel extends HTMLElement {
       hint,
       `<div class="slider"><input type="range" min="${esc(a.min)}" max="${esc(a.max)}" step="${esc(
         a.step || 1,
-      )}" value="${esc(known ? value : a.min)}" data-number="${esc(st.entity_id)}" aria-label="${esc(
+      )}" value="${esc(known ? value : a.min)}" data-number="${esc(st.entity_id)}"${
+        alsoEntity ? ` data-also="${esc(alsoEntity)}"` : ""
+      } aria-label="${esc(
         label,
       )}" ${off ? "disabled" : ""}><span class="val">${esc(shown)}</span></div>`,
       dim,
@@ -933,8 +946,15 @@ class LevoitEsphomePanel extends HTMLElement {
       "Automatic",
       [
         this._choices("select.auto_mode", "Auto mode", "How Auto picks the speed. Choosing one switches the fan to Auto"),
+        // The preset number is only remembered on the ESP (sent when Room
+        // Size is picked); the room size number sends it to the purifier now.
+        // Set both, so a change applies at once and survives a mode change.
         roomSize
-          ? this._slider("number.auto_profile_room_size_input", "Room size", "Auto runs for a room this size")
+          ? this._state("number.auto_profile_room_size_input")
+            ? this._slider("number.auto_profile_room_size_input", "Room size", "Auto runs for a room this size", {
+                also: "number.efficiency_room_size",
+              })
+            : this._slider("number.efficiency_room_size", "Room size", "Auto runs for a room this size")
           : "",
         highFanLeft ? this._readout("text_sensor.auto_mode_room_size_high_fan", "High speed for another") : "",
         this._toggle("switch.dynamic_manual", "Dynamic manual", "In Manual, the speed goes up when the air gets bad"),
@@ -1097,8 +1117,11 @@ class LevoitEsphomePanel extends HTMLElement {
       this._readout("sensor.ambient_light", "Ambient light"),
     ].filter(Boolean);
     if (!rows.length) return "";
-    return `<details class="card section info">
-      <summary class="sec-head">Info</summary>
+    // open state kept here: the page re-renders on every state change
+    return `<details class="card section info" ${this._infoOpen ? "open" : ""}>
+      <summary class="sec-head" data-action="toggle-info" aria-expanded="${Boolean(this._infoOpen)}">
+        <span>Info</span>${icon("chevron")}
+      </summary>
       ${rows.join("")}
       <div class="hint pad">Settings found by entity name${
         this._page.from_config ? ", as named in the device's config" : ", as the tuct/levoit configs name them"
@@ -1299,7 +1322,10 @@ select:disabled { opacity: 0.6; }
 .sections { columns: 2 420px; column-gap: 16px; }
 .section { break-inside: avoid; margin-bottom: 16px; }
 .sec-head { padding: 12px 16px; font-size: 16px; font-weight: 500; border-bottom: 1px solid var(--divider-color); }
-details.section > summary { cursor: pointer; list-style: none; }
+details.section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; }
+details.section > summary svg { color: var(--secondary-text-color); transition: transform 0.15s; }
+details.section[open] > summary svg { transform: rotate(180deg); }
+details.section > summary:hover { background: rgba(127, 127, 127, 0.06); }
 details.section > summary::-webkit-details-marker { display: none; }
 details.section:not([open]) > summary { border-bottom: none; }
 .subhead { padding: 12px 16px 0; font-size: 12px; font-weight: 500; text-transform: uppercase;
