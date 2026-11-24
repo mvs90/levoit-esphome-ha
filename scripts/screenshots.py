@@ -11,7 +11,7 @@ from HA_TOKEN or else from the file ha_token in the repository (git-ignored);
 it is never written anywhere. The pictures go to images/:
 
     overview.png       Devices
-    device-page.png    a device's page (--device, else the first online card)
+    device-page.png    a device's page (--device, else the first running purifier)
     groups.png         Purifier groups
     group-editor.png   a group's editor (--group, else the first group; none: skipped)
     panel-updates.png  Updates & config
@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--url", default=os.environ.get("HA_URL", "http://homeassistant.local:8123"))
     p.add_argument(
-        "--device", help="device name as in its page's URL (default: the first online card)"
+        "--device", help="device name as in its page's URL (default: the first running purifier)"
     )
     p.add_argument("--group", help="group id for the editor (default: the first group)")
     p.add_argument("--out", type=pathlib.Path, default=ROOT / "images")
@@ -178,9 +178,13 @@ async def main() -> int:  # noqa: PLR0915 - one run, top to bottom
 
         device = args.device
         if not device:
-            first = page.locator(f"{TAG} .dcard:not(.offline)").first
-            if await first.count():
-                device = (await first.get_attribute("data-path") or "").rsplit("/", 1)[-1] or None
+            # a running purifier shows the most; else any online one
+            for selector in (".dcard.on", ".dcard:not(.offline)"):
+                first = page.locator(f"{TAG} {selector}").first
+                if await first.count():
+                    path = await first.get_attribute("data-path") or ""
+                    device = path.rsplit("/", 1)[-1] or None
+                    break
         if device:
             await open_(f"/device/{device}")
             await shoot("device-page")
