@@ -43,6 +43,8 @@ const ICONS = {
     "M16.56,5.44L15.11,6.89C16.84,7.94 18,9.83 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12C6,9.83 7.16,7.94 8.88,6.88L7.44,5.44C5.36,6.88 4,9.28 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12C20,9.28 18.64,6.88 16.56,5.44M13,3H11V13H13",
   open: "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z",
   chevron: "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z",
+  download: "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z",
+  filter: "M14,12V19.88C14.04,20.18 13.94,20.5 13.71,20.71C13.32,21.1 12.69,21.1 12.3,20.71L10.29,18.7C10.06,18.47 9.96,18.16 10,17.87V12H9.97L4.21,4.62C3.87,4.19 3.95,3.56 4.38,3.22C4.57,3.08 4.78,3 5,3H19C19.22,3 19.43,3.08 19.62,3.22C20.05,3.56 20.13,4.19 19.79,4.62L14.03,12H14Z",
 };
 
 // Small outline drawings per purifier family for the overview (48 x 48, drawn
@@ -100,13 +102,27 @@ const HISTORY_RANGES = {
   week: { label: "7 days", ms: 7 * 24 * 3600e3, period: "hour", step: 3600e3 },
 };
 const HISTORY_REFRESH_MS = 5 * 60e3;
-// one small chart each, on a shared time axis: different units, never one axis
+// one small chart each, on a shared time axis: different units, never one axis.
+// The 1-4 air quality level is drawn as a coloured band under them.
 const HISTORY_SERIES = [
-  { key: "sensor.pm25", title: "PM2.5" },
-  { key: "sensor.aqi_index", title: "AQI" }, // Eleva: the 0-500 index
-  { key: "sensor.aqi", title: "AQI" }, // the others: the level (only without an index)
-  { key: "sensor.current_cadr", title: "CADR" },
+  { key: "sensor.pm25", title: "PM2.5", color: "pm" },
+  { key: "sensor.aqi_index", title: "AQI", color: "aqi" }, // Eleva: the 0-500 index
+  { key: "sensor.current_cadr", title: "CADR", color: "cadr" },
+  { key: "sensor.aqi", title: "Air quality", band: true },
 ];
+
+// the purifiers' air quality level, 1 (very good) to 4 (poor)
+const AQI_WORDS = { 1: "Very good", 2: "Good", 3: "Moderate", 4: "Poor" };
+const aqiLevel = (value) => {
+  const v = Math.round(Number(value));
+  return v >= 1 && v <= 4 ? v : null;
+};
+// the Eleva's 0-500 index, in the same four steps (for the dot without a level)
+const aqiIndexLevel = (value) => {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return null;
+  return v <= 50 ? 1 : v <= 100 ? 2 : v <= 150 ? 3 : 4;
+};
 // plot geometry in viewBox units; the plot stretches to the card's width
 // (preserveAspectRatio none), so all text is HTML beside and under it
 const CHART = { width: 600, height: 76, top: 6, bottom: 6 };
@@ -165,6 +181,8 @@ class LevoitEsphomePanel extends HTMLElement {
     this._historyLoading = false;
     this._historyError = null;
     this._hoverT = null; // time under the crosshair
+    this._histHidden = new Set(); // history series switched off in the legend
+    this._updatingAll = false;
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     // an overview card is a link: Enter or Space opens the device
     this.shadowRoot.addEventListener("keydown", (ev) => {
@@ -350,6 +368,17 @@ class LevoitEsphomePanel extends HTMLElement {
     const { action, name, path } = target.dataset;
     if (target.tagName === "A") ev.preventDefault();
     switch (action) {
+      case "none":
+        // a control inside an overview card (the mode dropdown): not the card's link
+        break;
+      case "toggle-series":
+        if (this._histHidden.has(target.dataset.key)) this._histHidden.delete(target.dataset.key);
+        else this._histHidden.add(target.dataset.key);
+        this._render();
+        break;
+      case "update-all":
+        await this._updateAll();
+        break;
       case "menu":
         this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true }));
         break;
@@ -436,11 +465,37 @@ class LevoitEsphomePanel extends HTMLElement {
     }
   }
 
-  async _build(name, upload) {
+  // every device with an update, one after the other (the Device Builder builds
+  // one at a time anyway); asks once
+  async _updateAll() {
+    const due = (this._data?.devices || []).filter(
+      (d) => d.update_available && d.configuration && !d.building && !this._busy.has(d.name),
+    );
+    if (!due.length || this._updatingAll) return;
+    if (
+      !confirm(
+        `Compile and upload ${due.length} device${due.length === 1 ? "" : "s"} over the air, one after the other?\n\n` +
+          due.map((d) => `• ${d.title}`).join("\n") +
+          "\n\nTemplate configs are refreshed from the newest builder file first.",
+      )
+    )
+      return;
+    this._updatingAll = true;
+    this._render();
+    try {
+      for (const d of due) await this._build(d.name, true, { ask: false });
+    } finally {
+      this._updatingAll = false;
+      this._render();
+    }
+  }
+
+  async _build(name, upload, { ask = true } = {}) {
     const device = this._device(name);
     if (!device) return;
     if (
       upload &&
+      ask &&
       !confirm(
         `Compile ${device.title} in the ESPHome Device Builder and upload it over the air?` +
           (device.config_kind && device.config_kind !== "custom"
@@ -463,6 +518,13 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   async _onChange(ev) {
+    const preset = ev.target.closest("select[data-preset]");
+    if (preset) {
+      // overview card: the mode dropdown
+      preset.blur();
+      await this._callService("fan", "set_preset_mode", preset.dataset.preset, { preset_mode: preset.value });
+      return;
+    }
     const input = ev.target.closest("input[data-number]");
     if (input) {
       // device page slider or time: set the number entity
@@ -605,46 +667,59 @@ class LevoitEsphomePanel extends HTMLElement {
       : esc(d.title);
     const latest = d.latest
       ? d.latest_url
-        ? `<a href="${esc(d.latest_url)}" target="_blank" rel="noreferrer">${esc(d.latest)}</a>`
-        : esc(d.latest)
-      : `<span class="muted">—</span>`;
+        ? `<a class="mono" href="${esc(d.latest_url)}" target="_blank" rel="noreferrer">${esc(d.latest)}</a>`
+        : `<span class="mono">${esc(d.latest)}</span>`
+      : "";
+    // installed, and the version it goes to when there is an update
+    const firmware = `<div class="fw"><span class="mono muted">${d.installed ? esc(d.installed) : "—"}</span>${
+      d.update_available && latest
+        ? `<svg class="fw-arrow" viewBox="0 0 24 24" role="img" aria-label="to"><path d="M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z"></path></svg>${latest}`
+        : ""
+    }</div>`;
     return `<tr class="${d.update_available ? "has-update" : ""}">
       <td class="device" data-label="Device">
         <div class="name">${deviceLink}</div>
-        <div class="sub">${esc(d.configuration || d.name)}</div>
+        <div class="sub mono">${esc(d.configuration || d.name)}</div>
       </td>
-      <td data-label="Model">${d.model ? esc(d.model) : `<span class="muted">—</span>`}</td>
-      <td data-label="ESP / config">${
-        d.config_kind
-          ? esc(KIND_LABELS[d.config_kind] || d.config_kind)
-          : `<span class="muted">${d.configuration ? "…" : "—"}</span>`
-      }</td>
+      <td data-label="Hardware">${d.model ? esc(d.model) : `<span class="muted">—</span>`}<div class="sub">${
+        d.config_kind ? esc(KIND_LABELS[d.config_kind] || d.config_kind) : d.configuration ? "…" : "No config yet"
+      }</div></td>
       <td data-label="Channel">${this._channel(d)}</td>
-      <td data-label="Installed" class="mono">${
-        d.installed ? esc(d.installed) : `<span class="muted">—</span>`
-      }</td>
-      <td data-label="Latest" class="mono">${latest}</td>
+      <td data-label="Firmware">${firmware}<div class="fw-status">${this._status(d)}</div>${this._lastBuild(d)}</td>
       <td data-label="Filter">${this._filter(d)}</td>
       <td data-label="ESPHome" class="mono">${this._esphome(d)}</td>
-      <td data-label="Status">${this._status(d)}${this._lastBuild(d)}</td>
       <td class="actions">${this._actions(d)}</td>
     </tr>`;
   }
 
-  _summary() {
+  // the newest versions per channel, when they were checked, and Update all
+  _releases() {
     const heads = this._data?.heads || {};
     const head = (channel) =>
       heads[channel]
-        ? `<span><span class="muted">${CHANNEL_LABELS[channel]}</span> <a class="mono" href="${esc(
+        ? `<div class="rel"><span class="rel-label">${CHANNEL_LABELS[channel]}</span><a class="mono" href="${esc(
             heads[channel].url,
-          )}" target="_blank" rel="noreferrer">${esc(heads[channel].version)}</a></span>`
+          )}" target="_blank" rel="noreferrer">${esc(heads[channel].version)}</a></div>`
         : "";
-    const parts = [head("stable"), head("main")].filter(Boolean);
-    if (this._data?.checked_at)
-      parts.push(`<span class="muted">checked ${esc(this._time(this._data.checked_at))}</span>`);
-    if (this._data && !this._data.last_update_success)
-      parts.push(`<span class="bad">Device Builder not reachable</span>`);
-    return parts.join(`<span class="dot">·</span>`);
+    const due = (this._data?.devices || []).filter((d) => d.update_available && d.configuration).length;
+    const anyBusy = this._updatingAll || (this._data?.devices || []).some((d) => d.building);
+    const checked = this._data?.checked_at ? `Checked ${esc(this._time(this._data.checked_at))}` : "";
+    const unreachable =
+      this._data && !this._data.last_update_success ? `<span class="bad">Device Builder not reachable</span>` : "";
+    return `<div class="card releases">
+      ${head("stable")}${head("main")}
+      <div class="rel-when muted">${[checked, unreachable].filter(Boolean).join(" · ")}</div>
+      <button class="btn text" data-action="check" ${this._checking ? "disabled" : ""}>${
+        this._checking ? `<span class="spinner"></span> Checking…` : "Check now"
+      }</button>
+      ${
+        due
+          ? `<button class="btn primary icon-text" data-action="update-all" ${anyBusy ? "disabled" : ""}>${icon(
+              "download",
+            )}<span>${this._updatingAll ? "Updating…" : `Update all (${due})`}</span></button>`
+          : ""
+      }
+    </div>`;
   }
 
   _body() {
@@ -663,16 +738,19 @@ class LevoitEsphomePanel extends HTMLElement {
         <button class="btn primary" data-action="navigate" data-path="${INTEGRATION_PAGE}">Add device</button>
       </div>`;
     const updates = devices.filter((d) => d.update_available).length;
+    const noConfig = devices.filter((d) => !d.configuration).length;
     return `<div class="card">
       <div class="card-head">
-        <span>${devices.length} device${devices.length === 1 ? "" : "s"}${
-          updates ? ` · <span class="warn-text">${updates} with an update</span>` : ""
-        }${pending.length ? ` · ${pending.length} not flashed yet` : ""}</span>
+        <span><b>${devices.length} device${devices.length === 1 ? "" : "s"}</b>${
+          updates ? ` · ${updates} to update` : ""
+        }${noConfig ? ` · ${noConfig} without a config` : ""}${
+          pending.length ? ` · ${pending.length} not flashed yet` : ""
+        }</span>
       </div>
       <table>
         <thead><tr>
-          <th>Device</th><th>Model</th><th>ESP / config</th><th>Channel</th>
-          <th>Installed</th><th>Latest</th><th>Filter</th><th>ESPHome</th><th>Status</th><th></th>
+          <th>Device</th><th>Hardware</th><th>Channel</th><th>Firmware</th>
+          <th>Filter</th><th>ESPHome</th><th><span class="sr">Actions</span></th>
         </tr></thead>
         <tbody>${devices.map((d) => this._row(d)).join("")}${pending
           .map((p) => this._pendingRow(p))
@@ -695,20 +773,17 @@ class LevoitEsphomePanel extends HTMLElement {
     return `<tr class="pending">
       <td class="device" data-label="Device">
         <div class="name">${esc(p.title)}</div>
-        <div class="sub">${esc(p.configuration)}</div>
+        <div class="sub mono">${esc(p.configuration)}</div>
       </td>
-      <td data-label="Model">${p.model ? esc(p.model) : none}</td>
-      <td data-label="ESP / config">${
-        p.config_kind ? esc(KIND_LABELS[p.config_kind] || p.config_kind) : none
+      <td data-label="Hardware">${p.model ? esc(p.model) : none}${
+        p.config_kind ? `<div class="sub">${esc(KIND_LABELS[p.config_kind] || p.config_kind)}</div>` : ""
       }</td>
       <td data-label="Channel">${none}</td>
-      <td data-label="Installed"><span class="muted">not flashed</span></td>
-      <td data-label="Latest">${none}</td>
-      <td data-label="Filter">${none}</td>
-      <td data-label="ESPHome">${none}</td>
-      <td data-label="Status">${status}${this._lastBuild(p)}
+      <td data-label="Firmware"><div class="fw"><span class="muted">not flashed</span></div><div class="fw-status">${status}</div>${this._lastBuild(p)}
         <div class="sub hint">Device Builder: open ${esc(p.configuration)}, Install, Plug into this computer</div>
       </td>
+      <td data-label="Filter">${none}</td>
+      <td data-label="ESPHome">${none}</td>
       <td class="actions">
         <button class="btn" data-action="compile" data-name="${esc(p.name)}" ${busy ? "disabled" : ""} title="Check that the config builds, before flashing">Compile</button>${
           builderUrl
@@ -741,14 +816,18 @@ class LevoitEsphomePanel extends HTMLElement {
     const onConfig = this._view === "config";
     const pageTitle =
       this._page?.title || this._device(this._pageName)?.title || this._pageName || "";
+    const updates = (this._data?.devices || []).filter((d) => d.update_available).length;
     const tabs = onPage
       ? ""
       : `<div class="tabs" role="tablist">
           <button class="tab${onConfig ? "" : " on"}" role="tab" aria-selected="${!onConfig}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
           <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config${
-            (this._data?.devices || []).some((d) => d.update_available) ? `<span class="tab-dot" title="Updates available"></span>` : ""
+            updates ? `<span class="tab-badge" title="${updates} with an update">${updates}</span>` : ""
           }</button>
         </div>`;
+    // the theme's light or dark mode: a few colours of our own follow it
+    this.toggleAttribute("dark", Boolean(this._hass?.themes?.darkMode));
+    const haDevice = onPage && this._page?.device_id ? `/config/devices/device/${this._page.device_id}` : null;
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
       <div class="toolbar">
         ${
@@ -762,22 +841,26 @@ class LevoitEsphomePanel extends HTMLElement {
         }
         <div class="title">${onPage ? esc(pageTitle) : "Levoit ESPHome"}</div>
         ${
-          onConfig
-            ? `<button class="icon-btn" data-action="check" ${this._checking ? "disabled" : ""} title="Check for new versions now" aria-label="Check for new versions now">${
-                this._checking ? `<span class="spinner light"></span>` : icon("refresh")
-              }</button>`
+          haDevice
+            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(haDevice)}" title="The Home Assistant device page: every entity">${icon(
+                "open",
+              )}<span>Device page</span></button>`
             : ""
         }
         ${
-          builderUrl && onConfig
+          builderUrl && !onPage
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="Open the ESPHome Device Builder">${icon(
                 "builder",
               )}<span>Device Builder</span></button>`
             : ""
         }
-        <button class="tb-btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device (on the integration page)">${icon(
-          "plus",
-        )}<span>Add device</span></button>
+        ${
+          onPage
+            ? ""
+            : `<button class="tb-btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device (on the integration page)">${icon(
+                "plus",
+              )}<span>Add device</span></button>`
+        }
       </div>
       <div class="content">
         ${
@@ -792,7 +875,7 @@ class LevoitEsphomePanel extends HTMLElement {
           onPage
             ? this._devicePage()
             : onConfig
-              ? `<div class="summary">${this._summary()}</div>${this._body()}`
+              ? `${this._data && !this._error ? this._releases() : ""}${this._body()}`
               : this._overview()
         }
         <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""}${
@@ -822,7 +905,48 @@ class LevoitEsphomePanel extends HTMLElement {
           this._base,
         )}/config" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</a></div>`
       : "";
-    return `<div class="overview">${cards}</div>${waiting}`;
+    return `${this._overviewSummary(devices)}<div class="overview">${cards}</div>${waiting}`;
+  }
+
+  // "2 running · 4 off · 1 offline", and the device with the worst air
+  _overviewSummary(devices) {
+    let running = 0;
+    let off = 0;
+    let offline = 0;
+    let worst = null;
+    for (const d of devices) {
+      const fan = this._dstate(d, "fan.fan");
+      if (!fan) continue;
+      if (this._isOffline(d, fan)) {
+        offline++;
+        continue;
+      }
+      if (fan.state === "on") running++;
+      else off++;
+      const pm = this._dstate(d, "sensor.pm25");
+      const value = this._usable(pm) ? parseFloat(pm.state) : NaN;
+      if (Number.isFinite(value) && (!worst || value > worst.value)) worst = { d, value, unit: pm.attributes.unit_of_measurement };
+    }
+    if (!running && !off && !offline) return "";
+    const counts = [
+      `<b>${running} running</b>`,
+      `${off} off`,
+      offline ? `<span class="bad">${offline} offline</span>` : "",
+    ].filter(Boolean);
+    // only worth a mention when the air is not good (above the WHO day limit)
+    const air =
+      worst && worst.value > 15
+        ? `<span>Worst air: <a href="${esc(this._devicePath(worst.d.name))}" data-action="navigate" data-path="${esc(
+            this._devicePath(worst.d.name),
+          )}">${esc(worst.d.title)}</a> · PM2.5 ${esc(formatNumber(Math.round(worst.value)))}${
+            worst.unit ? ` ${esc(worst.unit)}` : ""
+          }</span>`
+        : "";
+    return `<div class="ov-summary">${`<span>${counts.join(" · ")}</span>`}${air}</div>`;
+  }
+
+  _isOffline(d, fan) {
+    return d.online === false || (fan && !this._usable(fan) && fan.state !== "off");
   }
 
   // a device's state for a controls key, from the subscription's mapping
@@ -833,25 +957,26 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _deviceCard(d) {
     const fan = this._dstate(d, "fan.fan");
-    const usable = this._usable(fan);
     const on = fan?.state === "on";
     const a = fan?.attributes || {};
     const step = Number(a.percentage_step) || 25;
     const count = Math.max(1, Math.round(100 / step));
     const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
-    const offline = d.online === false || (fan && !usable && fan.state !== "off");
-    // status line: only what the buttons do not show
-    const mode = !fan ? "" : offline ? "Offline" : on ? "" : "Off";
-    // mode and speed, as on the device page (small); a click turns it on too
+    const offline = this._isOffline(d, fan);
+    // speed buttons and the mode dropdown; picking either turns it on too
     const dis = offline ? "disabled" : "";
-    const modeButtons = (a.preset_modes || [])
-      .map(
-        (m) =>
-          `<button class="seg sm${on && m === a.preset_mode ? " on" : ""}" ${dis} ${this._svc("fan", "set_preset_mode", fan.entity_id, {
-            preset_mode: m,
-          })}>${esc(m)}</button>`,
-      )
-      .join("");
+    const presets = a.preset_modes || [];
+    const current = on && presets.includes(a.preset_mode) ? a.preset_mode : "";
+    const modeSelect =
+      fan && presets.length
+        ? `<select class="mode-select" data-action="none" data-preset="${esc(fan.entity_id)}" aria-label="Mode of ${esc(
+            d.title,
+          )}" ${dis}>${
+            current ? "" : `<option value="" selected disabled>${on ? "Mode" : "Off"}</option>`
+          }${presets
+            .map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${esc(m)}</option>`)
+            .join("")}</select>`
+        : "";
     const speedButtons = fan
       ? Array.from({ length: count }, (_, i) => i + 1)
           .map(
@@ -866,55 +991,75 @@ class LevoitEsphomePanel extends HTMLElement {
           .join("")
       : "";
     const controls =
-      fan && !offline && (modeButtons || speedButtons)
-        ? `<div class="dc-controls">${modeButtons ? `<div class="segs">${modeButtons}</div>` : ""}${
-            speedButtons ? `<div class="segs">${speedButtons}</div>` : ""
-          }</div>`
+      fan && (modeSelect || speedButtons)
+        ? `<div class="dc-controls">${speedButtons ? `<div class="segs" role="group" aria-label="Speed">${speedButtons}</div>` : ""}${modeSelect}</div>`
         : "";
     const timerLeft =
       parseDuration(this._dstate(d, "text_sensor.timer_duration_remaining")?.state) / 60;
-    const stat = (key, label) => {
+    // the AQI dot: from the 1-4 level, else from the Eleva's index
+    const levelSt = this._dstate(d, "sensor.aqi");
+    const indexSt = this._dstate(d, "sensor.aqi_index");
+    const dotLevel = this._usable(levelSt)
+      ? aqiLevel(levelSt.state)
+      : this._usable(indexSt)
+        ? aqiIndexLevel(indexSt.state)
+        : null;
+    const stat = (key, label, dot) => {
       const st = this._dstate(d, key);
       if (!st) return "";
-      const value = this._usable(st) ? formatNumber(parseFloat(st.state)) : "—";
-      const unit = this._usable(st) ? st.attributes.unit_of_measurement || "" : "";
+      const ok = this._usable(st) && !offline;
+      const value = ok ? formatNumber(Math.round(parseFloat(st.state))) : "—";
+      const unit = ok ? st.attributes.unit_of_measurement || "" : "";
       // the unit goes with the label, so the number always fits the tile
-      return `<div class="dc-stat"><div class="dc-val">${esc(value)}</div><div class="dc-label">${esc(label)}${
-        unit ? ` · ${esc(unit)}` : ""
-      }</div></div>`;
+      return `<div class="dc-stat"><div class="dc-val">${esc(value)}${
+        dot && ok ? `<span class="aqi-dot q${dot}" title="${esc(AQI_WORDS[dot])}"></span>` : ""
+      }</div><div class="dc-label">${esc(label)}${unit ? ` ${esc(unit)}` : ""}</div></div>`;
     };
-    const aqiKey = d.controls?.["sensor.aqi_index"] ? "sensor.aqi_index" : "sensor.aqi";
-    const stats = [stat("sensor.pm25", "PM2.5"), stat(aqiKey, "AQI"), stat("sensor.current_cadr", "CADR")].join("");
+    const aqiKey = indexSt || d.controls?.["sensor.aqi_index"] ? "sensor.aqi_index" : "sensor.aqi";
+    const stats = [
+      stat("sensor.pm25", "PM2.5"),
+      stat(aqiKey, "AQI", dotLevel),
+      stat("sensor.current_cadr", "CADR"),
+    ].join("");
     const power = fan
       ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? `Turn ${esc(d.title)} off` : `Turn ${esc(d.title)} on`}" title="${
           on ? "Turn off" : "Turn on"
-        }" ${offline ? "disabled" : ""} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
+        }" ${dis} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
       : "";
+    // under the name: model, filter, then timer, update or offline
+    const filter =
+      d.filter_life != null && !offline
+        ? (() => {
+            const value = Math.max(0, Math.min(100, d.filter_life));
+            const lvl = value < 10 ? "bad" : value < 25 ? "low" : "good";
+            return `<span class="dc-filter ${lvl}" title="Filter ${Math.round(value)} % left">${icon(
+              "filter",
+            )}<span class="bar"><span style="width:${value}%"></span></span>${Math.round(value)} %</span>`;
+          })()
+        : "";
+    const flags = [
+      timerLeft > 0 && on && !offline ? `<span class="chip info">Off in ${esc(formatMinutes(timerLeft))}</span>` : "",
+      d.update_available && !offline
+        ? `<button class="chip warning chip-btn" data-action="navigate" data-path="${esc(this._base)}/config" title="Open Updates &amp; config">Update</button>`
+        : "",
+      offline ? `<span class="chip bad-chip"><span class="dot-i"></span>Offline</span>` : "",
+    ].join("");
     const path = this._devicePath(d.name);
-    return `<div class="dcard${on ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0" data-action="navigate" data-path="${esc(
+    return `<div class="dcard${on && !offline ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0" data-action="navigate" data-path="${esc(
       path,
     )}" aria-label="${esc(d.title)}: open its page">
       <div class="dc-top">
-        ${deviceImage(d.model)}
+        <span class="dev-tile">${deviceImage(d.model)}</span>
         <div class="dc-name">
           <div class="name">${esc(d.title)}</div>
-          <div class="sub">${esc(d.model || "Levoit")}</div>
+          <div class="dc-sub"><span>${esc(d.model || "Levoit")}</span>${filter ? `<span aria-hidden="true">·</span>${filter}` : ""}${
+            flags ? `<span class="dc-flags">${flags}</span>` : ""
+          }</div>
         </div>
         ${power}
       </div>
-      ${controls}
-      ${
-        mode || d.update_available || (timerLeft > 0 && on)
-          ? `<div class="dc-mode"><span>${esc(mode)}</span>${
-              timerLeft > 0 && on ? `<span class="chip info">Off in ${esc(formatMinutes(timerLeft))}</span>` : ""
-            }${
-              d.update_available
-                ? `<button class="chip warning chip-btn" data-action="navigate" data-path="${esc(this._base)}/config" title="Open Updates &amp; config">Update</button>`
-                : ""
-            }</div>`
-          : ""
-      }
       ${stats ? `<div class="dc-stats">${stats}</div>` : ""}
+      ${controls}
     </div>`;
   }
 
@@ -1046,21 +1191,27 @@ class LevoitEsphomePanel extends HTMLElement {
     return this._setting(label, "", `<span class="readout">${esc(value)}</span>`);
   }
 
-  _tile(key, label) {
+  // a reading: whole numbers (a sensor's "783.0" is 783); `level`: the 1-4
+  // air quality level, shown as a word beside it
+  _tile(key, label, { level } = {}) {
     const st = this._state(key);
     if (!st) return "";
-    const value = this._usable(st) ? st.state : "—";
-    const unit = this._usable(st) ? st.attributes.unit_of_measurement || "" : "";
-    return `<div class="tile"><div class="t-val">${esc(value)}${
+    const ok = this._usable(st);
+    const number = parseFloat(st.state);
+    const value = !ok ? "—" : Number.isFinite(number) ? formatNumber(Math.round(number)) : st.state;
+    const unit = ok ? st.attributes.unit_of_measurement || "" : "";
+    const badge = ok && level ? `<span class="aqi-badge q${level}">${esc(AQI_WORDS[level])}</span>` : "";
+    return `<div class="tile"><div class="t-label">${esc(label)}</div><div class="t-val">${esc(value)}${
       unit ? `<span class="unit">${esc(unit)}</span>` : ""
-    }</div><div class="t-label">${esc(label)}</div></div>`;
+    }${badge}</div></div>`;
   }
 
-  _section(title, rows, hint) {
+  // `action`: a button on the right of the heading (the timer's Cancel)
+  _section(title, rows, hint, action = "") {
     const body = rows.filter(Boolean).join("");
     if (!body) return "";
     return `<div class="card section">
-      <div class="sec-head">${esc(title)}${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>
+      <div class="sec-head"><div><h2>${esc(title)}</h2>${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>${action}</div>
       ${body}
     </div>`;
   }
@@ -1097,13 +1248,7 @@ class LevoitEsphomePanel extends HTMLElement {
         }. Renamed entities are on the Home Assistant device page.</p>
         ${haLink}
       </div>`;
-    return `<div class="page-head">
-        <span class="chip">${esc(page.model || "Levoit")}</span>
-        ${this._onlineChip()}
-        <span class="spacer"></span>
-        ${haLink}
-      </div>
-      ${this._alerts()}
+    return `${this._alerts()}
       ${this._hero()}
       ${this._historyCard()}
       <div class="sections">
@@ -1115,14 +1260,6 @@ class LevoitEsphomePanel extends HTMLElement {
         ${this._filterSection()}
         ${this._infoSection()}
       </div>`;
-  }
-
-  _onlineChip() {
-    const fan = this._state("fan.fan");
-    if (!fan) return "";
-    return this._usable(fan) || fan.state === "off"
-      ? `<span class="chip success">Online</span>`
-      : `<span class="chip warning">Offline</span>`;
   }
 
   _alerts() {
@@ -1138,12 +1275,16 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _hero() {
     const fan = this._state("fan.fan");
+    const levelSt = this._state("sensor.aqi");
+    const level = this._usable(levelSt) ? aqiLevel(levelSt.state) : null;
+    const hasIndex = Boolean(this._state("sensor.aqi_index"));
     const tiles = [
       this._tile("sensor.pm25", "PM2.5"),
       this._tile("sensor.pm1_0", "PM1.0"),
       this._tile("sensor.pm10", "PM10"),
-      this._tile("sensor.aqi_index", "AQI"),
-      this._tile("sensor.aqi", this._state("sensor.aqi_index") ? "Air quality level" : "AQI"),
+      // Eleva: the index, with the level's word beside it
+      this._tile("sensor.aqi_index", "AQI", { level }),
+      hasIndex ? "" : this._tile("sensor.aqi", "Air quality", { level }),
       this._tile("sensor.current_cadr", "CADR now"),
     ].join("");
     let controls = "";
@@ -1155,10 +1296,24 @@ class LevoitEsphomePanel extends HTMLElement {
       const count = Math.max(1, Math.round(100 / step));
       const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
       const turbo = this._page.model === "ELEVA300X";
+      const speedName = (n) => (turbo && n === count ? "Turbo" : `Speed ${n}`);
+      // what it is doing, in words: "Running · Auto · Room Size · off in 1 h"
+      const offline = !usable && fan.state !== "off";
+      const autoMode = this._state("select.auto_mode");
+      const timerLeft = parseDuration(this._state("text_sensor.timer_duration_remaining")?.state) / 60;
+      const doing = [];
+      if (on) {
+        if (a.preset_mode) doing.push(a.preset_mode);
+        if (a.preset_mode === "Auto" && this._usable(autoMode)) doing.push(autoMode.state);
+        else if ((!a.preset_mode || a.preset_mode === "Manual") && level) doing.push(speedName(level));
+        if (timerLeft > 0) doing.push(`off in ${formatMinutes(timerLeft)}`);
+      }
+      const status = offline ? "Offline" : on ? "Running" : "Off";
+      const statusSub = offline ? "Not connected to Home Assistant" : doing.join(" · ");
       const speeds = Array.from({ length: count }, (_, i) => i + 1)
         .map(
           (n) =>
-            `<button class="seg${n === level ? " on" : ""}" ${usable ? "" : "disabled"} ${this._svc(
+            `<button class="seg${n === level ? " on" : ""}" aria-label="${esc(speedName(n))}" ${usable ? "" : "disabled"} ${this._svc(
               "fan",
               "set_percentage",
               fan.entity_id,
@@ -1178,6 +1333,9 @@ class LevoitEsphomePanel extends HTMLElement {
             )}>${esc(mode)}</button>`,
         )
         .join("");
+      // the speed buttons look pressed in Manual only; in Auto or Sleep they show
+      // the speed it picked, dimmed (a click switches to Manual)
+      const manual = on && (!a.preset_mode || a.preset_mode === "Manual");
       controls = `<div class="hero-controls">
         <button class="power${on ? " on" : ""}" aria-label="${on ? "Turn off" : "Turn on"}" title="${
           on ? "Turn off" : "Turn on"
@@ -1187,15 +1345,22 @@ class LevoitEsphomePanel extends HTMLElement {
           fan.entity_id,
         )}>${icon("power")}</button>
         <div class="hero-rows">
-          ${presets ? `<div class="hero-row"><span class="h-label">Mode</span><div class="segs">${presets}</div></div>` : ""}
-          <div class="hero-row"><span class="h-label">Speed</span><div class="segs">${speeds}</div></div>
+          <div class="hero-status"><span class="hs-title">${esc(status)}</span>${
+            statusSub ? `<span class="hs-sub">${esc(statusSub)}</span>` : ""
+          }</div>
+          <div class="hero-segs">
+            ${presets ? `<div class="segs" role="group" aria-label="Mode">${presets}</div>` : ""}
+            <div class="segs${manual ? "" : " dim"}" role="group" aria-label="Speed">${speeds}</div>
+          </div>
         </div>
       </div>`;
     }
     const vent = this._slider("number.vent_angle", "Vent angle", "45° points up, 90° straight ahead");
     return `<div class="card hero">
-      ${controls}
-      ${tiles ? `<div class="tiles">${tiles}</div>` : ""}
+      <div class="hero-main">
+        ${controls}
+        ${tiles ? `<div class="tiles">${tiles}</div>` : ""}
+      </div>
       ${vent}
     </div>`;
   }
@@ -1292,9 +1457,10 @@ class LevoitEsphomePanel extends HTMLElement {
     const running = left > 0;
     const max = Number(timer.attributes.max) || 1440;
     const usable = this._usable(timer);
+    // whole minutes the timer number takes, up to its max
     const presets = [30, 60, 120, 240, 480, 720].filter((m) => m <= max);
-    const set = (minutes, text) =>
-      `<button class="seg" ${usable ? "" : "disabled"} ${this._svc("number", "set_value", timer.entity_id, {
+    const set = (minutes, text, cls) =>
+      `<button class="${cls}" ${usable ? "" : "disabled"} ${this._svc("number", "set_value", timer.entity_id, {
         value: minutes,
       })}>${esc(text)}</button>`;
     const status = running
@@ -1304,20 +1470,17 @@ class LevoitEsphomePanel extends HTMLElement {
           }</span></div>
           ${total ? `<div class="bar"><span style="width:${Math.min(100, Math.round((left / total) * 100))}%"></span></div>` : ""}
         </div>`
-      : `<div class="muted pad">No timer running</div>`;
+      : `<div class="muted pad">No timer running. Pick a time to turn the purifier off.</div>`;
     return this._section(
       "Timer",
       [
         status,
-        this._setting(
-          running ? "New timer" : "Turn off in",
-          "",
-          `<div class="segs">${presets.map((m) => set(m, formatMinutes(m))).join("")}${
-            running ? set(0, "Cancel") : ""
-          }</div>`,
-        ),
+        `<div class="opts" role="group" aria-label="${running ? "New timer" : "Turn off in"}">${presets
+          .map((m) => set(m, formatMinutes(m), "opt"))
+          .join("")}</div>`,
       ],
-      "The purifier turns off when the timer ends",
+      "",
+      running ? set(0, "Cancel", "btn text") : "",
     );
   }
 
@@ -1343,19 +1506,19 @@ class LevoitEsphomePanel extends HTMLElement {
       life === null
         ? ""
         : `<div class="filter-big${life < 5 ? " bad" : life < 20 ? " low" : ""}">
-            <div class="big">${esc(formatNumber(life))} %</div>
+            <div class="big">${esc(formatNumber(Math.round(life)))}<span class="muted"> % left</span></div>
             <div class="bar"><span style="width:${Math.max(0, Math.min(100, life))}%"></span></div>
           </div>`;
     return this._section(
       "Filter",
       [
         bar,
-        this._stepper("number.filter_lifetime_months", "Lasts", "Expected filter life, used for the %", {
+        this._stepper("number.filter_lifetime_months", "Filter lasts", "Used to work out the %", {
           format: (v) => `${formatNumber(v)} month${v === 1 ? "" : "s"}`,
         }),
         reset
           ? this._setting(
-              "New filter fitted",
+              "New filter fitted?",
               "Starts the filter life at 100 % again",
               `<button class="btn" ${this._usable(reset) || reset.state === "unknown" ? "" : "disabled"} ${this._svc(
                 "button",
@@ -1373,12 +1536,34 @@ class LevoitEsphomePanel extends HTMLElement {
 
   // --- device page: history chart ----------------------------------------------
 
-  // the air quality sensors this device has, one chart each
+  // the air quality sensors this device has, one chart each (and the level band)
   _historySeries() {
     const controls = this._page?.controls || {};
-    return HISTORY_SERIES.filter(
-      (s) => controls[s.key] && !(s.key === "sensor.aqi" && controls["sensor.aqi_index"]),
-    ).map((s) => ({ ...s, entity: controls[s.key] }));
+    return HISTORY_SERIES.filter((s) => controls[s.key]).map((s) => ({ ...s, entity: controls[s.key] }));
+  }
+
+  // the ones switched on in the legend
+  _shownSeries() {
+    return this._historySeries().filter((s) => !this._histHidden.has(s.key));
+  }
+
+  // a legend chip: switches its chart on and off, and shows the reading now
+  _legendChip(s) {
+    const st = this._hass?.states?.[s.entity];
+    const ok = this._usable(st);
+    let now = "—";
+    if (ok && s.band) now = AQI_WORDS[aqiLevel(st.state)] || st.state;
+    else if (ok) {
+      const unit = st.attributes.unit_of_measurement || "";
+      now = `${formatNumber(Math.round(parseFloat(st.state)))}${unit ? ` ${unit}` : ""}`;
+    }
+    const shown = !this._histHidden.has(s.key);
+    const swatch = s.band
+      ? `<span class="sw band"></span>`
+      : `<span class="sw c-${s.color}"></span>`;
+    return `<button class="lg${shown ? "" : " off"}" data-action="toggle-series" data-key="${esc(s.key)}" aria-pressed="${shown}" title="${
+      shown ? "Hide" : "Show"
+    } ${esc(s.title)}">${swatch}<span>${esc(s.title)}</span><b>${esc(now)}</b></button>`;
   }
 
   async _loadHistory() {
@@ -1427,24 +1612,59 @@ class LevoitEsphomePanel extends HTMLElement {
           )}</button>`,
       )
       .join("");
+    const shown = this._shownSeries();
     let body;
     if (this._historyError && !h)
       body = `<div class="muted pad">History not available: ${esc(this._historyError)}</div>`;
     else if (!h) body = `<div class="muted pad"><span class="spinner"></span> Loading…</div>`;
+    else if (!shown.length) body = `<div class="muted pad">Pick a reading above to see its history.</div>`;
     else {
       const stale = this._historyLoading || h.range !== this._historyRange;
       body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="Air quality history, ${esc(
         HISTORY_RANGES[h.range].label,
       )}; arrow keys move through the readings">
-        ${series.map((s) => this._chartPanel(s, h)).join("")}
+        ${shown.map((s) => (s.band ? this._bandPanel(s, h) : this._chartPanel(s, h))).join("")}
         ${this._timeAxis(h)}
         <div class="hist-tip" hidden></div>
       </div>`;
     }
     return `<div class="card history">
-      <div class="sec-head hist-head"><span>History</span><div class="segs">${ranges}</div></div>
+      <div class="hist-head">
+        <h2>History</h2>
+        <div class="legend">${series.map((s) => this._legendChip(s)).join("")}</div>
+        <div class="segs" role="group" aria-label="Range">${ranges}</div>
+      </div>
       ${body}
     </div>`;
+  }
+
+  // the 1-4 level over time: a strip coloured by level (words in the tooltip)
+  _bandPanel(s, h) {
+    const points = h.data[s.entity] || [];
+    const head = `<div class="hist-title"><span>${esc(s.title)}</span></div>`;
+    if (!points.length) return `${head}<div class="hist-empty muted">No history yet</div>`;
+    // one block per run of the same level (adjoining pieces would show seams);
+    // a gap of more than two periods (offline) ends a run
+    const step = HISTORY_RANGES[h.range].step;
+    const runs = [];
+    for (const [t, v] of points) {
+      const lvl = aqiLevel(v);
+      if (!lvl) continue;
+      const run = runs[runs.length - 1];
+      if (run && run.lvl === lvl && t - run.end <= step * 2.5) run.end = t + step;
+      else runs.push({ lvl, start: t, end: t + step });
+    }
+    const rects = runs
+      .map(({ lvl, start, end }) => {
+        const x = this._x(start, h);
+        const w = Math.max(0.5, this._x(Math.min(end, h.end), h) - x);
+        return `<rect class="q${lvl}" x="${x.toFixed(1)}" y="0" width="${w.toFixed(2)}" height="10"></rect>`;
+      })
+      .join("");
+    return `${head}<div class="hist-row"><div class="hist-y"></div>
+      <svg class="hist-band" viewBox="0 0 ${CHART.width} 10" preserveAspectRatio="none" role="img" aria-label="${esc(
+        `${s.title} level, ${HISTORY_RANGES[h.range].label}`,
+      )}">${rects}<line class="xhair" y1="0" y2="10" x1="0" x2="0" visibility="hidden"></line></svg></div>`;
   }
 
   _x(t, h) {
@@ -1456,8 +1676,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const points = h.data[s.entity] || [];
     const st = this._hass?.states?.[s.entity];
     const unit = st?.attributes?.unit_of_measurement || "";
-    const now = this._usable(st) ? `${formatNumber(parseFloat(st.state))}${unit ? ` ${unit}` : ""}` : "—";
-    const head = `<div class="hist-title"><span>${esc(s.title)}</span><span class="hist-now">${esc(now)}</span></div>`;
+    const head = `<div class="hist-title"><span>${esc(s.title)}${unit ? ` · ${esc(unit)}` : ""}</span></div>`;
     if (!points.length)
       return `${head}<div class="hist-empty muted">No history yet</div>`;
     const max = niceMax(Math.max(...points.map(([, v]) => v)));
@@ -1490,7 +1709,7 @@ class LevoitEsphomePanel extends HTMLElement {
         ? `<path class="line" d="${line(run)}"></path>`
         : `<path class="line dot" d="${line(run)}h0.01"></path>`;
     return `${head}<div class="hist-row"><div class="hist-y">${ticks}</div>
-      <svg class="hist-plot" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(
+      <svg class="hist-plot c-${s.color}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(
         `${s.title}, ${HISTORY_RANGES[h.range].label}, up to ${formatNumber(max)}${unit ? ` ${unit}` : ""}`,
       )}">
         ${grid}
@@ -1582,13 +1801,14 @@ class LevoitEsphomePanel extends HTMLElement {
         : when.toLocaleString(lang, { weekday: "short", hour: "2-digit", minute: "2-digit" });
     tip.appendChild(time);
     const tolerance = HISTORY_RANGES[h.range].step / 2;
-    for (const s of this._historySeries()) {
+    for (const s of this._shownSeries()) {
       const hit = (h.data[s.entity] || []).find(([pt]) => Math.abs(pt - snapped) <= tolerance);
       const unit = this._hass?.states?.[s.entity]?.attributes?.unit_of_measurement || "";
       const row = document.createElement("div");
       row.className = "tip-row";
       const value = document.createElement("strong");
-      value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
+      if (s.band) value.textContent = hit ? AQI_WORDS[aqiLevel(hit[1])] || "—" : "—";
+      else value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
       const label = document.createElement("span");
       label.textContent = s.title;
       row.append(value, label);
@@ -1614,7 +1834,7 @@ class LevoitEsphomePanel extends HTMLElement {
     // open state kept here: the page re-renders on every state change
     return `<details class="card section info" ${this._infoOpen ? "open" : ""}>
       <summary class="sec-head" data-action="toggle-info" aria-expanded="${Boolean(this._infoOpen)}">
-        <span>Info</span>${icon("chevron")}
+        <h2>Info</h2>${icon("chevron")}
       </summary>
       ${rows.join("")}
       <div class="hint pad">Settings found by entity name${
@@ -1661,7 +1881,27 @@ const STYLE = `
   color: var(--primary-text-color);
   font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, sans-serif));
   -webkit-font-smoothing: antialiased;
+  /* accent text that reads on cards: the theme colour pulled towards the text colour */
+  --lv-accent-text: color-mix(in srgb, var(--primary-color) 72%, var(--primary-text-color));
+  --lv-track: var(--secondary-background-color, rgba(127, 127, 127, 0.12));
+  --lv-tile: rgba(127, 127, 127, 0.08);
+  --lv-pm: var(--primary-color);
+  --lv-aqi: #8e24aa;
+  --lv-cadr: #e65100;
+  /* air quality level 1-4: lighter to darker as well as green to red */
+  --lv-q1: #43a047; --lv-q2: #c0ca33; --lv-q3: #ffa000; --lv-q4: #c62828;
+  --lv-q1-bg: #e8f5e9; --lv-q1-fg: #1b5e20; --lv-q2-bg: #f1f8e9; --lv-q2-fg: #33691e;
+  --lv-q3-bg: #fff3e0; --lv-q3-fg: #8a4b00; --lv-q4-bg: #ffebee; --lv-q4-fg: #b71c1c;
 }
+:host([dark]) {
+  --lv-aqi: #ce93d8;
+  --lv-cadr: #ffa726;
+  --lv-q4: #e53935;
+  --lv-q1-bg: #1b3a1e; --lv-q1-fg: #a5d6a7; --lv-q2-bg: #2b3a1a; --lv-q2-fg: #c5e1a5;
+  --lv-q3-bg: #3d2a10; --lv-q3-fg: #ffcc80; --lv-q4-bg: #421a1a; --lv-q4-fg: #ef9a9a;
+}
+h2 { margin: 0; font-size: 16px; font-weight: 500; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 a { color: var(--primary-color); text-decoration: none; }
 a:hover { text-decoration: underline; }
 svg { width: 24px; height: 24px; fill: currentColor; flex: none; }
@@ -1740,6 +1980,23 @@ select:disabled { opacity: 0.6; }
 .btn.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.5; cursor: default; filter: none; }
+.btn.text { border-color: transparent; color: var(--lv-accent-text); }
+.btn.icon-text { display: inline-flex; align-items: center; gap: 6px; }
+.btn.icon-text svg { width: 18px; height: 18px; }
+
+.releases { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px;
+  padding: 14px 16px 14px 20px; margin-bottom: 16px; }
+.rel { display: flex; flex-direction: column; gap: 2px; }
+.rel-label { font-size: 12px; color: var(--secondary-text-color); }
+.rel a { font-size: 14px; color: var(--lv-accent-text); }
+.rel-when { font-size: 13px; margin-right: auto; }
+.releases .btn { margin: 0; }
+.card-head b { font-weight: 500; color: var(--primary-text-color); }
+.fw { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fw .mono, .fw a { font-size: 13px; }
+.fw a { color: var(--lv-accent-text); }
+.fw-arrow { width: 14px; height: 14px; color: var(--secondary-text-color); }
+.fw-status { margin-top: 4px; }
 
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500;
   padding: 3px 10px; border-radius: 12px; white-space: nowrap;
@@ -1784,37 +2041,72 @@ select:disabled { opacity: 0.6; }
   padding: 10px 14px; color: var(--secondary-text-color); border-bottom: 2px solid transparent; margin-bottom: -1px;
   display: inline-flex; align-items: center; gap: 6px; }
 .tab:hover { color: var(--primary-text-color); }
-.tab.on { color: var(--primary-color); border-bottom-color: var(--primary-color); }
-.tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning-color, #ffa600); }
-.overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.tab.on { color: var(--lv-accent-text); border-bottom-color: var(--primary-color); }
+.tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px;
+  padding: 0 6px; box-sizing: border-box; border-radius: 10px; font-size: 12px; font-weight: 500;
+  background: var(--lv-q3-bg); color: var(--lv-q3-fg); }
+.ov-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; margin: 0 4px 16px;
+  font-size: 14px; color: var(--secondary-text-color); }
+.ov-summary b { font-weight: 500; color: var(--primary-text-color); }
+.ov-summary a { color: var(--lv-accent-text); }
+.overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; }
 .overview-note { margin: 16px 4px 0; font-size: 14px; }
 .dcard { padding: 16px; cursor: pointer; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+  display: flex; flex-direction: column; gap: 14px;
   background: var(--ha-card-background, var(--card-background-color, #fff));
   border-radius: var(--ha-card-border-radius, 12px);
   border: 1px solid var(--ha-card-border-color, var(--divider-color, #e0e0e0)); }
-.dcard:hover { border-color: var(--primary-color); }
+.dcard:hover { border-color: var(--primary-color); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08); }
 .dcard:focus-visible { box-shadow: 0 0 0 2px var(--primary-color); }
-.dcard.offline { opacity: 0.6; }
 .dc-top { display: flex; align-items: center; gap: 12px; }
-.dev-img { width: 48px; height: 48px; flex: none; fill: rgba(127, 127, 127, 0.08); stroke: var(--secondary-text-color);
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.dcard.on .dev-img { stroke: var(--primary-color); fill: color-mix(in srgb, var(--primary-color) 12%, transparent); }
+.dev-tile { width: 44px; height: 44px; border-radius: 12px; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; background: var(--lv-track); }
+.dcard.on .dev-tile { background: color-mix(in srgb, var(--primary-color) 16%, transparent); }
+.dcard.offline .dev-tile { opacity: 0.5; }
+.dev-img { width: 34px; height: 34px; flex: none; fill: none; stroke: var(--secondary-text-color);
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.dcard.on .dev-img { stroke: var(--lv-accent-text); }
 .dc-name { flex: 1; min-width: 0; }
 .dc-name .name { font-size: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dc-name .sub { max-width: none; }
-.chip-btn { font: inherit; font-size: 12px; font-weight: 500; border: none; cursor: pointer; margin-left: auto; }
+.dc-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 3px;
+  font-size: 12px; color: var(--secondary-text-color); }
+.dc-flags { display: inline-flex; gap: 6px; margin-left: auto; }
+.dc-filter { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums;
+  color: var(--primary-text-color); }
+.dc-filter svg { width: 12px; height: 12px; color: var(--secondary-text-color); }
+.dc-filter .bar { width: 28px; height: 4px; border-radius: 2px; background: var(--divider-color); overflow: hidden; }
+.dc-filter .bar span { display: block; height: 100%; border-radius: 2px; background: var(--success-color, #43a047); }
+.dc-filter.low .bar span { background: var(--warning-color, #ffa600); }
+.dc-filter.bad .bar span { background: var(--error-color, #db4437); }
+.dc-filter.low, .dc-filter.bad { color: var(--lv-q3-fg); }
+.chip.bad-chip { background: var(--lv-q4-bg); color: var(--lv-q4-fg); padding: 1px 8px 1px 6px; }
+.dot-i { width: 7px; height: 7px; border-radius: 50%; background: var(--error-color, #db4437); }
+.dc-flags .chip { font-size: 11px; padding: 1px 8px; }
+.chip-btn { font: inherit; font-size: 12px; font-weight: 500; border: none; cursor: pointer; }
 .chip-btn:hover { filter: brightness(0.95); }
 .power.small { width: 44px; height: 44px; }
-.power.small svg { width: 24px; height: 24px; }
-.dc-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; font-size: 14px; font-weight: 500; }
-.dc-mode span:empty { display: none; }
-.dc-controls { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
-.seg.sm { font-size: 12px; padding: 4px 10px; min-width: 30px; }
-.dc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
-.dc-stat { padding: 8px 10px; border-radius: 10px; background: rgba(127, 127, 127, 0.08); min-width: 0; }
-.dc-val { font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dc-val .unit { font-size: 11px; font-weight: 400; color: var(--secondary-text-color); margin-left: 3px; }
-.dc-label { font-size: 12px; color: var(--secondary-text-color); }
+.power.small svg { width: 22px; height: 22px; }
+.dc-controls { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+.dc-controls .segs { flex-wrap: nowrap; }
+.seg.sm { font-size: 13px; height: 32px; padding: 0 10px; min-width: 32px; }
+.mode-select { margin-left: auto; height: 36px; min-width: 100px; padding: 0 10px 0 14px; border-radius: 18px;
+  font-weight: 500; font-size: 13px; background: var(--card-background-color, #fff); cursor: pointer; }
+.mode-select:hover:not(:disabled) { border-color: var(--primary-color); }
+.dc-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.dc-stat { padding: 10px 12px; border-radius: 10px; background: var(--lv-tile); min-width: 0; }
+.dc-val { display: flex; align-items: center; gap: 6px; font-size: 20px; font-weight: 500;
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
+.dcard.offline .dc-val { color: var(--secondary-text-color); }
+.dc-label { font-size: 11px; color: var(--secondary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aqi-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.aqi-dot.q1 { background: var(--lv-q1); } .aqi-dot.q2 { background: var(--lv-q2); }
+.aqi-dot.q3 { background: var(--lv-q3); } .aqi-dot.q4 { background: var(--lv-q4); }
+.aqi-badge { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; margin-left: 8px;
+  border-radius: 11px; font-size: 12px; font-weight: 500; vertical-align: middle; }
+.aqi-badge.q1 { background: var(--lv-q1-bg); color: var(--lv-q1-fg); }
+.aqi-badge.q2 { background: var(--lv-q2-bg); color: var(--lv-q2-fg); }
+.aqi-badge.q3 { background: var(--lv-q3-bg); color: var(--lv-q3-fg); }
+.aqi-badge.q4 { background: var(--lv-q4-bg); color: var(--lv-q4-fg); }
 
 /* --- device page --- */
 .toolbar .back { margin-left: -8px; }
@@ -1826,55 +2118,72 @@ select:disabled { opacity: 0.6; }
 .hint { font-size: 12px; font-weight: 400; color: var(--secondary-text-color); margin-top: 2px; }
 .hint.pad, .muted.pad { padding: 4px 16px 12px; }
 
-.hero { padding: 16px; margin-bottom: 16px; }
-.hero-controls { display: flex; align-items: center; gap: 16px; }
-.hero-rows { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.hero-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.h-label { width: 48px; font-size: 12px; color: var(--secondary-text-color); }
-.power { width: 64px; height: 64px; border-radius: 50%; cursor: pointer; flex: none;
-  border: 1px solid var(--divider-color); background: none; color: var(--secondary-text-color);
-  display: inline-flex; align-items: center; justify-content: center; }
+.hero { padding: 20px; margin-bottom: 16px; }
+.hero-main { display: flex; flex-wrap: wrap; align-items: center; gap: 24px 32px; }
+.hero-controls { display: flex; align-items: center; gap: 18px; flex: 1 1 420px; min-width: 0; }
+.hero-rows { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.hero-status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.hs-title { font-size: 22px; font-weight: 500; }
+.hs-sub { font-size: 14px; color: var(--secondary-text-color); }
+.hero-segs { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.power { width: 72px; height: 72px; border-radius: 50%; cursor: pointer; flex: none;
+  border: 1.5px solid var(--divider-color); background: none; color: var(--secondary-text-color);
+  display: inline-flex; align-items: center; justify-content: center; transition: background 0.15s, box-shadow 0.15s; }
 .power svg { width: 32px; height: 32px; }
-.power.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
-.power:disabled { opacity: 0.5; cursor: default; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 16px; }
-.tile { padding: 10px 12px; border-radius: 10px; background: rgba(127, 127, 127, 0.08); }
-.t-val { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.t-val .unit { font-size: 12px; font-weight: 400; color: var(--secondary-text-color); margin-left: 4px; }
-.t-label { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
-.hero .setting { padding-left: 0; padding-right: 0; }
+.power.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--primary-color) 40%, transparent); }
+.power.small.on { box-shadow: none; }
+.power:disabled { opacity: 0.45; cursor: default; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; flex: 1 1 420px; }
+.tile { padding: 12px 14px; border-radius: 10px; background: var(--lv-tile); min-width: 0; }
+.t-val { font-size: 26px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 2px; white-space: nowrap; }
+.t-val .unit { font-size: 13px; font-weight: 400; color: var(--secondary-text-color); margin-left: 4px; }
+.t-label { font-size: 12px; color: var(--secondary-text-color); }
+.hero .setting { padding: 16px 0 0; margin-top: 16px; border-top: 1px solid var(--divider-color); }
 
-.segs { display: inline-flex; flex-wrap: wrap; gap: 6px; }
-.seg { font: inherit; font-size: 13px; cursor: pointer; padding: 6px 12px; border-radius: 16px;
-  border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); min-width: 36px; }
-.seg:hover { background: rgba(127, 127, 127, 0.1); }
-.seg.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
-.seg:disabled { opacity: 0.5; cursor: default; }
+/* segmented buttons: a track with the picked one raised */
+.segs { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 20px; background: var(--lv-track); }
+.seg { font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; height: 34px; padding: 0 14px;
+  border-radius: 17px; border: 0; background: none; color: var(--secondary-text-color); min-width: 40px; white-space: nowrap; }
+.seg:hover:not(:disabled) { color: var(--primary-text-color); }
+.seg.on { background: var(--card-background-color, #fff); color: var(--lv-accent-text);
+  box-shadow: inset 0 0 0 1.5px var(--primary-color), 0 1px 2px rgba(0, 0, 0, 0.12); }
+.seg:disabled { opacity: 0.45; cursor: default; }
+.segs.dim .seg.on { box-shadow: inset 0 0 0 1.5px var(--divider-color); color: var(--secondary-text-color); }
+.opts { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 20px 16px; }
+.opt { font: inherit; font-size: 14px; cursor: pointer; height: 36px; min-width: 44px; padding: 0 14px;
+  border-radius: 18px; border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+.opt:hover:not(:disabled) { border-color: var(--primary-color); color: var(--lv-accent-text); }
+.opt:disabled { opacity: 0.45; cursor: default; }
 
 .sections { columns: 2 420px; column-gap: 16px; }
 .section { break-inside: avoid; margin-bottom: 16px; }
-.sec-head { padding: 12px 16px; font-size: 16px; font-weight: 500; border-bottom: 1px solid var(--divider-color); }
+.sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 8px; }
+.sec-head .btn { margin: -8px -8px -8px 0; }
 details.section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; }
 details.section > summary svg { color: var(--secondary-text-color); transition: transform 0.15s; }
 details.section[open] > summary svg { transform: rotate(180deg); }
 details.section > summary:hover { background: rgba(127, 127, 127, 0.06); }
 details.section > summary::-webkit-details-marker { display: none; }
-details.section:not([open]) > summary { border-bottom: none; }
-.subhead { padding: 12px 16px 0; font-size: 12px; font-weight: 500; text-transform: uppercase;
-  letter-spacing: 0.04em; color: var(--secondary-text-color); }
-.setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; }
-.setting + .setting { border-top: 1px solid rgba(127, 127, 127, 0.12); }
+details.section > summary { padding-bottom: 12px; }
+details.section[open] > summary { padding-bottom: 8px; }
+.subhead { padding: 14px 20px 2px; font-size: 12px; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--secondary-text-color); border-top: 1px solid var(--divider-color); }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px;
+  border-top: 1px solid var(--divider-color); }
+.subhead + .setting { border-top: none; }
 .setting.dim .s-label { opacity: 0.55; }
-.s-label { font-size: 14px; min-width: 0; }
+.s-label { font-size: 15px; min-width: 0; }
+.s-label .hint { font-size: 13px; }
 .s-control { flex: none; max-width: 65%; display: flex; justify-content: flex-end; }
 .readout { font-variant-numeric: tabular-nums; color: var(--secondary-text-color); text-align: right; }
 
-.switch { position: relative; width: 40px; height: 22px; border-radius: 11px; cursor: pointer; padding: 0;
-  border: none; background: rgba(127, 127, 127, 0.35); transition: background 0.15s; flex: none; }
-.switch span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+.switch { position: relative; width: 46px; height: 26px; border-radius: 13px; cursor: pointer; padding: 0;
+  border: none; background: rgba(127, 127, 127, 0.55); transition: background 0.15s; flex: none; }
+.switch span { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
   background: #fff; transition: transform 0.15s; }
 .switch.on { background: var(--primary-color); }
-.switch.on span { transform: translateX(18px); }
+.switch.on span { transform: translateX(20px); }
 .switch:disabled { opacity: 0.45; cursor: default; }
 
 .slider { display: flex; align-items: center; gap: 10px; }
@@ -1882,17 +2191,22 @@ details.section:not([open]) > summary { border-bottom: none; }
 .val { font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; font-size: 14px; }
 .stepper { display: inline-flex; align-items: center; gap: 6px; }
 .stepper .val { min-width: 80px; text-align: center; }
-.step { width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font: inherit; font-size: 18px; line-height: 1;
+.step { width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font: inherit; font-size: 18px; line-height: 1;
   border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+.step:hover:not(:disabled) { background: rgba(127, 127, 127, 0.1); }
 .step:disabled { opacity: 0.4; cursor: default; }
 .times { display: inline-flex; align-items: center; gap: 6px; }
 .times input { font: inherit; font-size: 14px; color: var(--primary-text-color); padding: 4px 6px;
   background: var(--input-fill-color, var(--secondary-background-color, transparent));
   border: 1px solid var(--divider-color); border-radius: 8px; }
 
-.timer-run, .filter-big { padding: 12px 16px 4px; }
-.timer-run .big, .filter-big .big { font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.timer-run .big .muted { font-size: 14px; font-weight: 400; }
+.timer-run, .filter-big { padding: 8px 20px 16px; }
+.timer-run .big, .filter-big .big { font-size: 34px; line-height: 1.1; font-weight: 500; font-variant-numeric: tabular-nums; }
+.timer-run .big .muted, .filter-big .big .muted { font-size: 16px; font-weight: 400; }
+.timer-run .big { font-size: 26px; }
+.timer-run .bar, .filter-big .bar { height: 8px !important; border-radius: 4px !important; margin-top: 12px !important; }
+.section .muted.pad { padding: 4px 20px 12px; font-size: 13px; }
+.section .hint.pad { padding: 10px 20px 14px; border-top: 1px solid var(--divider-color); }
 .timer-run .bar, .filter-big .bar { height: 6px; border-radius: 3px; margin-top: 8px; overflow: hidden;
   background: rgba(127, 127, 127, 0.2); }
 .timer-run .bar span, .filter-big .bar span { display: block; height: 100%; background: var(--primary-color); }
@@ -1901,9 +2215,26 @@ details.section:not([open]) > summary { border-bottom: none; }
 .filter-big.bad .bar span { background: var(--error-color, #db4437); }
 
 .history { margin-bottom: 16px; }
-.hist-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.hist-head .segs { font-size: 14px; font-weight: 400; }
-.hist { position: relative; margin: 0 16px 12px; outline: none; transition: opacity 0.2s; }
+.hist-head { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; padding: 16px 20px 6px; }
+.hist-head h2 { margin-right: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.lg { font: inherit; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px;
+  border-radius: 17px; border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); cursor: pointer; }
+.lg b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.lg:hover { border-color: var(--primary-color); }
+.lg.off { opacity: 0.45; }
+.lg.off .sw { background: none !important; box-shadow: inset 0 0 0 1.5px var(--secondary-text-color); }
+.sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.sw.c-pm { background: var(--lv-pm); } .sw.c-aqi { background: var(--lv-aqi); } .sw.c-cadr { background: var(--lv-cadr); }
+.sw.band { width: 16px; height: 8px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--lv-q1) 25%, var(--lv-q2) 25% 50%, var(--lv-q3) 50% 75%, var(--lv-q4) 75%); }
+.hist-plot.c-aqi .line { stroke: var(--lv-aqi); } .hist-plot.c-aqi .area { fill: var(--lv-aqi); }
+.hist-plot.c-cadr .line { stroke: var(--lv-cadr); } .hist-plot.c-cadr .area { fill: var(--lv-cadr); }
+.hist-band { display: block; width: 100%; height: 10px; border-radius: 3px; overflow: hidden; background: var(--lv-track); }
+.hist-band .q1 { fill: var(--lv-q1); } .hist-band .q2 { fill: var(--lv-q2); }
+.hist-band .q3 { fill: var(--lv-q3); } .hist-band .q4 { fill: var(--lv-q4); }
+.hist-band .xhair { stroke: var(--primary-text-color); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.hist { position: relative; margin: 0 20px 14px; outline: none; transition: opacity 0.2s; }
 .hist:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 4px; border-radius: 4px; }
 .hist.stale { opacity: 0.5; }
 .hist-title { display: flex; justify-content: space-between; align-items: baseline;
@@ -1934,8 +2265,10 @@ details.section:not([open]) > summary { border-bottom: none; }
 .tip-row span { color: var(--secondary-text-color); }
 
 @media (max-width: 600px) {
-  .hero-controls { flex-direction: column; align-items: stretch; }
-  .power { align-self: center; }
+  .hero-controls { align-items: flex-start; flex-basis: 100%; }
+  .power:not(.small) { width: 60px; height: 60px; }
+  .tiles { flex-basis: 100%; }
+  .hist-head h2 { flex-basis: 100%; }
   .setting { flex-wrap: wrap; }
   .s-control { max-width: 100%; }
   .slider input { width: 120px; }
