@@ -176,11 +176,28 @@ class LevoitEsphomePanel extends HTMLElement {
     });
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
-      if (this._deferred) {
+      if (this._deferred && !this._pressing) {
         this._deferred = false;
         this._render();
       }
     });
+    // A click needs press and release on the same element. The page re-renders
+    // whenever a shown state changes (a running timer: every second), and a
+    // re-render replaces every button: between press and release that loses
+    // the click. So hold re-renders from press until just after the click.
+    this._pressing = false;
+    this.shadowRoot.addEventListener("pointerdown", () => (this._pressing = true), true);
+    const release = () =>
+      // after the click event, which follows pointerup in the same task
+      setTimeout(() => {
+        this._pressing = false;
+        if (this._deferred) {
+          this._deferred = false;
+          this._render();
+        }
+      }, 0);
+    this.shadowRoot.addEventListener("pointerup", release, true);
+    this.shadowRoot.addEventListener("pointercancel", release, true);
   }
 
   set hass(hass) {
@@ -706,8 +723,10 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!this.shadowRoot) return;
     // do not pull an open dropdown or a slider being dragged away from under the pointer
     // (or the history chart someone steps through with the arrow keys)
+    // and never between pressing and releasing a button (see _pressing)
     const active = this.shadowRoot.activeElement?.tagName;
     if (
+      this._pressing ||
       active === "SELECT" ||
       active === "INPUT" ||
       this.shadowRoot.activeElement?.classList?.contains("hist")
