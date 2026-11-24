@@ -233,7 +233,7 @@ has a small outline of the model, power, mode and speed buttons, PM2.5, AQI
 and the current CADR, the time left when a timer runs, and a chip when an
 update is out. Click a card for the device's page.
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png" width="720" alt="Devices: seven purifiers as cards with power, mode and speed, PM2.5, AQI and CADR; three running, four off, all with an update">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png" width="720" alt="Devices: seven purifiers as cards with power, mode and speed, PM2.5, AQI and CADR; four running, three off, all with an update">
 
 **Updates & config** (the second tab) has:
 
