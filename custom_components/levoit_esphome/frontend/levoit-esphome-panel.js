@@ -38,6 +38,39 @@ const ICONS = {
   plus: "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
   purifier:
     "M16,2H8A2,2 0 0,0 6,4V20A2,2 0 0,0 8,22H16A2,2 0 0,0 18,20V4A2,2 0 0,0 16,2M12,4A2,2 0 0,1 14,6A2,2 0 0,1 12,8A2,2 0 0,1 10,6A2,2 0 0,1 12,4M16,20H8V18H16V20M16,16H8V14H16V16M16,12H8V10H16V12Z",
+  back: "M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z",
+  power:
+    "M16.56,5.44L15.11,6.89C16.84,7.94 18,9.83 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12C6,9.83 7.16,7.94 8.88,6.88L7.44,5.44C5.36,6.88 4,9.28 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12C20,9.28 18.64,6.88 16.56,5.44M13,3H11V13H13",
+  open: "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z",
+};
+
+// "2h 30 min", "45 min", "1h 5 min 10 s" -> seconds; anything else -> 0
+const parseDuration = (text) => {
+  if (!text) return 0;
+  const part = (re) => {
+    const m = re.exec(text);
+    return m ? Number(m[1]) : 0;
+  };
+  return part(/(\d+)\s*h/) * 3600 + part(/(\d+)\s*min/) * 60 + part(/(\d+)\s*s\b/);
+};
+
+const formatMinutes = (minutes) => {
+  const m = Math.round(minutes);
+  if (m < 60) return `${m} min`;
+  return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
+};
+
+const formatNumber = (value) =>
+  Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
+
+// 22.5 -> "22:30" and back (quiet period hours after midnight)
+const hoursToTime = (hours) => {
+  const total = Math.round(hours * 60) % (24 * 60);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+};
+const timeToHours = (time) => {
+  const [h, m] = time.split(":").map(Number);
+  return h + (m || 0) / 60;
 };
 
 const esc = (value) =>
@@ -61,6 +94,13 @@ class LevoitEsphomePanel extends HTMLElement {
     this._subscribing = false;
     this._deferred = false;
     this._log = null; // the build log dialog: {name, title, lines, building}
+    // device page (route /levoit-esphome/<name>): which entity is which setting
+    this._route = null;
+    this._pageName = null;
+    this._page = null; // levoit_esphome/device_controls result
+    this._pageError = null;
+    this._pageLoading = false;
+    this._seen = {}; // entity_id -> state object last rendered
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     this.shadowRoot.addEventListener("change", (ev) => this._onChange(ev));
     this.shadowRoot.addEventListener("focusout", () => {
@@ -75,7 +115,48 @@ class LevoitEsphomePanel extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (!this._unsub && !this._subscribing) this._subscribe();
-    if (first) this._render();
+    if (this._pageName && !this._page && !this._pageLoading && !this._pageError) this._loadPage();
+    // the device page shows live states: render when one of its entities changed
+    if (first || this._pageStatesChanged()) this._render();
+  }
+
+  set route(route) {
+    this._route = route;
+    const match = /^\/([^/]+)/.exec(route?.path || "");
+    const name = match ? decodeURIComponent(match[1]) : null;
+    if (name !== this._pageName) {
+      this._pageName = name;
+      this._page = null;
+      this._pageError = null;
+      this._seen = {};
+      if (name && this._hass) this._loadPage();
+    }
+    this._render();
+  }
+
+  get _base() {
+    return this._route?.prefix || "/levoit-esphome";
+  }
+
+  async _loadPage() {
+    const name = this._pageName;
+    this._pageLoading = true;
+    try {
+      const page = await this._hass.callWS({ type: "levoit_esphome/device_controls", name });
+      if (name === this._pageName) this._page = page;
+    } catch (err) {
+      if (name === this._pageName) this._pageError = err?.message || String(err);
+    } finally {
+      this._pageLoading = false;
+      this._render();
+    }
+  }
+
+  _pageStatesChanged() {
+    if (!this._page || !this._hass) return false;
+    return Object.values(this._page.controls).some(
+      (entityId) => this._hass.states[entityId] !== this._seen[entityId],
+    );
   }
 
   set narrow(narrow) {
@@ -107,6 +188,9 @@ class LevoitEsphomePanel extends HTMLElement {
         (data) => {
           this._data = data;
           this._error = null;
+          // devices changed (one came online, a config was read): find the
+          // open device page's entities again
+          if (this._pageName && this._page && !this._pageLoading) this._loadPage();
           this._render();
         },
         { type: "levoit_esphome/subscribe" },
@@ -180,6 +264,30 @@ class LevoitEsphomePanel extends HTMLElement {
       case "upload":
         await this._build(name, true);
         break;
+      case "svc":
+        // a device page control: a Home Assistant service on one entity
+        if (target.dataset.confirm && !confirm(target.dataset.confirm)) break;
+        await this._callService(
+          target.dataset.domain,
+          target.dataset.service,
+          target.dataset.entity,
+          JSON.parse(target.dataset.args || "{}"),
+        );
+        break;
+      case "page-retry":
+        this._pageError = null;
+        this._page = null;
+        this._render();
+        this._loadPage();
+        break;
+    }
+  }
+
+  async _callService(domain, service, entityId, args) {
+    try {
+      await this._hass.callService(domain, service, { entity_id: entityId, ...args });
+    } catch (err) {
+      this._toast(`${err.message || err}`);
     }
   }
 
@@ -223,6 +331,14 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   async _onChange(ev) {
+    const input = ev.target.closest("input[data-number]");
+    if (input) {
+      // device page slider or time: set the number entity
+      const value = input.type === "time" ? timeToHours(input.value) : Number(input.value);
+      input.blur(); // let the page render the new value
+      await this._callService("number", "set_value", input.dataset.number, { value });
+      return;
+    }
     const select = ev.target.closest("select[data-channel]");
     if (!select) return;
     const device = this._device(select.dataset.channel);
@@ -348,8 +464,10 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _row(d) {
+    // the name opens the device page (settings); the HA device page is linked there
+    const pagePath = `${this._base}/${encodeURIComponent(d.name)}`;
     const deviceLink = d.device_id
-      ? `<a href="/config/devices/device/${esc(d.device_id)}" data-action="navigate" data-path="/config/devices/device/${esc(d.device_id)}">${esc(d.title)}</a>`
+      ? `<a href="${esc(pagePath)}" data-action="navigate" data-path="${esc(pagePath)}" title="Settings of ${esc(d.title)}">${esc(d.title)}</a>`
       : esc(d.title);
     const latest = d.latest
       ? d.latest_url
@@ -469,22 +587,30 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    // do not pull an open channel dropdown away from under the pointer
-    if (this.shadowRoot.activeElement?.tagName === "SELECT") {
+    // do not pull an open dropdown or a slider being dragged away from under the pointer
+    const active = this.shadowRoot.activeElement?.tagName;
+    if (active === "SELECT" || active === "INPUT") {
       this._deferred = true;
       return;
     }
     const showMenu = this._narrow || this._hass?.dockedSidebar === "always_hidden";
     const builderUrl = this._data?.builder_url;
     const version = this._panel?.config?.version;
+    const onPage = Boolean(this._pageName);
+    const pageTitle =
+      this._page?.title || this._device(this._pageName)?.title || this._pageName || "";
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
       <div class="toolbar">
         ${
           showMenu
             ? `<button class="icon-btn" data-action="menu" aria-label="Menu">${icon("menu")}</button>`
             : ""
+        }${
+          onPage
+            ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="All devices" title="All devices">${icon("back")}</button>`
+            : ""
         }
-        <div class="title">Levoit ESPHome</div>
+        <div class="title">${onPage ? esc(pageTitle) : "Levoit ESPHome"}</div>
         <button class="icon-btn" data-action="check" ${this._checking ? "disabled" : ""} title="Check for new versions now" aria-label="Check for new versions now">${
           this._checking ? `<span class="spinner light"></span>` : icon("refresh")
         }</button>
@@ -507,14 +633,477 @@ class LevoitEsphomePanel extends HTMLElement {
               )}. <button class="btn primary" data-action="reload">Reload this page</button></div>`
             : ""
         }
-        <div class="summary">${this._summary()}</div>
-        ${this._body()}
+        ${onPage ? this._devicePage() : `<div class="summary">${this._summary()}</div>${this._body()}`}
         <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""} ·
           builds run in the ESPHome Device Builder; the last build's output is under Log</div>
       </div>
       ${this._logDialog()}`;
     const pre = this.shadowRoot.querySelector(".log pre");
     if (pre) pre.scrollTop = pre.scrollHeight; // newest lines in view
+    if (this._page && this._hass) {
+      this._seen = {};
+      for (const entityId of Object.values(this._page.controls))
+        this._seen[entityId] = this._hass.states[entityId];
+    }
+  }
+
+  // --- device page: control helpers -------------------------------------------
+  // Each takes a controls key ("select.auto_mode", ...) and renders nothing when
+  // the device has no such entity, so a section shows what the model has.
+
+  _state(key) {
+    const entityId = this._page?.controls?.[key];
+    return entityId ? this._hass?.states?.[entityId] || null : null;
+  }
+
+  _usable(st) {
+    return Boolean(st) && st.state !== "unavailable" && st.state !== "unknown";
+  }
+
+  _number(key) {
+    const st = this._state(key);
+    const value = st ? parseFloat(st.state) : NaN;
+    return Number.isNaN(value) ? null : value;
+  }
+
+  // attributes for a button that calls a service on one entity
+  _svc(domain, service, entityId, args, confirmText) {
+    return `data-action="svc" data-domain="${domain}" data-service="${service}" data-entity="${esc(
+      entityId,
+    )}" data-args="${esc(JSON.stringify(args || {}))}"${
+      confirmText ? ` data-confirm="${esc(confirmText)}"` : ""
+    }`;
+  }
+
+  _setting(label, hint, control, dim) {
+    return `<div class="setting${dim ? " dim" : ""}">
+      <div class="s-label">${esc(label)}${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>
+      <div class="s-control">${control}</div>
+    </div>`;
+  }
+
+  _toggle(key, label, hint, { dim = false } = {}) {
+    const st = this._state(key);
+    if (!st) return "";
+    const on = st.state === "on";
+    const off = !this._usable(st) || dim;
+    return this._setting(
+      label,
+      hint,
+      `<button class="switch${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="${esc(
+        label,
+      )}" ${off ? "disabled" : ""} ${this._svc("switch", on ? "turn_off" : "turn_on", st.entity_id)}><span></span></button>`,
+      dim,
+    );
+  }
+
+  _choices(key, label, hint, { dim = false, labels = {} } = {}) {
+    const st = this._state(key);
+    if (!st) return "";
+    const off = !this._usable(st) || dim;
+    const buttons = (st.attributes.options || [])
+      .map(
+        (option) =>
+          `<button class="seg${option === st.state ? " on" : ""}" ${off ? "disabled" : ""} ${this._svc(
+            "select",
+            "select_option",
+            st.entity_id,
+            { option },
+          )}>${esc(labels[option] || option)}</button>`,
+      )
+      .join("");
+    return this._setting(label, hint, `<div class="segs">${buttons}</div>`, dim);
+  }
+
+  _slider(key, label, hint, { dim = false, unit } = {}) {
+    const st = this._state(key);
+    if (!st) return "";
+    const a = st.attributes;
+    const value = parseFloat(st.state);
+    const known = !Number.isNaN(value);
+    const off = !this._usable(st) || dim;
+    const shown = known ? `${formatNumber(value)}${(unit ?? a.unit_of_measurement) ? ` ${unit ?? a.unit_of_measurement}` : ""}` : "—";
+    return this._setting(
+      label,
+      hint,
+      `<div class="slider"><input type="range" min="${esc(a.min)}" max="${esc(a.max)}" step="${esc(
+        a.step || 1,
+      )}" value="${esc(known ? value : a.min)}" data-number="${esc(st.entity_id)}" aria-label="${esc(
+        label,
+      )}" ${off ? "disabled" : ""}><span class="val">${esc(shown)}</span></div>`,
+      dim,
+    );
+  }
+
+  _stepper(key, label, hint, { dim = false, format } = {}) {
+    const st = this._state(key);
+    if (!st) return "";
+    const a = st.attributes;
+    const value = parseFloat(st.state);
+    const known = !Number.isNaN(value);
+    const off = !this._usable(st) || dim || !known;
+    const step = Number(a.step) || 1;
+    const show = format || ((v) => `${formatNumber(v)}${a.unit_of_measurement ? ` ${a.unit_of_measurement}` : ""}`);
+    const button = (delta, text) => {
+      const next = Math.min(Number(a.max), Math.max(Number(a.min), value + delta));
+      return `<button class="step" aria-label="${delta < 0 ? "Less" : "More"}" ${
+        off || next === value ? "disabled" : ""
+      } ${this._svc("number", "set_value", st.entity_id, { value: next })}>${text}</button>`;
+    };
+    return this._setting(
+      label,
+      hint,
+      `<div class="stepper">${button(-step, "−")}<span class="val">${
+        known ? esc(show(value)) : "—"
+      }</span>${button(step, "+")}</div>`,
+      dim,
+    );
+  }
+
+  _readout(key, label, { unit, format } = {}) {
+    const st = this._state(key);
+    if (!st) return "";
+    const value = this._usable(st)
+      ? format
+        ? format(st.state)
+        : `${st.state}${(unit ?? st.attributes.unit_of_measurement) ? ` ${unit ?? st.attributes.unit_of_measurement}` : ""}`
+      : "—";
+    return this._setting(label, "", `<span class="readout">${esc(value)}</span>`);
+  }
+
+  _tile(key, label) {
+    const st = this._state(key);
+    if (!st) return "";
+    const value = this._usable(st) ? st.state : "—";
+    const unit = this._usable(st) ? st.attributes.unit_of_measurement || "" : "";
+    return `<div class="tile"><div class="t-val">${esc(value)}${
+      unit ? `<span class="unit">${esc(unit)}</span>` : ""
+    }</div><div class="t-label">${esc(label)}</div></div>`;
+  }
+
+  _section(title, rows, hint) {
+    const body = rows.filter(Boolean).join("");
+    if (!body) return "";
+    return `<div class="card section">
+      <div class="sec-head">${esc(title)}${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>
+      ${body}
+    </div>`;
+  }
+
+  _subhead(text) {
+    return `<div class="subhead">${esc(text)}</div>`;
+  }
+
+  // --- device page: sections ---------------------------------------------------
+
+  _devicePage() {
+    if (this._pageError)
+      return `<div class="card empty"><p class="bad">${esc(this._pageError)}</p>
+        <button class="btn" data-action="page-retry">Try again</button></div>`;
+    const page = this._page;
+    if (!page) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+    const haDevice = `/config/devices/device/${page.device_id}`;
+    const haLink = `<button class="btn" data-action="navigate" data-path="${esc(haDevice)}">${icon(
+      "open",
+    )}<span>Home Assistant device page</span></button>`;
+    if (!page.supported)
+      return `<div class="card empty">
+        <div class="big-icon">${icon("purifier")}</div>
+        <p>${page.model ? `The ${esc(page.model)}` : "This device"} has no settings page here yet.</p>
+        <p class="muted">Its settings are on the Home Assistant device page.</p>
+        ${haLink}
+      </div>`;
+    const settings = Object.keys(page.controls).filter((key) => !key.startsWith("text_sensor."));
+    if (!settings.length)
+      return `<div class="card empty">
+        <p>No settings of this device found.</p>
+        <p class="muted">They are found by entity name, as the tuct/levoit configs name them${
+          page.from_config ? " or as its config does" : ""
+        }. Renamed entities are on the Home Assistant device page.</p>
+        ${haLink}
+      </div>`;
+    return `<div class="page-head">
+        <span class="chip">${esc(page.model || "Levoit")}</span>
+        ${this._onlineChip()}
+        <span class="spacer"></span>
+        ${haLink}
+      </div>
+      ${this._alerts()}
+      ${this._hero()}
+      <div class="sections">
+        ${this._autoSection()}
+        ${this._sleepSection()}
+        ${this._quietSection()}
+        ${this._timerSection()}
+        ${this._displaySection()}
+        ${this._filterSection()}
+        ${this._infoSection()}
+      </div>`;
+  }
+
+  _onlineChip() {
+    const fan = this._state("fan.fan");
+    if (!fan) return "";
+    return this._usable(fan) || fan.state === "off"
+      ? `<span class="chip success">Online</span>`
+      : `<span class="chip warning">Offline</span>`;
+  }
+
+  _alerts() {
+    const alerts = [];
+    if (this._state("binary_sensor.cover_open")?.state === "on")
+      alerts.push("The cover is open: the purifier stays off until it is closed.");
+    const error = this._state("text_sensor.error_message");
+    if (this._usable(error) && !/^ok$/i.test(error.state)) alerts.push(`Error: ${error.state}`);
+    if (this._state("binary_sensor.filter_low")?.state === "on")
+      alerts.push("The filter is nearly used up: time for a new one.");
+    return alerts.map((text) => `<div class="notice warn">${esc(text)}</div>`).join("");
+  }
+
+  _hero() {
+    const fan = this._state("fan.fan");
+    const tiles = [
+      this._tile("sensor.pm25", "PM2.5"),
+      this._tile("sensor.pm1_0", "PM1.0"),
+      this._tile("sensor.pm10", "PM10"),
+      this._tile("sensor.aqi_index", "AQI"),
+      this._tile("sensor.aqi", this._state("sensor.aqi_index") ? "Air quality level" : "AQI"),
+      this._tile("sensor.current_cadr", "CADR now"),
+    ].join("");
+    let controls = "";
+    if (fan) {
+      const usable = this._usable(fan);
+      const on = fan.state === "on";
+      const a = fan.attributes;
+      const step = Number(a.percentage_step) || 25;
+      const count = Math.max(1, Math.round(100 / step));
+      const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
+      const turbo = this._page.model === "ELEVA300X";
+      const speeds = Array.from({ length: count }, (_, i) => i + 1)
+        .map(
+          (n) =>
+            `<button class="seg${n === level ? " on" : ""}" ${usable ? "" : "disabled"} ${this._svc(
+              "fan",
+              "set_percentage",
+              fan.entity_id,
+              // floor: 2 of 3 speeds is 66 %, which Home Assistant maps to speed 2 (67 % would be 3)
+              { percentage: Math.min(100, Math.floor(n * step)) },
+            )}>${turbo && n === count ? "Turbo" : n}</button>`,
+        )
+        .join("");
+      const presets = (a.preset_modes || [])
+        .map(
+          (mode) =>
+            `<button class="seg${on && mode === a.preset_mode ? " on" : ""}" ${usable ? "" : "disabled"} ${this._svc(
+              "fan",
+              "set_preset_mode",
+              fan.entity_id,
+              { preset_mode: mode },
+            )}>${esc(mode)}</button>`,
+        )
+        .join("");
+      controls = `<div class="hero-controls">
+        <button class="power${on ? " on" : ""}" aria-label="${on ? "Turn off" : "Turn on"}" title="${
+          on ? "Turn off" : "Turn on"
+        }" ${usable || fan.state === "off" ? "" : "disabled"} ${this._svc(
+          "fan",
+          on ? "turn_off" : "turn_on",
+          fan.entity_id,
+        )}>${icon("power")}</button>
+        <div class="hero-rows">
+          ${presets ? `<div class="hero-row"><span class="h-label">Mode</span><div class="segs">${presets}</div></div>` : ""}
+          <div class="hero-row"><span class="h-label">Speed</span><div class="segs">${speeds}</div></div>
+        </div>
+      </div>`;
+    }
+    const vent = this._slider("number.vent_angle", "Vent angle", "45° points up, 90° straight ahead");
+    return `<div class="card hero">
+      ${controls}
+      ${tiles ? `<div class="tiles">${tiles}</div>` : ""}
+      ${vent}
+    </div>`;
+  }
+
+  _autoSection() {
+    const mode = this._state("select.auto_mode");
+    const roomSize = mode && /room|effic/i.test(mode.state);
+    const highFan = this._state("text_sensor.auto_mode_room_size_high_fan");
+    const highFanLeft = this._usable(highFan) && parseDuration(highFan.state) > 0;
+    return this._section(
+      "Automatic",
+      [
+        this._choices("select.auto_mode", "Auto mode", "How Auto picks the speed. Choosing one switches the fan to Auto"),
+        roomSize
+          ? this._slider("number.auto_profile_room_size_input", "Room size", "Auto runs for a room this size")
+          : "",
+        highFanLeft ? this._readout("text_sensor.auto_mode_room_size_high_fan", "High speed for another") : "",
+        this._toggle("switch.dynamic_manual", "Dynamic manual", "In Manual, the speed goes up when the air gets bad"),
+        this._toggle("switch.adaptive_start", "Adaptive start", "Stored on the purifier; VeSync runs it in its cloud"),
+      ],
+    );
+  }
+
+  // Vital 200S: a custom sleep profile runs quick clean, then sleep, then the
+  // daytime mode. On the Default profile the purifier ignores these settings.
+  _sleepSection() {
+    const profile = this._state("select.sleep_preference");
+    if (!profile) return "";
+    const dim = profile.state === "Default";
+    const sleepLevel = (v) => (v >= 5 ? "Auto" : `Level ${formatNumber(v)}`);
+    return this._section(
+      "Sleep",
+      [
+        this._choices("select.sleep_preference", "Sleep profile", "Custom1 / Custom2 use the steps below; Default uses the purifier's own"),
+        dim ? `<div class="hint pad">Pick Custom1 or Custom2 to change the steps below.</div>` : "",
+        this._subhead("1 · Quick clean first"),
+        this._toggle("switch.quick_clean", "Quick clean", "Run fast for a while before sleep", { dim }),
+        this._stepper("number.quick_clean_minutes", "For", "", { dim, format: (v) => formatMinutes(v) }),
+        this._stepper("number.quick_clean_fan_level", "At level", "", { dim, format: (v) => `Level ${formatNumber(v)}` }),
+        this._subhead("2 · Sleep"),
+        this._stepper("number.sleep_minutes", "Sleep for", "", { dim, format: (v) => formatMinutes(v) }),
+        this._stepper("number.sleep_fan_level", "At level", "", { dim, format: sleepLevel }),
+        this._subhead("3 · Then"),
+        this._toggle("switch.daytime_enabled", "Daytime mode", "Switch to a daytime mode when sleep ends", { dim }),
+        this._choices("select.daytime_fan_mode", "Mode", "", { dim }),
+        this._stepper("number.daytime_fan_level", "Level", "", { dim, format: (v) => `Level ${formatNumber(v)}` }),
+      ],
+    );
+  }
+
+  // Eleva 300X: the purifier lowers the fan one level during its quiet period
+  _quietSection() {
+    if (!this._state("switch.quiet_period") && !this._state("switch.dynamic_sleep")) return "";
+    const trigger = this._state("select.quiet_trigger");
+    const byTime = trigger?.state === "Timer";
+    const active = this._state("binary_sensor.quiet_active")?.state === "on";
+    const start = this._state("number.quiet_start");
+    const end = this._state("number.quiet_end");
+    const time = (st) =>
+      st
+        ? `<input type="time" step="1800" value="${esc(
+            this._usable(st) ? hoursToTime(parseFloat(st.state)) : "",
+          )}" data-number="${esc(st.entity_id)}" ${this._usable(st) ? "" : "disabled"}>`
+        : "";
+    return this._section(
+      "Quiet period",
+      [
+        this._toggle(
+          "switch.quiet_period",
+          "Quiet period",
+          active ? "Active now: the fan runs one level lower" : "Runs the fan one level lower",
+        ),
+        this._choices("select.quiet_trigger", "Starts", "", { labels: { Light: "When dark", Timer: "At set times" } }),
+        byTime && (start || end)
+          ? this._setting("From – to", "", `<div class="times">${time(start)}<span>–</span>${time(end)}</div>`)
+          : "",
+        this._toggle("switch.dynamic_sleep", "Dynamic sleep", "In Sleep, the speed goes up when the air gets bad"),
+      ],
+    );
+  }
+
+  _timerSection() {
+    const timer = this._state("number.timer");
+    if (!timer) return "";
+    const left = parseDuration(this._state("text_sensor.timer_duration_remaining")?.state) / 60;
+    const total = parseDuration(this._state("text_sensor.timer_duration_initial")?.state) / 60;
+    const running = left > 0;
+    const max = Number(timer.attributes.max) || 1440;
+    const usable = this._usable(timer);
+    const presets = [30, 60, 120, 240, 480, 720].filter((m) => m <= max);
+    const set = (minutes, text) =>
+      `<button class="seg" ${usable ? "" : "disabled"} ${this._svc("number", "set_value", timer.entity_id, {
+        value: minutes,
+      })}>${esc(text)}</button>`;
+    const status = running
+      ? `<div class="timer-run">
+          <div class="big">${esc(formatMinutes(left))} <span class="muted">left${
+            total ? ` of ${esc(formatMinutes(total))}` : ""
+          }</span></div>
+          ${total ? `<div class="bar"><span style="width:${Math.min(100, Math.round((left / total) * 100))}%"></span></div>` : ""}
+        </div>`
+      : `<div class="muted pad">No timer running</div>`;
+    return this._section(
+      "Timer",
+      [
+        status,
+        this._setting(
+          running ? "New timer" : "Turn off in",
+          "",
+          `<div class="segs">${presets.map((m) => set(m, formatMinutes(m))).join("")}${
+            running ? set(0, "Cancel") : ""
+          }</div>`,
+        ),
+      ],
+      "The purifier turns off when the timer ends",
+    );
+  }
+
+  _displaySection() {
+    const dark = this._state("binary_sensor.dark_detected");
+    const lightHint = `Dims the display in the dark${
+      dark && this._usable(dark) ? ` (now: ${dark.state === "on" ? "dark" : "light"})` : ""
+    }`;
+    return this._section("Display & panel", [
+      this._toggle("switch.display", "Display", "The panel's lights"),
+      this._toggle("switch.light_detect", "Light detect", lightHint),
+      this._choices("select.nightlight", "Night light", ""),
+      this._toggle("switch.aqi_ring_dim", "Dim the AQI ring", ""),
+      this._toggle("switch.mute", "Mute", "No beeps from the panel"),
+      this._toggle("switch.child_lock", "Child lock", "The buttons on the purifier do nothing"),
+    ]);
+  }
+
+  _filterSection() {
+    const life = this._number("sensor.filter_life_left");
+    const reset = this._state("button.reset_filter_stats");
+    const bar =
+      life === null
+        ? ""
+        : `<div class="filter-big${life < 5 ? " bad" : life < 20 ? " low" : ""}">
+            <div class="big">${esc(formatNumber(life))} %</div>
+            <div class="bar"><span style="width:${Math.max(0, Math.min(100, life))}%"></span></div>
+          </div>`;
+    return this._section(
+      "Filter",
+      [
+        bar,
+        this._stepper("number.filter_lifetime_months", "Lasts", "Expected filter life, used for the %", {
+          format: (v) => `${formatNumber(v)} month${v === 1 ? "" : "s"}`,
+        }),
+        reset
+          ? this._setting(
+              "New filter fitted",
+              "Starts the filter life at 100 % again",
+              `<button class="btn" ${this._usable(reset) || reset.state === "unknown" ? "" : "disabled"} ${this._svc(
+                "button",
+                "press",
+                reset.entity_id,
+                {},
+                "Reset the filter life to 100 %? Do this after fitting a new filter.",
+              )}>Reset</button>`,
+            )
+          : "",
+      ],
+      "Worked out on the ESP from the air moved, not measured",
+    );
+  }
+
+  _infoSection() {
+    const rows = [
+      this._readout("text_sensor.model", "Model"),
+      this._readout("text_sensor.esp_version", "Component"),
+      this._readout("text_sensor.mcu_version", "MCU firmware"),
+      this._readout("text_sensor.error_message", "Status"),
+      this._readout("sensor.ambient_light", "Ambient light"),
+    ].filter(Boolean);
+    if (!rows.length) return "";
+    return `<details class="card section info">
+      <summary class="sec-head">Info</summary>
+      ${rows.join("")}
+      <div class="hint pad">Settings found by entity name${
+        this._page.from_config ? ", as named in the device's config" : ", as the tuct/levoit configs name them"
+      }.</div>
+    </details>`;
   }
 
   // --- build log ----------------------------------------------------------------
@@ -671,6 +1260,95 @@ select:disabled { opacity: 0.6; }
 .log pre { margin: 0; padding: 12px 16px; overflow: auto; font-size: 12px; line-height: 1.45;
   font-family: var(--code-font-family, ui-monospace, Menlo, Consolas, monospace);
   white-space: pre-wrap; word-break: break-word; }
+
+/* --- device page --- */
+.toolbar .back { margin-left: -8px; }
+.page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 4px 12px; }
+.page-head .spacer { flex: 1; }
+.page-head .btn, .empty .btn { display: inline-flex; align-items: center; gap: 6px; }
+.page-head .btn svg, .empty .btn svg { width: 18px; height: 18px; }
+.notice.warn { background: rgba(255, 166, 0, 0.16); }
+.hint { font-size: 12px; font-weight: 400; color: var(--secondary-text-color); margin-top: 2px; }
+.hint.pad, .muted.pad { padding: 4px 16px 12px; }
+
+.hero { padding: 16px; margin-bottom: 16px; }
+.hero-controls { display: flex; align-items: center; gap: 16px; }
+.hero-rows { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.hero-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.h-label { width: 48px; font-size: 12px; color: var(--secondary-text-color); }
+.power { width: 64px; height: 64px; border-radius: 50%; cursor: pointer; flex: none;
+  border: 1px solid var(--divider-color); background: none; color: var(--secondary-text-color);
+  display: inline-flex; align-items: center; justify-content: center; }
+.power svg { width: 32px; height: 32px; }
+.power.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
+.power:disabled { opacity: 0.5; cursor: default; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 16px; }
+.tile { padding: 10px 12px; border-radius: 10px; background: rgba(127, 127, 127, 0.08); }
+.t-val { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.t-val .unit { font-size: 12px; font-weight: 400; color: var(--secondary-text-color); margin-left: 4px; }
+.t-label { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
+.hero .setting { padding-left: 0; padding-right: 0; }
+
+.segs { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.seg { font: inherit; font-size: 13px; cursor: pointer; padding: 6px 12px; border-radius: 16px;
+  border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); min-width: 36px; }
+.seg:hover { background: rgba(127, 127, 127, 0.1); }
+.seg.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
+.seg:disabled { opacity: 0.5; cursor: default; }
+
+.sections { columns: 2 420px; column-gap: 16px; }
+.section { break-inside: avoid; margin-bottom: 16px; }
+.sec-head { padding: 12px 16px; font-size: 16px; font-weight: 500; border-bottom: 1px solid var(--divider-color); }
+details.section > summary { cursor: pointer; list-style: none; }
+details.section > summary::-webkit-details-marker { display: none; }
+details.section:not([open]) > summary { border-bottom: none; }
+.subhead { padding: 12px 16px 0; font-size: 12px; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--secondary-text-color); }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; }
+.setting + .setting { border-top: 1px solid rgba(127, 127, 127, 0.12); }
+.setting.dim .s-label { opacity: 0.55; }
+.s-label { font-size: 14px; min-width: 0; }
+.s-control { flex: none; max-width: 65%; display: flex; justify-content: flex-end; }
+.readout { font-variant-numeric: tabular-nums; color: var(--secondary-text-color); text-align: right; }
+
+.switch { position: relative; width: 40px; height: 22px; border-radius: 11px; cursor: pointer; padding: 0;
+  border: none; background: rgba(127, 127, 127, 0.35); transition: background 0.15s; flex: none; }
+.switch span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform 0.15s; }
+.switch.on { background: var(--primary-color); }
+.switch.on span { transform: translateX(18px); }
+.switch:disabled { opacity: 0.45; cursor: default; }
+
+.slider { display: flex; align-items: center; gap: 10px; }
+.slider input { width: 160px; accent-color: var(--primary-color); }
+.val { font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; font-size: 14px; }
+.stepper { display: inline-flex; align-items: center; gap: 6px; }
+.stepper .val { min-width: 80px; text-align: center; }
+.step { width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font: inherit; font-size: 18px; line-height: 1;
+  border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+.step:disabled { opacity: 0.4; cursor: default; }
+.times { display: inline-flex; align-items: center; gap: 6px; }
+.times input { font: inherit; font-size: 14px; color: var(--primary-text-color); padding: 4px 6px;
+  background: var(--input-fill-color, var(--secondary-background-color, transparent));
+  border: 1px solid var(--divider-color); border-radius: 8px; }
+
+.timer-run, .filter-big { padding: 12px 16px 4px; }
+.timer-run .big, .filter-big .big { font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.timer-run .big .muted { font-size: 14px; font-weight: 400; }
+.timer-run .bar, .filter-big .bar { height: 6px; border-radius: 3px; margin-top: 8px; overflow: hidden;
+  background: rgba(127, 127, 127, 0.2); }
+.timer-run .bar span, .filter-big .bar span { display: block; height: 100%; background: var(--primary-color); }
+.filter-big .bar span { background: var(--success-color, #43a047); }
+.filter-big.low .bar span { background: var(--warning-color, #ffa600); }
+.filter-big.bad .bar span { background: var(--error-color, #db4437); }
+
+@media (max-width: 600px) {
+  .hero-controls { flex-direction: column; align-items: stretch; }
+  .power { align-self: center; }
+  .setting { flex-wrap: wrap; }
+  .s-control { max-width: 100%; }
+  .slider input { width: 120px; }
+}
 
 @media (max-width: 1100px) {
   .tb-btn span { display: none; }

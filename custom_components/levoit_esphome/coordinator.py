@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -55,6 +56,7 @@ from .const import (
     KNOWN_MODELS,
     SCAN_INTERVAL,
 )
+from .controls import config_names
 from .device_builder import (
     DeviceBuilder,
     DeviceBuilderCommandError,
@@ -93,6 +95,8 @@ class ConfigFacts:
     # for a template config, custom without one, None while unknown
     template: str | None = None
     config_kind: str | None = None
+    # entity names of the levoit settings, per controls key (device page)
+    control_names: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -117,6 +121,8 @@ class LevoitDevice:
     ref: str | None = None
     template: str | None = None
     config_kind: str | None = None
+    # entity names from its config, per controls key (empty without a config)
+    control_names: Mapping[str, str] = field(default_factory=dict)
     # False: known from before (our device entry exists) but nothing tells
     # right now that it runs the component: offline since a restart, no config
     detected: bool = True
@@ -542,6 +548,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             device.ref = facts.ref
             device.template = facts.template
             device.config_kind = facts.config_kind
+            device.control_names = facts.control_names
 
     @callback
     def async_choose_channel(self, name: str, channel: str) -> None:
@@ -731,6 +738,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 deployed_version=deployed,
                 template=template,
                 config_kind=kind,
+                control_names=config_names(config or {}),
             )
             changed = True
         if changed and self.data is not None:
