@@ -144,7 +144,7 @@ const GROUP_DEFAULTS = {
   max_speed: 4,
   thresholds: { pm25: [12, 35, 55, 150], aqi: [2, 3, 4, 4], aqi_index: [50, 100, 150, 200] },
   rise: { enabled: true, pm25: 20, aqi_index: 25, window_min: 5 },
-  hold_min: 10,
+  hold_min: 2,
   hand_back: "restore",
   turn_on: true,
   respect_manual: true,
@@ -160,11 +160,11 @@ const SENSOR_TYPE_INFO = {
   aqi_index: { label: "AQI index", unit: "0–500" },
 };
 const HAND_BACK_LABELS = {
-  restore: "Go back to what it was doing",
-  auto: "Switch to Auto",
-  sleep: "Switch to Sleep",
-  low: "Stay on speed 1",
-  off: "Turn off",
+  restore: "Goes back to what it was doing",
+  auto: "Switches to Auto",
+  sleep: "Switches to Sleep",
+  low: "Stays on speed 1",
+  off: "Turns off",
 };
 // a member's speed for a group level: fewer speeds share levels, so the top
 // level is always its fastest (as groups_logic.member_speed)
@@ -2008,8 +2008,8 @@ class LevoitEsphomePanel extends HTMLElement {
         `<span class="num-unit">${this._edNumber("hold_min", "Minimum minutes per level")}<span class="hint">min</span></span>`,
       )}
       ${this._setting(
-        "Then",
-        "What each purifier does when the group lets go",
+        "Once the air is clean, each purifier",
+        "Also when the group is switched off or deleted, or a purifier leaves it",
         `<select class="inp" data-ed-field="hand_back" aria-label="When the group lets go">${handBack}</select>`,
       )}
       ${this._setting(

@@ -94,7 +94,7 @@ def test_parse_defaults() -> None:
     """Defaults from the spec; as_dict round-trips."""
     config = _config()
     assert config.max_speed == 4
-    assert config.hold_min == 10
+    assert config.hold_min == 2
     assert config.hand_back == "restore"
     assert config.mode == "auto"
     assert config.thresholds[AQI] == (2, 3, 4, 4)
@@ -165,7 +165,7 @@ def _pm(value: float | None, entity_id: str = "sensor.pm25") -> list[Reading]:
 
 def test_level_up_at_once_down_one_per_hold() -> None:
     """Raising never waits; lowering waits hold_min per level, one level at a time."""
-    config = _config(rise={"enabled": False})
+    config = _config(rise={"enabled": False}, hold_min=10)
     keeper = LevelKeeper()
     keeper.step(config, _pm(5), 0)
     assert keeper.level == 0
@@ -244,7 +244,7 @@ def test_slow_climb_is_not_rising() -> None:
 
 def test_no_data_holds_then_hands_back() -> None:
     """Every sensor unavailable: hold the level for hold_min, then level 0."""
-    config = _config(rise={"enabled": False})
+    config = _config(rise={"enabled": False}, hold_min=10)
     keeper = LevelKeeper()
     keeper.step(config, _pm(60), 0)
     assert keeper.level == 3
