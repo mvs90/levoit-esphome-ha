@@ -261,7 +261,9 @@ that one alone for 30 minutes. A group can also run in *Manual*: one speed
 for all its purifiers. The editor picks the sensors from the purifiers, takes
 others from Home Assistant, sets thresholds, max speed and what happens when
 the air is clean, and shows live what the group would do now. Rooms in Home
-Assistant with 2 or more purifiers are suggested. Groups run in the
+Assistant with 2 or more purifiers are suggested. On *Devices* a purifier's
+card shows its group (tinted while the group runs it), and its page has a
+banner with the group's status and what a change there does. Groups run in the
 integration, so they keep working with the page closed and after a restart.
 Each group also gets a device with a *Control* switch (off: the group leaves
 its purifiers alone), a *Level* sensor (0–4, with the reason) and an
