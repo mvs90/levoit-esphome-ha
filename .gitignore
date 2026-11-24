@@ -5,3 +5,6 @@ __pycache__/
 .venv*/
 .coverage
 htmlcov/
+
+# Home Assistant token for scripts/screenshots.py
+ha_token

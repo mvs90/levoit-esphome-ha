@@ -6,9 +6,9 @@
     HA_URL=http://homeassistant.local:8123 HA_TOKEN=<long-lived token> \
         python scripts/screenshots.py
 
-The token is a long-lived access token of an admin (your profile -> Security);
-it is read from the environment only, never written anywhere. The pictures go
-to images/:
+The token is a long-lived access token of an admin (your profile -> Security),
+from HA_TOKEN or else from the file ha_token in the repository (git-ignored);
+it is never written anywhere. The pictures go to images/:
 
     overview.png       Devices
     device-page.png    a device's page (--device, else the first online card)
@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--only", nargs="*", help="only these pictures, e.g. overview device-page")
     p.add_argument("--headed", action="store_true", help="show the browser")
+    p.add_argument(
+        "--token-file",
+        type=pathlib.Path,
+        default=ROOT / "ha_token",
+        help="file with the token, when HA_TOKEN is not set (default: ha_token, git-ignored)",
+    )
     return p.parse_args()
 
 
@@ -103,8 +109,14 @@ async def launch(pw, headed: bool):
 async def main() -> int:  # noqa: PLR0915 - one run, top to bottom
     args = parse_args()
     token = os.environ.get("HA_TOKEN")
+    if not token and args.token_file.is_file():
+        token = args.token_file.read_text(encoding="utf-8").strip()
     if not token:
-        print("Set HA_TOKEN to a long-lived access token (profile -> Security).", file=sys.stderr)
+        print(
+            f"Set HA_TOKEN, or put the token in {args.token_file}: a long-lived access token"
+            " (profile -> Security).",
+            file=sys.stderr,
+        )
         return 2
     try:
         from playwright.async_api import async_playwright  # noqa: PLC0415 - optional
