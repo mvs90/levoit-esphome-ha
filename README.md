@@ -18,7 +18,10 @@ PM2.5, AQI and CADR), with a page per device for its settings and air quality
 history, and runs [purifier groups](#purifier-groups): several purifiers
 following shared air sensors, for example everything in one room.
 
-![The Levoit ESPHome sidebar page: seven purifiers as cards, each with power, mode and speed buttons, PM2.5, AQI and CADR, and an Update chip](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7)
+<p>
+  <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7" width="49%" alt="The sidebar page: seven purifiers as cards, each with power, mode and speed, PM2.5, AQI and CADR">
+  <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.7" width="49%" alt="The Everest Air's page: power, mode and speed, PM2.5, PM1.0, PM10, AQI and CADR, its group, the 24 hour history and the settings">
+</p>
 
 > **Early version.** Part of the
 > [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
