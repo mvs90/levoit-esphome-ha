@@ -15,7 +15,8 @@ Device Builder and uploads it over the air.
 
 Its sidebar page shows every purifier as a card to use it (power, mode, speed,
 PM2.5, AQI and CADR), with a page per device for its settings and air quality
-history.
+history, and runs [purifier groups](#purifier-groups): several purifiers
+following shared air sensors, for example everything in one room.
 
 ![The Levoit ESPHome sidebar page: seven purifiers as cards, each with power, mode and speed buttons, PM2.5, AQI and CADR, and an Update chip](https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png)
 
@@ -226,74 +227,98 @@ Each update shows the installed and the latest version, with the release notes
 ## Sidebar page
 
 Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
-Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only.
+Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only. It
+has three tabs and updates live. It is a plain web component served by the
+integration; nothing is loaded from outside Home Assistant. After updating the
+integration, reload the browser once to get the new page.
 
-It opens on **Devices**: every purifier as a card, for using them. Each card
-has a small outline of the model, power, mode and speed buttons, PM2.5, AQI
-and the current CADR, the time left when a timer runs, and a chip when an
-update is out. Click a card for the device's page.
+### Devices
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png" width="720" alt="Devices: seven purifiers as cards with power, mode and speed, PM2.5, AQI and CADR; four running, three off, all with an update">
+Every purifier as a card, for using them. A line on top counts the purifiers
+running, off and offline, and names the one with the worst air. Each card has a
+small outline of the model, an air quality dot, power, the mode and the speed,
+PM2.5, AQI (the level 1–4 and its word, *1 Very good* to *4 Poor*) and the
+current CADR, the filter left, and the time left when a timer runs. Chips under
+the model show an update that is out and the purifier's group (tinted while
+the group runs it). Offline cards keep their controls, greyed out. Click a
+card for the device's page.
 
-**A page per device** (click its card): on top, power, mode and speed with the
-air quality, and its **history**: PM2.5, AQI and CADR over the last 24 hours
-or 7 days, from Home Assistant's statistics. Below, the settings grouped
-instead of one long list: *Automatic* (auto mode, room size only when it
-applies), *Sleep* (the Vital 200S custom profile: quick clean, sleep, then
-daytime mode), *Quiet period* (Eleva 300X, start and end as times), *Timer*
-(quick picks and the time left), *Display & panel*, *Filter* (life %,
-lifetime, reset) and *Info*. For the Core 200S / 300S / 400S / 600S, Vital
-100S / 200S, Everest Air and Eleva 300X; other models link to Home
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png" width="720" alt="Devices: purifiers as cards with power, mode and speed, PM2.5, AQI and CADR">
+
+### Device page
+
+On top, power, mode and speed with PM2.5, AQI and CADR (the Eleva 300X also
+shows its AQI index, 0–500). Below, the **history** of the last 24 hours or
+7 days from Home Assistant's statistics, in one chart: PM2.5 as an area
+(left axis), CADR as a dashed line (right axis) and the air quality level as a
+coloured band under it; the legend chips switch each one on and off. A
+purifier in a group shows a banner with the group's status and what a change
+here does.
+
+Then the settings, grouped instead of one long list: *Automatic* (auto mode,
+room size only when it applies), *Sleep* (the Vital 200S custom profile: quick
+clean, sleep, then daytime mode), *Quiet period* (Eleva 300X, start and end as
+times), *Timer* (quick picks and the time left), *Display & panel*, *Filter*
+(life %, lifetime, reset) and *Info*. For the Core 200S / 300S / 400S / 600S,
+Vital 100S / 200S, Everest Air and Eleva 300X; other models link to Home
 Assistant's device page. It needs no Device Builder config: the settings are
 found by their entity names, as the tuct/levoit configs name them (or as the
 device's config does, when there is one).
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png" width="720" alt="A Core 600S device page: power, mode Manual, speed 2, PM2.5, AQI and CADR; 24 hour history of PM2.5, AQI and CADR; Automatic with Room Size, Timer, Display and panel, Filter at 88 percent, and Info">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
 
-**Purifier groups** (the second tab) run 2 or more purifiers together from
-shared air sensors, for example everything in one room. The worst sensor sets
-the group's level: each purifier switches to Manual at its own speed for that
-level (a 3-speed model shares levels, so the top level is always its fastest;
-one purifier can be held lower, for example a loud one up to speed 2)
-and once the air is clean the group lets go: each keeps running as it is. The level goes up at
-once and down one step per hold time (2 minutes); a fast rise in PM2.5 jumps
-straight to max speed. If someone changes a purifier by hand, the group leaves
-that one alone for 30 minutes. A group can also run in *Manual*: one speed
-for all its purifiers. The editor picks the sensors from the purifiers, takes
-others from Home Assistant, sets thresholds, max speed and the hold time, and
-shows live what the group would do now. Rooms in Home
-Assistant with 2 or more purifiers are suggested. On *Devices* a purifier's
-card shows its group (tinted while the group runs it), and its page has a
-banner with the group's status and what a change there does. Groups run in the
-integration, so they keep working with the page closed and after a restart.
-Each group also gets a device with a *Control* switch (off: the group leaves
-its purifiers alone), a *Level* sensor (0–4, with the reason), an *Air
-quality* sensor (0–4: the worst sensor on the group's thresholds, 0 below
-level 1; also in Manual or with the group off), an *Active*
-binary sensor, and the group as one **fan**: on / off is the group's control,
-preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers
-(Manual, up to the group's max speed). So dashboards, voice and automations
-can run a whole room like one purifier.
+### Purifier groups
 
-**Updates & config** (the third tab) has:
+Run 2 or more purifiers together from shared air sensors, for example
+everything in one room. Groups run in the integration, so they keep working
+with the page closed and after a restart.
 
-* every device: model, ESP / config type, channel, installed and latest
+* **The level:** the worst of the group's sensors, on the group's thresholds,
+  sets a level from 1 up to the group's max speed. It goes up at once and down
+  one step per hold time (2 minutes); a fast rise in PM2.5 jumps straight to
+  max speed.
+* **The purifiers** switch to Manual at their own speed for that level. A
+  3-speed model shares levels, so the top level is always its fastest; *Up to*
+  holds one lower, for example a loud one up to speed 2.
+* **Letting go:** once the air is clean, the group is switched off or deleted,
+  or a purifier leaves it, the group sends nothing: each keeps running as it is.
+* **By hand:** if someone changes a purifier, the group leaves that one alone
+  for 30 minutes.
+* **Manual:** one speed for all its purifiers instead of following the sensors.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
+
+The editor picks the sensors from the purifiers and takes others from Home
+Assistant, sets thresholds, max speed, hold time and the speed limit per
+purifier, and shows live what the group would do right now. Rooms in Home
+Assistant with 2 or more purifiers are suggested as groups.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-editor.png" width="720" alt="The group editor: purifiers, sensors, thresholds, the speed each purifier runs per level, and what the group would do now">
+
+Each group gets a device of its name, for dashboards, voice and automations:
+
+| Entity | What it shows / does |
+|--------|----------------------|
+| **The group** (fan) | The whole group like one purifier: on / off is *Control*, preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers (Manual, up to the group's max speed) |
+| **Control** (switch) | Off: the group leaves its purifiers alone |
+| **Level** (sensor) | 0–4, the level the group runs at, with the reason |
+| **Air quality** (sensor) | 0–4, the worst sensor on the group's thresholds (0 below level 1); also in Manual or with the group off |
+| **Active** (binary sensor) | On while the group runs its purifiers at a level above 0 |
+
+### Updates & config
+
+* every device: model, ESP / config type, channel, installed → latest
   component version, filter %, ESPHome version, status and the last build
+* the latest releases on top, with **Update all** (one device after the other)
 * **Compile** and **Compile and upload** (*Update* when one is out), with the
   result per device, and the output of the last build under **Log**
 * the channel of a device without a config or with a template config
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
-* a link to each device's page (below)
-* links to the Device Builder and Add device; *check now* reads
-  the latest versions from GitHub without waiting for the 6 hours
+* links to each device's page, the Device Builder and Add device; *check now*
+  reads the latest versions from GitHub without waiting for the 6 hours
 
-The page updates live. It is a plain web component served by the integration;
-nothing is loaded from outside Home Assistant. After updating the integration,
-reload the browser once to get the new page.
-
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png" width="720" alt="The sidebar page with five devices: three with an update, one XIAO ESP32-S3 just uploaded and up to date, one without a Device Builder config">
-
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
 
 ## Add device
 
@@ -440,3 +465,18 @@ pip install -r requirements_test.txt
 ruff check . && ruff format --check .
 pytest
 ```
+
+The README screenshots come from a running Home Assistant with the sidebar
+page on, through [`scripts/screenshots.py`](scripts/screenshots.py) (headless
+Edge or Chrome, with a long-lived access token of an admin):
+
+```bash
+pip install playwright
+HA_URL=http://homeassistant.local:8123 HA_TOKEN=<token> python scripts/screenshots.py
+```
+
+It saves `overview.png`, `device-page.png`, `groups.png`, `group-editor.png` and
+`panel-updates.png` to `images/`. `--device` and `--group` pick which device and
+group, `--only overview groups` takes some, `--dark` uses the dark theme,
+`--hide-sidebar` leaves out Home Assistant's sidebar and `--scale 2` makes them
+sharper.

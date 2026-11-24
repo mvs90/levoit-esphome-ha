@@ -457,7 +457,7 @@ class LevelKeeper:
         result = evaluate(config, readings, self.history)
         hold_s = config.hold_min * 60
         if result.usable == 0:
-            # no numbers at all: hold the level for hold_min, then hand back
+            # no numbers at all: hold the level for hold_min, then let go
             if self.level > 0:
                 if self._no_data_since is None:
                     self._no_data_since = now
