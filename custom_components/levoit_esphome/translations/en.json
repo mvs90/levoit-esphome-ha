@@ -76,11 +76,24 @@
           "s3": "Template: XIAO ESP32-S3",
           "custom": "Custom"
         }
+      },
+      "group_level": {
+        "name": "Level"
       }
     },
     "update": {
       "firmware": {
         "name": "Component firmware"
+      }
+    },
+    "switch": {
+      "group_control": {
+        "name": "Control"
+      }
+    },
+    "binary_sensor": {
+      "group_active": {
+        "name": "Active"
       }
     }
   },
