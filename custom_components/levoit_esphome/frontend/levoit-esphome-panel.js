@@ -44,6 +44,12 @@ const ICONS = {
   open: "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z",
   chevron: "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z",
   download: "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z",
+  home: "M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z",
+  close:
+    "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
+  check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
+  delete: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
+  fan: "M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C17,2 17.11,5.57 14.75,6.75C13.76,7.24 13.32,8.29 13.13,9.22C13.61,9.42 14.03,9.73 14.35,10.13C18.05,8.13 22.03,8.92 22.03,12.5C22.03,17 18.46,17.1 17.28,14.73C16.78,13.74 15.72,13.3 14.79,13.11C14.59,13.59 14.28,14 13.88,14.34C15.87,18.03 15.08,22 11.5,22C7,22 6.91,18.42 9.27,17.24C10.25,16.75 10.69,15.71 10.89,14.79C10.4,14.59 9.97,14.27 9.65,13.87C5.96,15.85 2,15.07 2,11.5C2,7 5.56,6.89 6.74,9.26C7.24,10.25 8.29,10.68 9.22,10.87C9.41,10.39 9.73,9.97 10.14,9.65C8.15,5.96 8.94,2 12.5,2Z",
   filter: "M14,12V19.88C14.04,20.18 13.94,20.5 13.71,20.71C13.32,21.1 12.69,21.1 12.3,20.71L10.29,18.7C10.06,18.47 9.96,18.16 10,17.87V12H9.97L4.21,4.62C3.87,4.19 3.95,3.56 4.38,3.22C4.57,3.08 4.78,3 5,3H19C19.22,3 19.43,3.08 19.62,3.22C20.05,3.56 20.13,4.19 19.79,4.62L14.03,12H14Z",
 };
 
@@ -125,6 +131,51 @@ const aqiIndexLevel = (value) => {
 };
 // plot geometry in viewBox units; the plot stretches to the card's width
 // (preserveAspectRatio none), so all text is HTML beside and under it
+// Purifier groups: a new group's settings (as the backend's defaults)
+const GROUP_DEFAULTS = {
+  name: "",
+  area_id: null,
+  enabled: true,
+  members: [],
+  sensors: [],
+  removed_sensors: [],
+  max_speed: 4,
+  thresholds: { pm25: [12, 35, 55, 150], aqi: [2, 3, 4, 4], aqi_index: [50, 100, 150, 200] },
+  rise: { enabled: true, pm25: 20, aqi_index: 25, window_min: 5 },
+  hold_min: 10,
+  hand_back: "restore",
+  turn_on: true,
+  respect_manual: true,
+  manual_pause_min: 30,
+  mode: "auto",
+  manual_level: 1,
+};
+const SENSOR_TYPES = ["pm25", "aqi", "aqi_index"];
+const SENSOR_TYPE_INFO = {
+  pm25: { label: "PM2.5", unit: "µg/m³" },
+  aqi: { label: "Air quality", unit: "Levoit level 1–4" },
+  aqi_index: { label: "AQI index", unit: "0–500" },
+};
+const HAND_BACK_LABELS = {
+  restore: "Go back to what it was doing",
+  auto: "Switch to Auto",
+  sleep: "Switch to Sleep",
+  low: "Stay on speed 1",
+  off: "Turn off",
+};
+// a member's speed for a group level: fewer speeds share levels, so the top
+// level is always its fastest (as groups_logic.member_speed)
+const memberSpeed = (level, max, speeds) => {
+  if (level <= 0) return 0;
+  const l = Math.min(level, max);
+  if (max <= 1) return 1;
+  if (max <= speeds) return l;
+  return 1 + Math.floor(((l - 1) * (speeds - 1)) / (max - 1) + 0.5);
+};
+// a data-value attribute: true / false, a number, or text
+const parseValue = (text) =>
+  text === "true" ? true : text === "false" ? false : /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : text;
+
 const CHART = { width: 600, height: 76, top: 6, bottom: 6 };
 
 // a round axis maximum at or above value: 1, 2, 2.5, 5 x 10^n
@@ -183,7 +234,20 @@ class LevoitEsphomePanel extends HTMLElement {
     this._hoverT = null; // time under the crosshair
     this._histHidden = new Set(); // history series switched off in the legend
     this._updatingAll = false;
+    // purifier groups (route /levoit-esphome/groups/...)
+    this._groups = null; // levoit_esphome/groups/subscribe: {groups, purifiers, dismissed_areas}
+    this._groupsError = null;
+    this._groupsUnsub = null;
+    this._groupsSubscribing = false;
+    this._groupKey = null; // the editor's group id, "new" or "new/<area_id>"
+    this._edit = null; // the editor: {draft, addOpen, saving, preview, previewError, previewSeq}
+    this._previewTimer = null;
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
+    // the group name: kept as it is typed, so Save sees it without a re-render
+    this.shadowRoot.addEventListener("input", (ev) => {
+      const field = ev.target?.closest?.('input[data-ed-field="name"]');
+      if (field && this._edit?.draft) this._edit.draft.name = field.value;
+    });
     // an overview card is a link: Enter or Space opens the device
     this.shadowRoot.addEventListener("keydown", (ev) => {
       const card = ev.target?.closest?.(".dcard");
@@ -222,6 +286,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (!this._unsub && !this._subscribing) this._subscribe();
+    if (!this._groupsUnsub && !this._groupsSubscribing) this._subscribeGroups();
     if (this._pageName && !this._page && !this._pageLoading && !this._pageError) this._loadPage();
     if (
       this._page &&
@@ -240,11 +305,19 @@ class LevoitEsphomePanel extends HTMLElement {
     this._route = route;
     const parts = (route?.path || "").split("/").filter(Boolean).map(decodeURIComponent);
     let name = null;
+    let groupKey = null;
     if (parts[0] === "config") this._view = "config";
-    else if (parts[0] === "device" && parts[1]) name = parts[1];
+    else if (parts[0] === "groups") {
+      groupKey = parts.slice(1).join("/") || null;
+      this._view = groupKey ? "group" : "groups";
+    } else if (parts[0] === "device" && parts[1]) name = parts[1];
     else if (parts[0]) name = parts[0];
     if (name) this._view = "device";
-    else if (parts[0] !== "config") this._view = "overview";
+    else if (parts[0] !== "config" && parts[0] !== "groups") this._view = "overview";
+    if (groupKey !== this._groupKey) {
+      this._groupKey = groupKey;
+      this._edit = null;
+    }
     if (name !== this._pageName) {
       this._pageName = name;
       this._page = null;
@@ -284,6 +357,9 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._view === "device") return Object.values(this._page?.controls || {});
     if (this._view === "overview")
       return (this._data?.devices || []).flatMap((d) => Object.values(d.controls || {}));
+    if (this._view === "groups") return (this._groups?.groups || []).flatMap((g) => g.members);
+    if (this._view === "group" && this._edit?.draft && this._groups)
+      return [...this._edit.draft.members, ...this._draftSensors().map((s) => s.entity_id)];
     return [];
   }
 
@@ -307,6 +383,7 @@ class LevoitEsphomePanel extends HTMLElement {
 
   connectedCallback() {
     if (this._hass && !this._unsub && !this._subscribing) this._subscribe();
+    if (this._hass && !this._groupsUnsub && !this._groupsSubscribing) this._subscribeGroups();
     this._render();
   }
 
@@ -314,6 +391,10 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._unsub) {
       this._unsub.then((unsub) => unsub()).catch(() => {});
       this._unsub = null;
+    }
+    if (this._groupsUnsub) {
+      this._groupsUnsub.then((unsub) => unsub()).catch(() => {});
+      this._groupsUnsub = null;
     }
   }
 
@@ -363,6 +444,11 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   async _onClick(ev) {
+    // a click outside the editor's Add sensor menu closes it
+    if (this._edit?.addOpen && !ev.target.closest(".add-wrap")) {
+      this._edit.addOpen = false;
+      this._render();
+    }
     const target = ev.target.closest("[data-action]");
     if (!target) return;
     const { action, name, path } = target.dataset;
@@ -434,6 +520,53 @@ class LevoitEsphomePanel extends HTMLElement {
         ev.preventDefault(); // the open state is ours, not the <details> element's
         this._infoOpen = !this._infoOpen;
         this._render();
+        break;
+      case "groups-retry":
+        this._groupsError = null;
+        this._render();
+        this._subscribeGroups();
+        break;
+      case "group-set":
+        await this._setGroup(target.dataset.id, target.dataset.field, parseValue(target.dataset.value));
+        break;
+      case "sug-dismiss":
+        await this._dismissArea(target.dataset.area);
+        break;
+      case "ed-set":
+        if (this._edit?.draft) this._setDraft(target.dataset.field, parseValue(target.dataset.value));
+        break;
+      case "ed-add-toggle":
+        this._edit.addOpen = !this._edit.addOpen;
+        this._render();
+        break;
+      case "ed-add-sensor": {
+        const d = this._edit.draft;
+        const entity = target.dataset.entity;
+        d.sensors = [...d.sensors, { entity_id: entity, type: target.dataset.type, source: "manual" }];
+        this._edit.addOpen = false;
+        this._setDraft("removed_sensors", d.removed_sensors.filter((e) => e !== entity));
+        break;
+      }
+      case "ed-restore-sensor":
+        this._edit.addOpen = false;
+        this._setDraft(
+          "removed_sensors",
+          this._edit.draft.removed_sensors.filter((e) => e !== target.dataset.entity),
+        );
+        break;
+      case "ed-remove-sensor": {
+        const d = this._edit.draft;
+        const entity = target.dataset.entity;
+        const own = d.sensors.some((x) => x.entity_id === entity && x.source === "manual");
+        if (own) this._setDraft("sensors", d.sensors.filter((x) => x.entity_id !== entity));
+        else this._setDraft("removed_sensors", [...d.removed_sensors, entity]);
+        break;
+      }
+      case "ed-save":
+        await this._saveEdit();
+        break;
+      case "ed-delete":
+        await this._deleteEdit();
         break;
       case "page-retry":
         this._pageError = null;
@@ -518,6 +651,35 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   async _onChange(ev) {
+    if (this._view === "group" && this._edit?.draft) {
+      const t = ev.target;
+      if (t.matches?.("input[data-member]")) {
+        const d = this._edit.draft;
+        const entity = t.dataset.member;
+        t.blur();
+        this._setDraft("members", t.checked ? [...d.members, entity] : d.members.filter((m) => m !== entity));
+        return;
+      }
+      if (t.matches?.("input[data-th]")) {
+        const [type, i] = t.dataset.th.split(".");
+        if (t.value === "") return;
+        const values = [...this._edit.draft.thresholds[type]];
+        values[Number(i)] = Number(t.value);
+        this._setDraft(`thresholds.${type}`, values);
+        return;
+      }
+      if (t.matches?.("[data-ed-field]")) {
+        const field = t.dataset.edField;
+        let value = t.value;
+        if (t.type === "number") {
+          if (value === "") return;
+          value = Number(value);
+        } else if (field === "area_id") value = value || null;
+        if (t.tagName === "SELECT") t.blur();
+        this._setDraft(field, value);
+        return;
+      }
+    }
     const preset = ev.target.closest("select[data-preset]");
     if (preset) {
       // overview card: the mode dropdown
@@ -814,17 +976,35 @@ class LevoitEsphomePanel extends HTMLElement {
     const version = this._panel?.config?.version;
     const onPage = this._view === "device" && Boolean(this._pageName);
     const onConfig = this._view === "config";
+    const onGroups = this._view === "groups";
+    const onEditor = this._view === "group";
     const pageTitle =
       this._page?.title || this._device(this._pageName)?.title || this._pageName || "";
     const updates = (this._data?.devices || []).filter((d) => d.update_available).length;
-    const tabs = onPage
-      ? ""
-      : `<div class="tabs" role="tablist">
-          <button class="tab${onConfig ? "" : " on"}" role="tab" aria-selected="${!onConfig}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
+    const onDevices = !onConfig && !onGroups;
+    const tabs =
+      onPage || onEditor
+        ? ""
+        : `<div class="tabs" role="tablist">
+          <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
+          <button class="tab${onGroups ? " on" : ""}" role="tab" aria-selected="${onGroups}" data-action="navigate" data-path="${esc(this._groupsPath())}">Purifier groups</button>
           <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config${
             updates ? `<span class="tab-badge" title="${updates} with an update">${updates}</span>` : ""
           }</button>
         </div>`;
+    // the view first: the editor makes its draft, which the toolbar shows
+    const view = onPage
+      ? this._devicePage()
+      : onConfig
+        ? `${this._data && !this._error ? this._releases() : ""}${this._body()}`
+        : onGroups
+          ? this._groupsView()
+          : onEditor
+            ? this._groupEditor()
+            : this._overview();
+    const draft = onEditor ? this._edit?.draft : null;
+    const invalid =
+      !draft || this._draftMembers().length < 2 || Boolean(this._thresholdError()) || this._edit.saving;
     // the theme's light or dark mode: a few colours of our own follow it
     this.toggleAttribute("dark", Boolean(this._hass?.themes?.darkMode));
     const haDevice = onPage && this._page?.device_id ? `/config/devices/device/${this._page.device_id}` : null;
@@ -837,9 +1017,28 @@ class LevoitEsphomePanel extends HTMLElement {
         }${
           onPage
             ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="All devices" title="All devices">${icon("back")}</button>`
+            : onEditor
+              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath())}" aria-label="All purifier groups" title="All purifier groups">${icon("back")}</button>`
+              : ""
+        }
+        <div class="title">${
+          onPage
+            ? esc(pageTitle)
+            : onEditor
+              ? `${esc(draft?.name?.trim() || (draft?.id ? "Purifier group" : "New group"))}<div class="subtitle">Purifier group</div>`
+              : "Levoit ESPHome"
+        }</div>
+        ${
+          draft?.id
+            ? `<button class="tb-btn" data-action="ed-delete" title="Delete this group">${icon("delete")}<span>Delete group</span></button>`
+            : ""
+        }${
+          draft
+            ? `<button class="tb-btn strong" data-action="ed-save" ${invalid ? "disabled" : ""} title="Save the group">${icon(
+                "check",
+              )}<span>Save</span></button>`
             : ""
         }
-        <div class="title">${onPage ? esc(pageTitle) : "Levoit ESPHome"}</div>
         ${
           haDevice
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(haDevice)}" title="The Home Assistant device page: every entity">${icon(
@@ -848,14 +1047,14 @@ class LevoitEsphomePanel extends HTMLElement {
             : ""
         }
         ${
-          builderUrl && !onPage
+          builderUrl && !onPage && !onEditor
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="Open the ESPHome Device Builder">${icon(
                 "builder",
               )}<span>Device Builder</span></button>`
             : ""
         }
         ${
-          onPage
+          onPage || onEditor
             ? ""
             : `<button class="tb-btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device (on the integration page)">${icon(
                 "plus",
@@ -871,13 +1070,7 @@ class LevoitEsphomePanel extends HTMLElement {
             : ""
         }
         ${tabs}
-        ${
-          onPage
-            ? this._devicePage()
-            : onConfig
-              ? `${this._data && !this._error ? this._releases() : ""}${this._body()}`
-              : this._overview()
-        }
+        ${view}
         <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""}${
           onConfig ? " · builds run in the ESPHome Device Builder; the last build's output is under Log" : ""
         }</div>
@@ -1060,6 +1253,759 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       ${stats ? `<div class="dc-stats">${stats}</div>` : ""}
       ${controls}
+    </div>`;
+  }
+
+  // --- purifier groups ------------------------------------------------------------
+  // Routes: /groups the list, /groups/<id> the editor, /groups/new (or
+  // /groups/new/<area_id> from a room suggestion) a new group.
+
+  async _subscribeGroups() {
+    this._groupsSubscribing = true;
+    try {
+      this._groupsUnsub = this._hass.connection.subscribeMessage(
+        (data) => {
+          this._groups = data;
+          this._groupsError = null;
+          if (this._view === "group") this._schedulePreview(1000);
+          if (this._view === "groups" || this._view === "group") this._render();
+        },
+        { type: "levoit_esphome/groups/subscribe" },
+      );
+      await this._groupsUnsub;
+    } catch (err) {
+      this._groupsUnsub = null;
+      this._groupsError = err?.message || String(err);
+      this._render();
+    } finally {
+      this._groupsSubscribing = false;
+    }
+  }
+
+  _groupsPath(rest = "") {
+    return `${this._base}/groups${rest ? `/${rest}` : ""}`;
+  }
+
+  _purifier(entityId) {
+    return (this._groups?.purifiers || []).find((p) => p.entity_id === entityId) || null;
+  }
+
+  _areaName(areaId) {
+    return (areaId && this._hass?.areas?.[areaId]?.name) || "";
+  }
+
+  _offline(entityId) {
+    const st = this._hass?.states?.[entityId];
+    return !st || st.state === "unavailable" || st.state === "unknown";
+  }
+
+  // speed n of a purifier as its panel names it (the Eleva's top speed is Turbo)
+  _speedLabel(p, n) {
+    return p?.model === "ELEVA300X" && n === 4 && (p.speeds || 4) === 4 ? "Turbo" : String(n);
+  }
+
+  // what a member does right now: Off, Manual · 3, Auto, Offline
+  _memberState(entityId, member) {
+    if (this._offline(entityId)) return "Offline";
+    if (member?.paused_until) return `Changed by hand · until ${this._time(member.paused_until)}`;
+    const st = this._hass.states[entityId];
+    if (st.state !== "on") return "Off";
+    const preset = st.attributes.preset_mode;
+    if ((st.attributes.preset_modes || []).length && preset && preset !== "Manual") return preset;
+    const step = Number(st.attributes.percentage_step) || 25;
+    const n = Math.round((Number(st.attributes.percentage) || 0) / step);
+    return `Manual · ${this._speedLabel(this._purifier(entityId), n)}`;
+  }
+
+  _levelBars(level, max) {
+    const bars = Array.from({ length: max }, (_, i) => `<i${i < level ? ' class="f"' : ""}></i>`).join("");
+    return `<span class="lvl" role="img" aria-label="${
+      level ? `Level ${level} of ${max}` : "Not controlling"
+    }">${bars}</span>`;
+  }
+
+  // what the backend takes: the config without its state; sensors picked from
+  // the members are picked again there, so only the user's own are sent
+  _groupPayload(g) {
+    const { state, ...rest } = g;
+    return { ...rest, sensors: (rest.sensors || []).filter((s) => s.source === "manual") };
+  }
+
+  async _setGroup(id, field, value) {
+    const g = (this._groups?.groups || []).find((x) => x.id === id);
+    if (!g) return;
+    try {
+      await this._hass.callWS({
+        type: "levoit_esphome/groups/save",
+        group: { ...this._groupPayload(g), [field]: value },
+      });
+    } catch (err) {
+      this._toast(`${g.name}: ${err.message || err}`);
+    }
+  }
+
+  async _dismissArea(areaId) {
+    try {
+      await this._hass.callWS({ type: "levoit_esphome/groups/dismiss", area_id: areaId });
+    } catch (err) {
+      this._toast(`${err.message || err}`);
+    }
+  }
+
+  _groupsView() {
+    if (this._groupsError)
+      return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
+        <button class="btn" data-action="groups-retry">Try again</button></div>`;
+    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+    const { groups, purifiers } = this._groups;
+    const head = `<div class="page-head">
+        <span class="muted grp-intro">A group watches shared air sensors and sets the speed of all its purifiers together. Each purifier can be in one group.</span>
+        <span class="spacer"></span>
+        <button class="btn primary" data-action="navigate" data-path="${esc(this._groupsPath("new"))}" ${
+          purifiers.length < 2 ? "disabled" : ""
+        }>${icon("plus")}New group</button>
+      </div>`;
+    const body = groups.length
+      ? `<div class="groups">${groups.map((g) => this._groupCard(g)).join("")}</div>`
+      : `<div class="card empty">
+          <div class="big-icon">${icon("purifier")}</div>
+          <p>No purifier groups yet.</p>
+          <p class="muted">${
+            purifiers.length < 2
+              ? "A group needs at least 2 purifiers with this integration."
+              : "Put purifiers that share a room in a group: the worst air sensor sets the speed of all of them."
+          }</p>
+        </div>`;
+    return `${head}${body}${this._suggestions()}`;
+  }
+
+  _groupCard(g) {
+    const st = g.state || {};
+    const on = g.enabled;
+    const manual = g.mode === "manual";
+    const level = st.level || 0;
+    const active = on && level > 0;
+    const max = g.max_speed;
+    const [pillKind, pillText] = !on
+      ? ["paused", "Paused"]
+      : manual
+        ? ["act", `Manual · level ${level} of ${max}`]
+        : active
+          ? ["act", `Auto · level ${level} of ${max}`]
+          : st.status === "no_sensors"
+            ? ["warn", "No sensor values"]
+            : ["watch", "Auto · watching"];
+    const reason = !on
+      ? "Group control is off · purifiers are left alone"
+      : manual
+        ? "All purifiers follow the speed you set"
+        : active
+          ? st.reason || ""
+          : st.status === "no_sensors"
+            ? g.sensors.length
+              ? "None of its sensors has a value right now"
+              : "No air sensors: add one in the editor"
+            : "All sensors below level 1 · purifiers run on their own";
+    const id = esc(g.id);
+    const dis = on ? "" : "disabled";
+    const seg = (field, value, label, current) =>
+      `<button class="seg sm${current ? " on" : ""}" aria-pressed="${current}" ${dis} data-action="group-set" data-id="${id}" data-field="${field}" data-value="${value}">${esc(
+        label,
+      )}</button>`;
+    const modes = [
+      ["auto", "Auto"],
+      ["manual", "Manual"],
+    ]
+      .map(([k, l]) => seg("mode", k, l, g.mode === k))
+      .join("");
+    const speeds = manual
+      ? `<div class="segs" role="group" aria-label="Speed for ${esc(g.name)}">${Array.from({ length: max }, (_, i) =>
+          seg("manual_level", i + 1, String(i + 1), g.manual_level === i + 1),
+        ).join("")}</div>`
+      : `<span class="hint">Speed follows the sensors</span>`;
+    const members = (st.members || g.members.map((m) => ({ entity_id: m })))
+      .map((m) => {
+        const p = this._purifier(m.entity_id);
+        return `<div class="gc-member"><span class="gc-mname">${esc(p?.title || m.entity_id)}</span><span class="${
+          m.in_control && on ? "accent" : "muted"
+        }">${esc(this._memberState(m.entity_id, m))}</span></div>`;
+      })
+      .join("");
+    const counts = {};
+    for (const s of g.sensors) counts[s.type] = (counts[s.type] || 0) + 1;
+    const chips = SENSOR_TYPES.filter((t) => counts[t])
+      .map((t) => `<span class="chip">${esc(SENSOR_TYPE_INFO[t].label)} ×${counts[t]}</span>`)
+      .join("");
+    const path = this._groupsPath(encodeURIComponent(g.id));
+    const area = this._areaName(g.area_id);
+    return `<div class="card gcard">
+      <div class="gc-head">
+        <div class="gc-title">
+          <a class="gc-name" href="${esc(path)}" data-action="navigate" data-path="${esc(path)}">${esc(g.name)}</a>
+          <div class="hint">${g.members.length} purifiers · max speed ${max}${area ? ` · ${esc(area)}` : ""}</div>
+        </div>
+        <button class="switch${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="Group control for ${esc(
+          g.name,
+        )}" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}"><span></span></button>
+      </div>
+      <div class="gc-status">
+        <div><span class="pill ${pillKind}"><i></i>${esc(pillText)}</span><div class="gc-reason">${esc(reason)}</div></div>
+        ${this._levelBars(active ? level : 0, max)}
+      </div>
+      <div class="gc-mode"><div class="segs" role="group" aria-label="Mode for ${esc(g.name)}">${modes}</div>${speeds}</div>
+      <div class="gc-members">${members}</div>
+      <div class="gc-foot">${chips}<button class="btn text" data-action="navigate" data-path="${esc(path)}">Edit</button></div>
+    </div>`;
+  }
+
+  // rooms with 2 or more purifiers in no group
+  _suggestions() {
+    const dismissed = new Set(this._groups.dismissed_areas || []);
+    const byArea = {};
+    for (const p of this._groups.purifiers)
+      if (p.area_id && !p.group_id && !dismissed.has(p.area_id)) (byArea[p.area_id] ||= []).push(p);
+    const cards = Object.entries(byArea)
+      .filter(([, list]) => list.length >= 2)
+      .map(
+        ([area, list]) => `<div class="sug">
+          ${icon("home")}
+          <div class="sug-text">
+            <div class="sug-name">${esc(this._areaName(area) || area)}</div>
+            <div class="hint">${esc(
+              list.map((p) => p.title + (this._offline(p.entity_id) ? " (offline)" : "")).join(", "),
+            )}</div>
+          </div>
+          <button class="btn text" data-action="sug-dismiss" data-area="${esc(area)}">Dismiss</button>
+          <button class="btn" data-action="navigate" data-path="${esc(
+            this._groupsPath(`new/${encodeURIComponent(area)}`),
+          )}">Create group</button>
+        </div>`,
+      )
+      .join("");
+    if (!cards) return "";
+    return `<div class="sug-wrap">
+      <h2>Suggested from your rooms</h2>
+      <div class="hint">Rooms in Home Assistant with 2 or more purifiers that aren't in a group yet.</div>
+      ${cards}
+    </div>`;
+  }
+
+  // --- group editor ----------------------------------------------------------------
+
+  // the draft for the route's group, once the groups are in
+  _ensureEdit() {
+    if (this._edit || !this._groups) return;
+    const key = this._groupKey || "new";
+    let draft;
+    if (key === "new" || key.startsWith("new/")) {
+      const area = key.slice(4) || null;
+      draft = JSON.parse(JSON.stringify(GROUP_DEFAULTS));
+      if (area) {
+        draft.area_id = area;
+        draft.name = this._areaName(area);
+        draft.members = this._groups.purifiers
+          .filter((p) => p.area_id === area && !p.group_id)
+          .map((p) => p.entity_id);
+      }
+    } else {
+      const g = this._groups.groups.find((x) => x.id === key);
+      if (!g) {
+        this._edit = { missing: true };
+        return;
+      }
+      const { state, ...rest } = g;
+      draft = JSON.parse(JSON.stringify(rest));
+    }
+    this._edit = { draft, addOpen: false, saving: false, preview: null, previewError: null, previewSeq: 0 };
+    this._schedulePreview(0);
+  }
+
+  _setPath(obj, path, value) {
+    const keys = path.split(".");
+    let at = obj;
+    for (const k of keys.slice(0, -1)) at = at[k];
+    at[keys[keys.length - 1]] = value;
+  }
+
+  _setDraft(field, value) {
+    const d = this._edit.draft;
+    this._setPath(d, field, value);
+    if (field === "max_speed") d.manual_level = Math.min(d.manual_level, value);
+    if (field === "area_id" && !d.name.trim()) d.name = this._areaName(value);
+    this._schedulePreview();
+    this._render();
+  }
+
+  // members that can be saved: not in another group
+  _draftMembers() {
+    const d = this._edit.draft;
+    return d.members.filter((m) => {
+      const p = this._purifier(m);
+      return p && (!p.group_id || p.group_id === d.id);
+    });
+  }
+
+  // the sensors as the backend will pick them: the members' (minus removed
+  // ones), then the user's own
+  _draftSensors() {
+    const d = this._edit.draft;
+    const removed = new Set(d.removed_sensors);
+    const out = [];
+    const seen = new Set();
+    for (const m of this._draftMembers()) {
+      const p = this._purifier(m);
+      for (const s of p.sensors) {
+        if (removed.has(s.entity_id) || seen.has(s.entity_id)) continue;
+        seen.add(s.entity_id);
+        out.push({ ...s, source: "auto", label: p.title });
+      }
+    }
+    for (const s of d.sensors) {
+      if (s.source !== "manual" || seen.has(s.entity_id)) continue;
+      seen.add(s.entity_id);
+      const st = this._hass?.states?.[s.entity_id];
+      out.push({ ...s, label: st?.attributes?.friendly_name || s.entity_id });
+    }
+    return out;
+  }
+
+  _sensorValue(entityId, type) {
+    const st = this._hass?.states?.[entityId];
+    if (!this._usable(st)) return "offline";
+    const v = parseFloat(st.state);
+    if (!Number.isFinite(v)) return st.state;
+    if (type === "aqi") return AQI_WORDS[aqiLevel(v)] || formatNumber(Math.round(v));
+    const unit = st.attributes.unit_of_measurement;
+    return `${formatNumber(Math.round(v))}${unit ? ` ${unit}` : ""}`;
+  }
+
+  _thresholdError() {
+    const t = this._edit.draft.thresholds;
+    const bad = SENSOR_TYPES.find((k) => t[k].some((v, i) => !Number.isFinite(v) || (i && v < t[k][i - 1])));
+    return bad ? `${SENSOR_TYPE_INFO[bad].label}: each level must start at or above the one before` : "";
+  }
+
+  _draftPayload() {
+    const d = this._edit.draft;
+    return {
+      ...d,
+      id: d.id || undefined,
+      members: this._draftMembers(),
+      sensors: d.sensors.filter((s) => s.source === "manual"),
+    };
+  }
+
+  _schedulePreview(delay = 250) {
+    clearTimeout(this._previewTimer);
+    this._previewTimer = setTimeout(() => this._loadPreview(), delay);
+  }
+
+  async _loadPreview() {
+    const e = this._edit;
+    if (!e || e.missing || !this._hass || this._view !== "group") return;
+    const seq = ++e.previewSeq;
+    try {
+      const result = await this._hass.callWS({
+        type: "levoit_esphome/groups/preview",
+        group: this._draftPayload(),
+      });
+      if (this._edit !== e || e.previewSeq !== seq) return;
+      e.preview = result;
+      e.previewError = null;
+    } catch (err) {
+      if (this._edit !== e || e.previewSeq !== seq) return;
+      e.previewError = err?.message || String(err);
+    }
+    this._render();
+  }
+
+  async _saveEdit() {
+    const e = this._edit;
+    if (!e?.draft || e.saving) return;
+    const d = e.draft;
+    if (!d.name.trim()) {
+      this._toast("Give the group a name");
+      return;
+    }
+    e.saving = true;
+    this._render();
+    try {
+      await this._hass.callWS({ type: "levoit_esphome/groups/save", group: this._draftPayload() });
+      this._toast(`${d.name.trim()} saved`);
+      this._edit = null;
+      this._navigate(this._groupsPath());
+    } catch (err) {
+      this._toast(`${err.message || err}`);
+    } finally {
+      e.saving = false;
+      this._render();
+    }
+  }
+
+  async _deleteEdit() {
+    const d = this._edit?.draft;
+    if (!d?.id) return;
+    if (!confirm(`Delete the group ${d.name}?\n\nPurifiers it controls are handed back first.`)) return;
+    try {
+      await this._hass.callWS({ type: "levoit_esphome/groups/delete", group_id: d.id });
+      this._edit = null;
+      this._navigate(this._groupsPath());
+    } catch (err) {
+      this._toast(`${err.message || err}`);
+    }
+  }
+
+  _edSwitch(field, label) {
+    const on = Boolean(field.split(".").reduce((o, k) => o?.[k], this._edit.draft));
+    return `<button class="switch${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="${esc(
+      label,
+    )}" data-action="ed-set" data-field="${field}" data-value="${!on}"><span></span></button>`;
+  }
+
+  _edNumber(field, label, { min = 0, step = "1" } = {}) {
+    const value = field.split(".").reduce((o, k) => o?.[k], this._edit.draft);
+    return `<input class="num" type="number" min="${min}" step="${step}" value="${esc(value)}" data-ed-field="${field}" aria-label="${esc(
+      label,
+    )}">`;
+  }
+
+  _edSegs(field, options, current, label) {
+    return `<div class="segs" role="group" aria-label="${esc(label)}">${options
+      .map(
+        ([value, text]) =>
+          `<button class="seg${value === current ? " on" : ""}" aria-pressed="${value === current}" data-action="ed-set" data-field="${field}" data-value="${value}">${esc(
+            text,
+          )}</button>`,
+      )
+      .join("")}</div>`;
+  }
+
+  _groupEditor() {
+    if (this._groupsError)
+      return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
+        <button class="btn" data-action="groups-retry">Try again</button></div>`;
+    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+    this._ensureEdit();
+    const e = this._edit;
+    if (e.missing)
+      return `<div class="card empty"><p>This group no longer exists.</p>
+        <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">All groups</button></div>`;
+    const d = e.draft;
+    const manual = d.mode === "manual";
+    const autoOnly = manual ? `<span class="tag">Used in Auto only</span>` : "";
+    const levels = Array.from({ length: d.max_speed }, (_, i) => i + 1);
+
+    // General
+    const areas = Object.values(this._hass?.areas || {}).sort((a, b) => a.name.localeCompare(b.name));
+    const areaOptions = `<option value="">No room</option>${areas
+      .map(
+        (a) =>
+          `<option value="${esc(a.area_id)}"${a.area_id === d.area_id ? " selected" : ""}>${esc(a.name)}</option>`,
+      )
+      .join("")}`;
+    const general = `<div class="card section">
+      <div class="sec-head"><h2>General</h2></div>
+      <div class="ged-fields">
+        <label class="field">Name<input class="inp" type="text" data-ed-field="name" value="${esc(d.name)}" placeholder="Living room"></label>
+        <label class="field">Room (Home Assistant area)<select class="inp" data-ed-field="area_id">${areaOptions}</select></label>
+      </div>
+      ${this._setting(
+        "Mode",
+        manual ? "You pick one speed; every purifier follows it" : "The sensors pick the speed",
+        `<div class="ged-modes">${this._edSegs(
+          "mode",
+          [
+            ["auto", "Auto"],
+            ["manual", "Manual"],
+          ],
+          d.mode,
+          "Group mode",
+        )}${
+          manual
+            ? this._edSegs(
+                "manual_level",
+                levels.map((n) => [n, String(n)]),
+                d.manual_level,
+                "Group speed",
+              )
+            : ""
+        }</div>`,
+      )}
+      ${this._setting("Group control", "When off, the purifiers are left alone", this._edSwitch("enabled", "Group control"))}
+    </div>`;
+
+    // Purifiers
+    const chosen = new Set(this._draftMembers());
+    const rows = this._groups.purifiers
+      .map((p) => {
+        const other = p.group_id && p.group_id !== d.id;
+        const tags = [];
+        if (other)
+          tags.push(["", `In ${this._groups.groups.find((g) => g.id === p.group_id)?.name || "a group"}`]);
+        else if (d.area_id && p.area_id === d.area_id) tags.push(["sug", "In this room"]);
+        else if (p.area_id) tags.push(["", this._areaName(p.area_id)]);
+        if (this._offline(p.entity_id)) tags.push(["err", "Offline"]);
+        const sub = `${p.model || "Levoit"} · ${p.speeds} speeds${p.sensors.length ? "" : " · no air sensor"}`;
+        return `<label class="mem${other ? " dis" : ""}">
+          <input type="checkbox" data-member="${esc(p.entity_id)}" ${chosen.has(p.entity_id) ? "checked" : ""} ${
+            other ? "disabled" : ""
+          } aria-label="${esc(p.title)}">
+          <span class="dev-tile">${deviceImage(p.model)}</span>
+          <span class="mem-text"><span class="mem-name">${esc(p.title)}</span><span class="hint">${esc(sub)}</span></span>
+          <span class="tags">${tags
+            .filter(([, label]) => label)
+            .map(([kind, label]) => `<span class="tag ${kind}">${esc(label)}</span>`)
+            .join("")}</span>
+        </label>`;
+      })
+      .join("");
+    const count = chosen.size;
+    const purifiers = `<div class="card section">
+      <div class="sec-head"><div><h2>Purifiers</h2><div class="hint">Purifiers in ${esc(
+        this._areaName(d.area_id) || "the group's room",
+      )} are suggested; you can add any purifier.</div></div>
+        <span class="tag ${count < 2 ? "err" : "sug"}">${count} selected${count < 2 ? " · pick at least 2" : ""}</span></div>
+      ${rows}
+      <div class="mem dis"><input type="checkbox" disabled aria-label="Other fans"><span class="dev-tile">${icon(
+        "fan",
+      )}</span><span class="mem-text"><span class="mem-name">Other fans</span><span class="hint">Any Home Assistant fan entity</span></span><span class="tags"><span class="tag">Coming later</span></span></div>
+    </div>`;
+
+    // Air quality sensors
+    const shown = this._draftSensors();
+    const shownIds = new Set(shown.map((s) => s.entity_id));
+    const typeRows = SENSOR_TYPES.map((t) => {
+      const chips = shown
+        .filter((s) => s.type === t)
+        .map(
+          (s) => `<span class="schip"><span>${esc(s.label)}</span><b>${esc(this._sensorValue(s.entity_id, t))}</b>
+            <button data-action="ed-remove-sensor" data-entity="${esc(s.entity_id)}" aria-label="Remove ${esc(
+              s.label,
+            )} ${esc(SENSOR_TYPE_INFO[t].label)}">${icon("close")}</button></span>`,
+        )
+        .join("");
+      return `<div class="stype"><div class="stype-label">${esc(SENSOR_TYPE_INFO[t].label)}<div class="hint">${esc(
+        SENSOR_TYPE_INFO[t].unit,
+      )}</div></div><div class="stype-chips">${chips || `<span class="hint">None: this type is not used</span>`}</div></div>`;
+    }).join("");
+    const removed = [];
+    const removedIds = new Set(d.removed_sensors);
+    const knownTypes = {};
+    for (const p of this._groups.purifiers) for (const s of p.sensors) knownTypes[s.entity_id] = s.type;
+    for (const m of this._draftMembers()) {
+      const p = this._purifier(m);
+      for (const s of p.sensors) if (removedIds.has(s.entity_id)) removed.push({ ...s, label: p.title });
+    }
+    const extras = Object.values(this._hass?.states || {})
+      .filter((st) => {
+        const dc = st.attributes.device_class;
+        return (
+          st.entity_id.startsWith("sensor.") &&
+          (dc === "pm25" || dc === "aqi") &&
+          !shownIds.has(st.entity_id) &&
+          !removedIds.has(st.entity_id)
+        );
+      })
+      .map((st) => ({
+        entity_id: st.entity_id,
+        type: knownTypes[st.entity_id] || (st.attributes.device_class === "pm25" ? "pm25" : "aqi_index"),
+        label: st.attributes.friendly_name || st.entity_id,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .slice(0, 40);
+    const menu = e.addOpen
+      ? `<div class="menu" role="menu">${
+          removed.length
+            ? `<div class="mh">From this group's purifiers</div>${removed
+                .map(
+                  (s) =>
+                    `<button role="menuitem" data-action="ed-restore-sensor" data-entity="${esc(s.entity_id)}"><span>${esc(
+                      s.label,
+                    )} · ${esc(SENSOR_TYPE_INFO[s.type].label)}</span><span class="hint">${esc(
+                      this._sensorValue(s.entity_id, s.type),
+                    )}</span></button>`,
+                )
+                .join("")}`
+            : ""
+        }<div class="mh">Other Home Assistant sensors</div>${
+          extras.length
+            ? extras
+                .map(
+                  (x) =>
+                    `<button role="menuitem" data-action="ed-add-sensor" data-entity="${esc(x.entity_id)}" data-type="${x.type}"><span>${esc(
+                      x.label,
+                    )} · ${esc(SENSOR_TYPE_INFO[x.type].label)}</span><span class="mono-id">${esc(x.entity_id)}</span></button>`,
+                )
+                .join("")
+            : `<div class="hint menu-empty">No other PM2.5 or AQI sensors</div>`
+        }</div>`
+      : "";
+    const sensors = `<div class="card section">
+      <div class="sec-head"><div><h2>Air quality sensors${autoOnly}</h2><div class="hint">Picked from the purifiers above. The worst reading decides the group's level.</div></div></div>
+      ${typeRows}
+      <div class="add-wrap"><button class="btn" data-action="ed-add-toggle" aria-haspopup="menu" aria-expanded="${e.addOpen}">${icon(
+        "plus",
+      )}Add sensor</button>${menu}</div>
+    </div>`;
+
+    // Max speed and the speed of each purifier per level
+    const members = [...chosen].map((m) => this._purifier(m));
+    const mapRows = members
+      .map(
+        (p) =>
+          `<div class="gl">${esc(p.title)} <span class="hint">· ${p.speeds} speeds</span></div>${levels
+            .map((l) => `<div>${esc(this._speedLabel(p, memberSpeed(l, d.max_speed, p.speeds)))}</div>`)
+            .join("")}`,
+      )
+      .join("");
+    const speed = `<div class="card section">
+      <div class="sec-head"><div><h2>Max speed</h2><div class="hint">The highest level the group will use</div></div>
+        ${this._edSegs(
+          "max_speed",
+          [1, 2, 3, 4].map((n) => [n, String(n)]),
+          d.max_speed,
+          "Max speed",
+        )}</div>
+      ${
+        members.length
+          ? `<div class="tbl-scroll"><div class="grid-tbl" style="--cols:${d.max_speed}"><div class="gh gl">Group level →</div>${levels
+              .map((l) => `<div class="gh">${l}</div>`)
+              .join("")}${mapRows}</div></div>`
+          : ""
+      }
+      <div class="hint pad">Purifiers with fewer speeds share levels, so the top level is always their fastest speed.</div>
+    </div>`;
+
+    // When to step in
+    const thError = this._thresholdError();
+    const thRows = SENSOR_TYPES.map(
+      (t) =>
+        `<div class="gl">${esc(SENSOR_TYPE_INFO[t].label)} <span class="hint">${esc(SENSOR_TYPE_INFO[t].unit)}</span></div>${d.thresholds[t]
+          .map(
+            (v, i) =>
+              `<div><input class="num" type="number" min="0" step="any" value="${esc(v)}" data-th="${t}.${i}" aria-label="${esc(
+                SENSOR_TYPE_INFO[t].label,
+              )} level ${i + 1}"></div>`,
+          )
+          .join("")}`,
+    ).join("");
+    const stepIn = `<div class="card section">
+      <div class="sec-head"><div><h2>When to step in${autoOnly}</h2><div class="hint">A reading at or above a value starts that level. Below level 1 the group hands the purifiers back.</div></div></div>
+      <div class="tbl-scroll"><div class="grid-tbl" style="--cols:4"><div class="gh gl">Sensor</div>${[1, 2, 3, 4]
+        .map((l) => `<div class="gh">Level ${l}</div>`)
+        .join("")}${thRows}</div></div>
+      ${thError ? `<div class="err-line">${esc(thError)}</div>` : ""}
+      <div class="rise">
+        ${this._edSwitch("rise.enabled", "Rising fast rule")}
+        <span>Rising fast: go straight to max speed if PM2.5 climbs</span>
+        ${this._edNumber("rise.pm25", "PM2.5 rise in µg/m³", { min: 1, step: "any" })}
+        <span class="hint">µg/m³, or the AQI index</span>
+        ${this._edNumber("rise.aqi_index", "AQI index rise", { min: 1, step: "any" })}
+        <span class="hint">within</span>
+        ${this._edNumber("rise.window_min", "Rise window in minutes", { min: 1 })}
+        <span class="hint">min</span>
+      </div>
+    </div>`;
+
+    // When the air is clean again
+    const handBack = Object.entries(HAND_BACK_LABELS)
+      .map(([k, l]) => `<option value="${k}"${k === d.hand_back ? " selected" : ""}>${esc(l)}</option>`)
+      .join("");
+    const clean = `<div class="card section">
+      <div class="sec-head"><h2>When the air is clean again${autoOnly}</h2></div>
+      ${this._setting(
+        "Stay at a level for at least",
+        "Then step down one level at a time",
+        `<span class="num-unit">${this._edNumber("hold_min", "Minimum minutes per level")}<span class="hint">min</span></span>`,
+      )}
+      ${this._setting(
+        "Then",
+        "What each purifier does when the group lets go",
+        `<select class="inp" data-ed-field="hand_back" aria-label="When the group lets go">${handBack}</select>`,
+      )}
+      ${this._setting(
+        "Turn purifiers on when needed",
+        "Otherwise purifiers that are off stay off",
+        this._edSwitch("turn_on", "Turn purifiers on when needed"),
+      )}
+      ${this._setting(
+        "Respect manual changes",
+        "If someone changes a purifier by hand, leave it alone for",
+        `<span class="num-unit">${this._edNumber("manual_pause_min", "Pause minutes after a manual change", {
+          min: 1,
+        })}<span class="hint">min</span>${this._edSwitch("respect_manual", "Respect manual changes")}</span>`,
+      )}
+    </div>`;
+
+    return `<div class="ged">
+      <div class="ged-main">${general}${purifiers}${sensors}${speed}${stepIn}${clean}</div>
+      <aside class="ged-aside" aria-label="Live preview">${this._rightNow()}
+        <div class="hint now-note">The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save.</div>
+      </aside>
+    </div>`;
+  }
+
+  // the editor's live preview: what the group would do with these settings now
+  _rightNow() {
+    const e = this._edit;
+    const d = e.draft;
+    const p = e.preview;
+    const manual = d.mode === "manual";
+    if (e.previewError)
+      return `<div class="card now"><div class="now-k">Right now</div><div class="now-reason bad">${esc(
+        e.previewError,
+      )}</div></div>`;
+    if (!p)
+      return `<div class="card now"><div class="now-k">Right now</div><div class="now-reason"><span class="spinner"></span> Working it out…</div></div>`;
+    const level = p.level || 0;
+    const usable = p.sensors.some((s) => s.value != null);
+    const title = !d.enabled
+      ? "Paused"
+      : manual
+        ? `Manual · level ${level} of ${d.max_speed}`
+        : level
+          ? `Level ${level} of ${d.max_speed}`
+          : "Air is clean";
+    const reason = !d.enabled
+      ? "Group control is off."
+      : manual
+        ? "Every purifier runs at the group speed, whatever the sensors say."
+        : level
+          ? p.reason || ""
+          : !p.sensors.length
+            ? "No air sensors: the group never steps in."
+            : usable
+              ? "Every sensor is below level 1, so the purifiers run on their own."
+              : "No sensor has a value right now.";
+    const members = p.members
+      .map((m) => {
+        const pur = this._purifier(m.entity_id);
+        const target = this._offline(m.entity_id)
+          ? "Offline · skipped"
+          : !d.enabled
+            ? "Left alone"
+            : level === 0
+              ? "Handed back"
+              : `Manual · ${this._speedLabel(pur, m.speed)}`;
+        return `<div class="now-row"><span>${esc(pur?.title || m.entity_id)}</span><b>${esc(target)}</b></div>`;
+      })
+      .join("");
+    const sensors = p.sensors
+      .map((s) => {
+        const owner = (this._groups.purifiers || []).find((x) => x.sensors.some((y) => y.entity_id === s.entity_id));
+        const name = owner ? owner.title : this._hass?.states?.[s.entity_id]?.attributes?.friendly_name || s.entity_id;
+        const lvl = s.value == null ? "skipped" : s.level ? `level ${s.level}` : "clean";
+        return `<div class="now-row"><span>${esc(name)} ${esc(SENSOR_TYPE_INFO[s.type].label)}</span><span><b>${esc(
+          s.value == null ? "—" : this._sensorValue(s.entity_id, s.type),
+        )}</b> <span class="hint">→ ${esc(lvl)}</span></span></div>`;
+      })
+      .join("");
+    return `<div class="card now">
+      <div class="now-k">Right now</div>
+      <div class="now-title"><span>${esc(title)}</span>${this._levelBars(d.enabled ? level : 0, d.max_speed)}</div>
+      <div class="now-reason">${esc(reason)}</div>
+      ${members ? `<div class="now-h">Purifiers</div>${members}` : ""}
+      ${sensors ? `<div class="now-h">Sensors</div>${sensors}` : ""}
     </div>`;
   }
 
@@ -2263,6 +3209,146 @@ details.section[open] > summary { padding-bottom: 8px; }
 .tip-row { display: flex; justify-content: space-between; gap: 12px; line-height: 1.6; }
 .tip-row strong { font-weight: 600; font-variant-numeric: tabular-nums; }
 .tip-row span { color: var(--secondary-text-color); }
+
+/* purifier groups */
+.grp-intro { max-width: 640px; font-size: 14px; }
+.page-head .btn.primary svg { width: 18px; height: 18px; }
+.groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 16px; }
+.gcard { padding: 16px 20px 12px; display: flex; flex-direction: column; gap: 12px; }
+.gc-head { display: flex; align-items: flex-start; gap: 12px; }
+.gc-title { flex: 1; min-width: 0; }
+.gc-name { font-size: 18px; font-weight: 500; color: var(--primary-text-color); }
+.gc-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
+  padding: 12px 14px; border-radius: 10px; background: var(--lv-track); }
+.gc-reason { font-size: 13px; color: var(--secondary-text-color); margin-top: 6px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px;
+  font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--card-background-color, #fff);
+  color: var(--secondary-text-color); }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--secondary-text-color); }
+.pill.act { background: color-mix(in srgb, var(--primary-color) 14%, var(--card-background-color, #fff)); color: var(--lv-accent-text); }
+.pill.act i { background: var(--primary-color); }
+.pill.watch i { background: var(--success-color, #43a047); }
+.pill.warn { background: var(--lv-q3-bg); color: var(--lv-q3-fg); }
+.pill.warn i { background: var(--lv-q3); }
+.lvl { display: inline-flex; gap: 3px; }
+.lvl i { width: 22px; height: 8px; border-radius: 2px; background: var(--divider-color); }
+.lvl i.f { background: var(--primary-color); }
+.gc-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.gc-mode .hint { margin: 0; }
+.gc-member { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0;
+  border-top: 1px solid var(--divider-color); font-size: 14px; }
+.gc-mname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-member > span:last-child { white-space: nowrap; }
+.accent { color: var(--lv-accent-text); font-weight: 500; }
+.gc-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.gc-foot .btn { margin-left: auto; }
+.sug-wrap { margin-top: 24px; }
+.sug-wrap h2 { margin: 0 4px; }
+.sug-wrap > .hint { margin: 2px 4px 12px; font-size: 13px; }
+.sug { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 20px; margin-bottom: 12px;
+  border: 1px dashed var(--divider-color); border-radius: 12px; background: var(--card-background-color, #fff); }
+.sug > svg { color: var(--secondary-text-color); }
+.sug-text { flex: 1; min-width: 200px; }
+.sug-name { font-size: 15px; font-weight: 500; }
+.toolbar .subtitle { font-size: 12px; opacity: 0.8; line-height: 1.2; }
+.toolbar .title:has(.subtitle) { line-height: 1.25; }
+.tb-btn.strong { border: 1px solid currentColor; }
+
+/* group editor */
+.ged { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.ged-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.ged-main .section { margin: 0; overflow: visible; }
+.ged-aside { flex: 1 1 300px; min-width: 0; position: sticky; top: calc(var(--header-height, 56px) + 16px); }
+.now-note { padding: 8px 4px 0; }
+.ged-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; padding: 8px 20px 16px; }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--secondary-text-color); }
+.inp { font: inherit; font-size: 15px; height: 40px; padding: 0 12px; border-radius: 8px; box-sizing: border-box;
+  border: 1px solid var(--divider-color); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
+.num { font: inherit; font-size: 14px; width: 68px; height: 34px; padding: 0 8px; border-radius: 8px; box-sizing: border-box;
+  border: 1px solid var(--divider-color); background: var(--card-background-color, #fff); color: var(--primary-text-color);
+  text-align: right; font-variant-numeric: tabular-nums; }
+.inp:focus, .num:focus { outline: 2px solid var(--primary-color); outline-offset: -1px; border-color: transparent; }
+.num-unit { display: inline-flex; align-items: center; gap: 8px; }
+.num-unit .hint { margin: 0; }
+.ged-modes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.sec-head .tag { margin-left: 8px; vertical-align: middle; }
+.tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 10px; font-size: 11px;
+  font-weight: 500; background: var(--lv-track); color: var(--secondary-text-color); white-space: nowrap; }
+.tag.sug { background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--lv-accent-text); }
+.tag.err { background: var(--lv-q4-bg); color: var(--lv-q4-fg); }
+.mem { display: flex; align-items: center; gap: 14px; padding: 10px 20px; border-top: 1px solid var(--divider-color); cursor: pointer; }
+.mem.dis { cursor: default; opacity: 0.55; }
+.mem input { width: 20px; height: 20px; margin: 0; accent-color: var(--primary-color); flex: none; }
+.mem .dev-tile { width: 36px; height: 36px; border-radius: 10px; }
+.mem .dev-tile svg { width: 28px; height: 28px; }
+.mem-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mem-name { font-size: 15px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.stype { display: flex; align-items: flex-start; gap: 16px; padding: 12px 20px; border-top: 1px solid var(--divider-color); }
+.stype-label { width: 104px; flex: none; padding-top: 8px; font-size: 14px; font-weight: 500; }
+.stype-chips { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; min-width: 0; }
+.stype-chips > .hint { padding-top: 9px; margin: 0; }
+.schip { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 4px 0 12px; border-radius: 18px;
+  border: 1px solid var(--divider-color); font-size: 13px; white-space: nowrap; }
+.schip b { font-weight: 500; }
+.schip button { width: 28px; height: 28px; padding: 0; border-radius: 50%; border: 0; background: none; cursor: pointer;
+  color: var(--secondary-text-color); display: inline-flex; align-items: center; justify-content: center; }
+.schip button svg { width: 16px; height: 16px; }
+.schip button:hover { background: var(--lv-track); color: var(--primary-text-color); }
+.add-wrap { position: relative; padding: 12px 20px 16px; border-top: 1px solid var(--divider-color); }
+.add-wrap > .btn { margin: 0; display: inline-flex; align-items: center; gap: 6px; }
+.add-wrap > .btn svg { width: 18px; height: 18px; }
+.menu { position: absolute; top: 56px; left: 20px; z-index: 3; width: min(380px, calc(100% - 40px)); max-height: 320px;
+  overflow: auto; padding: 6px; box-sizing: border-box; border-radius: 12px; background: var(--card-background-color, #fff);
+  border: 1px solid var(--divider-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); }
+.menu .mh { padding: 8px 12px 4px; font-size: 11px; font-weight: 500; color: var(--secondary-text-color);
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.menu button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px;
+  padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--primary-text-color); font: inherit;
+  font-size: 14px; text-align: left; cursor: pointer; }
+.menu button:hover { background: var(--lv-track); }
+.menu .hint { margin: 0; }
+.mono-id { font-family: ui-monospace, monospace; font-size: 11px; color: var(--secondary-text-color);
+  overflow: hidden; text-overflow: ellipsis; }
+.menu-empty { padding: 6px 12px 10px; }
+.tbl-scroll { overflow-x: auto; padding-right: 14px; }
+.grid-tbl { display: grid; grid-template-columns: minmax(170px, 1fr) repeat(var(--cols), minmax(64px, auto));
+  align-items: stretch; font-size: 14px; min-width: max-content; }
+.grid-tbl > div { padding: 8px 6px; border-top: 1px solid var(--divider-color); white-space: nowrap;
+  display: flex; align-items: center; justify-content: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.grid-tbl > .gh { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); border-top: 0; }
+.grid-tbl > .gl { justify-content: flex-start; flex-wrap: wrap; padding-left: 20px; }
+.grid-tbl .hint { margin: 0; }
+.rise { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 14px 20px;
+  border-top: 1px solid var(--divider-color); font-size: 15px; }
+.rise .hint { margin: 0; }
+.err-line { padding: 8px 20px 12px; font-size: 13px; color: var(--error-color, #db4437); }
+.now { padding: 18px 20px; }
+.now-k { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: 0.04em; }
+.now-title { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 8px; font-size: 24px; font-weight: 500; }
+.now-reason { font-size: 14px; color: var(--secondary-text-color); margin-top: 6px; }
+.now-h { margin-top: 16px; font-size: 12px; font-weight: 500; color: var(--secondary-text-color); }
+.now-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--divider-color); font-size: 14px; }
+.now-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-row b { font-weight: 500; white-space: nowrap; }
+.now-row > span:last-child { flex: none; white-space: nowrap; }
+.now-row .hint { display: inline; margin: 0; }
+.ged .sec-head { flex-wrap: wrap; }
+.ged .segs { flex-wrap: nowrap; }
+@media (max-width: 900px) {
+  .ged-aside { position: static; }
+}
+@media (max-width: 600px) {
+  .stype { flex-wrap: wrap; }
+  .stype-label { width: auto; padding-top: 0; }
+  .mem { padding: 10px 16px; }
+  .tags { display: none; }
+  .grid-tbl { grid-template-columns: minmax(84px, 1fr) repeat(var(--cols), minmax(48px, auto)); min-width: 0; }
+  .grid-tbl > div { padding: 6px 3px; }
+  .grid-tbl > .gl { padding-left: 16px; white-space: normal; }
+  .grid-tbl .num { width: 50px; padding: 0 4px; }
+}
 
 @media (max-width: 600px) {
   .hero-controls { align-items: flex-start; flex-basis: 100%; }

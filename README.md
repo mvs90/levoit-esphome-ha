@@ -250,7 +250,24 @@ device's config does, when there is one).
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png" width="720" alt="A Core 600S device page: power, mode Manual, speed 2, PM2.5, AQI and CADR; 24 hour history of PM2.5, AQI and CADR; Automatic with Room Size, Timer, Display and panel, Filter at 88 percent, and Info">
 
-**Updates & config** (the second tab) has:
+**Purifier groups** (the second tab) run 2 or more purifiers together from
+shared air sensors, for example everything in one room. The worst sensor sets
+the group's level: each purifier switches to Manual at its own speed for that
+level (a 3-speed model shares levels, so the top level is always its fastest)
+and goes back to what it was doing once the air is clean. The level goes up at
+once and down one step per hold time (10 minutes); a fast rise in PM2.5 jumps
+straight to max speed. If someone changes a purifier by hand, the group leaves
+that one alone for 30 minutes. A group can also run in *Manual*: one speed
+for all its purifiers. The editor picks the sensors from the purifiers, takes
+others from Home Assistant, sets thresholds, max speed and what happens when
+the air is clean, and shows live what the group would do now. Rooms in Home
+Assistant with 2 or more purifiers are suggested. Groups run in the
+integration, so they keep working with the page closed and after a restart.
+Each group also gets a device with a *Control* switch (off: the group leaves
+its purifiers alone), a *Level* sensor (0–4, with the reason) and an
+*Active* binary sensor, for automations.
+
+**Updates & config** (the third tab) has:
 
 * every device: model, ESP / config type, channel, installed and latest
   component version, filter %, ESPHome version, status and the last build
