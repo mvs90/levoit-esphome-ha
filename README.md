@@ -8,25 +8,152 @@ A Home Assistant integration for air purifiers and humidifiers running the
 Levoit and Philips purifiers off the cloud, with the components, device
 configs and wiring guides.
 
-It finds every ESPHome device built with those components, links it to its
-config in the ESPHome Device Builder, and offers an update when the device's
-channel has a newer component version. Installing compiles the config in the
-Device Builder and uploads it over the air.
+What it does, in three parts:
 
-Its sidebar page shows every purifier as a card to use it (power, mode, speed,
-PM2.5, AQI and CADR), with a page per device for its settings and air quality
-history, and runs [purifier groups](#purifier-groups): several purifiers
-following shared air sensors, for example everything in one room.
+### 1. Use and set up your purifiers
+
+A sidebar page with every purifier as a card: power, mode and speed, PM2.5,
+AQI and CADR at a glance. Each purifier has a page of its own with its air
+quality history and all its settings, grouped instead of one long list.
+[More](#use-and-set-up-your-purifiers)
 
 <p>
   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7" width="49%" alt="The sidebar page: seven purifiers as cards, each with power, mode and speed, PM2.5, AQI and CADR">
   <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.7" width="49%" alt="The Everest Air's page: power, mode and speed, PM2.5, PM1.0, PM10, AQI and CADR, its group, the 24 hour history and the settings">
 </p>
 
+### 2. Run several purifiers as one group
+
+Combine purifiers into a group, for example everything in one room. In
+*Auto* the group follows shared air sensors and sets every purifier's speed
+by itself: up at once when the air gets worse, down step by step when it
+clears. Each group is also one fan entity, so a dashboard, voice or an
+automation runs the whole room like one purifier.
+[More](#purifier-groups)
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="49%" alt="Purifier groups: a group of two purifiers in Auto at level 3 of 4, and a suggested room">
+
+### 3. Manage and update the devices
+
+It finds every ESPHome device built with those components, links it to its
+config in the ESPHome Device Builder, and offers an update when the device's
+channel has a newer component version. Installing compiles the config in the
+Device Builder and uploads it over the air. *Add device* makes the config for
+a new purifier.
+[More](#manage-and-update-the-devices)
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.7" width="49%" alt="Updates and config: every device with its channel, installed and latest version, and Compile and Update">
+
 > **Early version.** Part of the
 > [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
 
-## Use cases
+
+## Use and set up your purifiers
+
+Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
+Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only. It
+has three tabs and updates live. It is a plain web component served by the
+integration; nothing is loaded from outside Home Assistant. After updating the
+integration, reload the browser once to get the new page.
+
+### Devices tab
+
+Every purifier as a card, for using them. A line on top counts the purifiers
+running, off and offline, and names the one with the worst air. Each card has a
+small outline of the model, an air quality dot, power, the mode and the speed,
+PM2.5, AQI (the level 1–4 and its word, *1 Very good* to *4 Poor*) and the
+current CADR, the filter left, and the time left when a timer runs. Chips under
+the model show an update that is out and the purifier's group (tinted while
+the group runs it). Offline cards keep their controls, greyed out. Click a
+card for the device's page.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7" width="720" alt="Devices: purifiers as cards with power, mode and speed, PM2.5, AQI and CADR">
+
+### Device page
+
+On top, power, mode and speed with PM2.5, AQI and CADR (the Eleva 300X also
+shows its AQI index, 0–500). Below, the **history** of the last 24 hours or
+7 days from Home Assistant's statistics, in one chart: PM2.5 as an area
+(left axis), CADR as a dashed line (right axis) and the air quality level as a
+coloured band under it; the legend chips switch each one on and off. A
+purifier in a group shows a banner with the group's status and what a change
+here does.
+
+Then the settings, grouped instead of one long list: *Automatic* (auto mode,
+room size only when it applies), *Sleep* (the Vital 200S custom profile: quick
+clean, sleep, then daytime mode), *Quiet period* (Eleva 300X, start and end as
+times), *Timer* (quick picks and the time left), *Display & panel*, *Filter*
+(life %, lifetime, reset) and *Info*. For the Core 200S / 300S / 400S / 600S,
+Vital 100S / 200S, Everest Air and Eleva 300X; other models link to Home
+Assistant's device page. It needs no Device Builder config: the settings are
+found by their entity names, as the tuct/levoit configs name them (or as the
+device's config does, when there is one).
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.7" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
+
+## Purifier groups
+
+Run 2 or more purifiers together from shared air sensors, for example
+everything in one room. Groups run in the integration, so they keep working
+with the page closed and after a restart.
+
+* **The level:** the worst of the group's sensors, on the group's thresholds,
+  sets a level from 1 up to the group's max speed. It goes up at once and down
+  one step per hold time (2 minutes); a fast rise in PM2.5 jumps straight to
+  max speed.
+* **The purifiers** switch to Manual at their own speed for that level. A
+  3-speed model shares levels, so the top level is always its fastest. The
+  Everest Air counts its Turbo as speed 4, so the top level runs it in Turbo.
+  *Up to* holds one lower, for example a loud one up to speed 2 (or the
+  Everest Air up to 3: no Turbo).
+* **Letting go:** once the air is clean, the group is switched off or deleted,
+  or a purifier leaves it, the group sends nothing: each keeps running as it is.
+* **By hand:** if someone changes a purifier, the group leaves that one alone
+  for 30 minutes.
+* **Manual:** one speed for all its purifiers instead of following the sensors.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
+
+The editor picks the sensors from the purifiers and takes others from Home
+Assistant, sets thresholds, max speed, hold time and the speed limit per
+purifier, and shows live what the group would do right now. Rooms in Home
+Assistant with 2 or more purifiers are suggested as groups.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-editor.png?v=0.6.7" width="720" alt="The group editor: purifiers, sensors, thresholds, the speed each purifier runs per level, and what the group would do now">
+
+Each group gets a device of its name, for dashboards, voice and automations:
+
+| Entity | What it shows / does |
+|--------|----------------------|
+| **The group** (fan) | The whole group like one purifier: on / off is *Control*, preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers (Manual, up to the group's max speed) |
+| **Control** (switch) | Off: the group leaves its purifiers alone |
+| **Level** (sensor) | 0–4, the level the group runs at, with the reason |
+| **Air quality** (sensor) | 0–4, the worst sensor on the group's thresholds (0 below level 1); also in Manual or with the group off |
+| **Active** (binary sensor) | On while the group runs its purifiers at a level above 0 |
+
+## Manage and update the devices
+
+Firmware updates for every purifier, in Home Assistant's *Updates* and on
+the sidebar page's *Updates & config* tab, and *Add device* for new ones.
+
+### Updates & config tab
+
+The sidebar page's third tab has:
+
+* every device: model, ESP / config type, channel, installed → latest
+  component version, filter %, ESPHome version, status and the last build
+* the latest releases on top, with **Update all** (one device after the other)
+* **Compile** and **Compile and upload** (*Update* when one is out), with the
+  result per device, and the output of the last build under **Log**
+* the channel of a device without a config or with a template config
+* configs made by *Add device* that are **not flashed yet**, with what to do
+  next; they can be compiled, but not uploaded until the first USB flash
+* links to each device's page, the Device Builder and Add device; *check now*
+  reads the latest versions from GitHub without waiting for the 6 hours
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.7" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
+
+### Extra ESP or original ESP
 
 Most of these purifiers have an ESP32 for Wi-Fi and a separate MCU that runs
 the purifier, talking over UART. ESPHome can run on that ESP in two ways:
@@ -155,7 +282,7 @@ Device Builder instead (under the device's name). The integration picks it up
 as a **custom** config; a pasted builder file of tuct/levoit counts as a
 template.
 
-## Devices
+### Supported models
 
 The templates *Add device* offers per model (✓). **Other ESP** works for every
 model, with your board and pins.
@@ -180,7 +307,7 @@ model, with your board and pins.
 > the model, and whether the update went through. Each report moves a model
 > in this table from *not tested yet* to *works*.
 
-## What you get
+### Entities per purifier
 
 Per purifier, on a device of the same name (its *Visit* link opens the ESPHome Device Builder); Home Assistant lists the purifier's
 ESPHome device under *Linked devices* (same MAC address). Since Home Assistant
@@ -227,105 +354,7 @@ Each update shows the installed and the latest version, with the release notes
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/update-dialog.png" width="380" alt="The Component firmware update of a purifier: installed 1.3.0, latest 1.7.2, with the release notes, installing">
 
-## Sidebar page
-
-Turn on **Settings → Devices & services → Levoit ESPHome → ⚙ (Configure) →
-Show in the sidebar** for a *Levoit ESPHome* page, visible to admins only. It
-has three tabs and updates live. It is a plain web component served by the
-integration; nothing is loaded from outside Home Assistant. After updating the
-integration, reload the browser once to get the new page.
-
-### Devices
-
-Every purifier as a card, for using them. A line on top counts the purifiers
-running, off and offline, and names the one with the worst air. Each card has a
-small outline of the model, an air quality dot, power, the mode and the speed,
-PM2.5, AQI (the level 1–4 and its word, *1 Very good* to *4 Poor*) and the
-current CADR, the filter left, and the time left when a timer runs. Chips under
-the model show an update that is out and the purifier's group (tinted while
-the group runs it). Offline cards keep their controls, greyed out. Click a
-card for the device's page.
-
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7" width="720" alt="Devices: purifiers as cards with power, mode and speed, PM2.5, AQI and CADR">
-
-### Device page
-
-On top, power, mode and speed with PM2.5, AQI and CADR (the Eleva 300X also
-shows its AQI index, 0–500). Below, the **history** of the last 24 hours or
-7 days from Home Assistant's statistics, in one chart: PM2.5 as an area
-(left axis), CADR as a dashed line (right axis) and the air quality level as a
-coloured band under it; the legend chips switch each one on and off. A
-purifier in a group shows a banner with the group's status and what a change
-here does.
-
-Then the settings, grouped instead of one long list: *Automatic* (auto mode,
-room size only when it applies), *Sleep* (the Vital 200S custom profile: quick
-clean, sleep, then daytime mode), *Quiet period* (Eleva 300X, start and end as
-times), *Timer* (quick picks and the time left), *Display & panel*, *Filter*
-(life %, lifetime, reset) and *Info*. For the Core 200S / 300S / 400S / 600S,
-Vital 100S / 200S, Everest Air and Eleva 300X; other models link to Home
-Assistant's device page. It needs no Device Builder config: the settings are
-found by their entity names, as the tuct/levoit configs name them (or as the
-device's config does, when there is one).
-
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.7" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
-
-### Purifier groups
-
-Run 2 or more purifiers together from shared air sensors, for example
-everything in one room. Groups run in the integration, so they keep working
-with the page closed and after a restart.
-
-* **The level:** the worst of the group's sensors, on the group's thresholds,
-  sets a level from 1 up to the group's max speed. It goes up at once and down
-  one step per hold time (2 minutes); a fast rise in PM2.5 jumps straight to
-  max speed.
-* **The purifiers** switch to Manual at their own speed for that level. A
-  3-speed model shares levels, so the top level is always its fastest. The
-  Everest Air counts its Turbo as speed 4, so the top level runs it in Turbo.
-  *Up to* holds one lower, for example a loud one up to speed 2 (or the
-  Everest Air up to 3: no Turbo).
-* **Letting go:** once the air is clean, the group is switched off or deleted,
-  or a purifier leaves it, the group sends nothing: each keeps running as it is.
-* **By hand:** if someone changes a purifier, the group leaves that one alone
-  for 30 minutes.
-* **Manual:** one speed for all its purifiers instead of following the sensors.
-
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
-
-The editor picks the sensors from the purifiers and takes others from Home
-Assistant, sets thresholds, max speed, hold time and the speed limit per
-purifier, and shows live what the group would do right now. Rooms in Home
-Assistant with 2 or more purifiers are suggested as groups.
-
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-editor.png?v=0.6.7" width="720" alt="The group editor: purifiers, sensors, thresholds, the speed each purifier runs per level, and what the group would do now">
-
-Each group gets a device of its name, for dashboards, voice and automations:
-
-| Entity | What it shows / does |
-|--------|----------------------|
-| **The group** (fan) | The whole group like one purifier: on / off is *Control*, preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers (Manual, up to the group's max speed) |
-| **Control** (switch) | Off: the group leaves its purifiers alone |
-| **Level** (sensor) | 0–4, the level the group runs at, with the reason |
-| **Air quality** (sensor) | 0–4, the worst sensor on the group's thresholds (0 below level 1); also in Manual or with the group off |
-| **Active** (binary sensor) | On while the group runs its purifiers at a level above 0 |
-
-### Updates & config
-
-* every device: model, ESP / config type, channel, installed → latest
-  component version, filter %, ESPHome version, status and the last build
-* the latest releases on top, with **Update all** (one device after the other)
-* **Compile** and **Compile and upload** (*Update* when one is out), with the
-  result per device, and the output of the last build under **Log**
-* the channel of a device without a config or with a template config
-* configs made by *Add device* that are **not flashed yet**, with what to do
-  next; they can be compiled, but not uploaded until the first USB flash
-* links to each device's page, the Device Builder and Add device; *check now*
-  reads the latest versions from GitHub without waiting for the 6 hours
-
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.7" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
-
-## Add device
+### Add device
 
 **Settings → Devices & services → Levoit ESPHome → Add device** makes a Device
 Builder config from a template of tuct/levoit
@@ -365,40 +394,7 @@ changes. Without it the config is **custom**, like one made with *Other ESP*:
 it is never rewritten, and updates only build the newer component it pulls
 through its `ref:`.
 
-## Requirements
-
-* Home Assistant 2026.11 or newer
-* The **ESPHome Device Builder add-on**, found by Home Assistant's ESPHome
-  integration (Home Assistant OS or Supervised). A standalone Device Builder is
-  not supported yet
-* For installing updates: each device's config in that Device Builder, for
-  example a pasted builder file from
-  [tuct/levoit](https://github.com/tuct/levoit/tree/main/devices)
-* The `esp_version` text sensor in the device config (the builder files have
-  it); it is how the integration reads the installed version
-* Optional, for devices without a Device Builder config: the `model` text sensor
-  (`type: model`, tuct/levoit after 1.7.0)
-* The channel comes from the component's source in the config:
-
-  ```yaml
-  external_components:
-    - source:
-        type: git
-        url: https://github.com/tuct/levoit
-        ref: stable      # or main
-      components: [levoit]
-      refresh: always    # fetch on every build; the default (1d) can rebuild an old commit
-  ```
-
-## Installation
-
-Not in the default Marketplace catalog yet. Add it as a custom repository:
-**Settings → Marketplace → ⋮ → Custom repositories**, enter
-`https://github.com/tuct/levoit-esphome-ha`, type *Integration* (needs a
-one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
-**Settings → Devices & services**.
-
-## How it works
+### How it works
 
 * Devices: every ESPHome device whose Device Builder config loads `levoit` or
   `philips`, or that has an `esp_version` sensor reporting a component version
@@ -419,7 +415,7 @@ one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
   head of `main`; a build without a commit in its version (1.7.0 and older) is
   compared by release number. A local `.dirty` build is never offered an update
 
-### How an update reaches the purifier
+#### How an update reaches the purifier
 
 Everything runs on your Home Assistant host; the purifier only receives the
 finished firmware over Wi-Fi.
@@ -459,6 +455,39 @@ device's last build: **Log** on the sidebar page shows them, also while a build
 runs. When a build fails, its error message names the reason (the last error
 line), and the last 40 lines go into Home Assistant's log (*Settings → System →
 Logs*).
+
+## Requirements
+
+* Home Assistant 2026.11 or newer
+* The **ESPHome Device Builder add-on**, found by Home Assistant's ESPHome
+  integration (Home Assistant OS or Supervised). A standalone Device Builder is
+  not supported yet
+* For installing updates: each device's config in that Device Builder, for
+  example a pasted builder file from
+  [tuct/levoit](https://github.com/tuct/levoit/tree/main/devices)
+* The `esp_version` text sensor in the device config (the builder files have
+  it); it is how the integration reads the installed version
+* Optional, for devices without a Device Builder config: the `model` text sensor
+  (`type: model`, tuct/levoit after 1.7.0)
+* The channel comes from the component's source in the config:
+
+  ```yaml
+  external_components:
+    - source:
+        type: git
+        url: https://github.com/tuct/levoit
+        ref: stable      # or main
+      components: [levoit]
+      refresh: always    # fetch on every build; the default (1d) can rebuild an old commit
+  ```
+
+## Installation
+
+Not in the default Marketplace catalog yet. Add it as a custom repository:
+**Settings → Marketplace → ⋮ → Custom repositories**, enter
+`https://github.com/tuct/levoit-esphome-ha`, type *Integration* (needs a
+one-time GitHub sign-in). Install it, then add **Levoit ESPHome** under
+**Settings → Devices & services**.
 
 ## Development
 
