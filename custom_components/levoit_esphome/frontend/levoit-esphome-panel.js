@@ -1324,9 +1324,11 @@ class LevoitEsphomePanel extends HTMLElement {
     return !st || st.state === "unavailable" || st.state === "unknown";
   }
 
-  // speed n of a purifier as its panel names it (the Eleva's top speed is Turbo)
+  // speed n of a purifier as its panel names it: the top speed of the Eleva
+  // (its level 4) and of the Everest Air (its Turbo preset, 3 speeds + Turbo) is Turbo
   _speedLabel(p, n) {
-    return p?.model === "ELEVA300X" && n === 4 && (p.speeds || 4) === 4 ? "Turbo" : String(n);
+    const turbo = p?.model === "ELEVA300X" || p?.model === "EVERESTAIR";
+    return turbo && n === 4 && (p.speeds || 4) === 4 ? "Turbo" : String(n);
   }
 
   // what a member does right now: Off, Manual · 3, Auto, Offline

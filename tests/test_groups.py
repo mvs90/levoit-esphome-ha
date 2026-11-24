@@ -113,6 +113,8 @@ async def _fake_fans(hass: HomeAssistant) -> Calls:
             if "percentage" in call.data:
                 attributes["percentage"] = call.data["percentage"]
                 attributes["preset_mode"] = "Manual"
+            if "preset_mode" in call.data:
+                attributes["preset_mode"] = call.data["preset_mode"]
         elif call.service == "set_preset_mode":
             value = "on"
             attributes["preset_mode"] = call.data["preset_mode"]
@@ -544,3 +546,70 @@ async def test_member_max_speed(hass: HomeAssistant, hass_ws_client: WebSocketGe
         ("turn_on", "fan.bedroom", {"percentage": 50}),  # speed 2 of 4
         ("turn_on", "fan.living", {"percentage": 100}),
     ]
+
+
+def _everest(hass: HomeAssistant) -> None:
+    """The living room purifier as an Everest Air: 3 speeds and a Turbo preset, off."""
+    hass.states.async_set(
+        "fan.living",
+        "off",
+        {
+            "preset_mode": None,
+            "preset_modes": [*PRESETS, "Turbo"],
+            "percentage": 0,
+            "percentage_step": 100 / 3,
+        },
+    )
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_everest_turbo_is_the_top_speed(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A fan with a Turbo preset counts it as its 4th speed."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    _everest(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await _save(client, members=MEMBERS)
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    speeds = {p["entity_id"]: p["speeds"] for p in msg["result"]["purifiers"]}
+    assert speeds == {"fan.bedroom": 4, "fan.living": 4}
+    _pm(hass, 783)
+    await _settle(hass)
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 100}),
+        ("turn_on", "fan.living", {"preset_mode": "Turbo"}),
+    ]
+    # Turbo is what the group set: no pause, nothing sent again
+    _pm(hass, 790)
+    await _settle(hass)
+    assert len(calls) == 2
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    living = next(
+        m for m in msg["result"]["groups"][0]["state"]["members"] if m["entity_id"] == "fan.living"
+    )
+    assert living == {
+        "entity_id": "fan.living",
+        "speed": 4,
+        "in_control": True,
+        "paused_until": None,
+    }
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_everest_limited_below_turbo(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Held to speed 3, the Everest Air never gets Turbo."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    _everest(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await _save(client, members=MEMBERS, member_max_speed={"fan.living": 3})
+    _pm(hass, 783)
+    await _settle(hass)
+    assert ("turn_on", "fan.living", {"percentage": 100}) in calls
+    assert all(c[2].get("preset_mode") != "Turbo" for c in calls)
