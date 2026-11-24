@@ -45,6 +45,8 @@ const ICONS = {
   chevron: "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z",
   download: "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z",
   home: "M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z",
+  group:
+    "M20,16V4H8V16H20M22,16A2,2 0 0,1 20,18H8C6.89,18 6,17.1 6,16V4C6,2.89 6.89,2 8,2H20A2,2 0 0,1 22,4V16M16,20V22H4A2,2 0 0,1 2,20V7H4V20H16Z",
   close:
     "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
   check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
@@ -1237,6 +1239,7 @@ class LevoitEsphomePanel extends HTMLElement {
         : "",
       offline ? `<span class="chip bad-chip"><span class="dot-i"></span>Offline</span>` : "",
     ].join("");
+    const groupChip = this._groupChip(d);
     const path = this._devicePath(d.name);
     return `<div class="dcard${on && !offline ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0" data-action="navigate" data-path="${esc(
       path,
@@ -1247,7 +1250,7 @@ class LevoitEsphomePanel extends HTMLElement {
           <div class="name">${esc(d.title)}</div>
           <div class="dc-sub"><span>${esc(d.model || "Levoit")}</span>${filter ? `<span aria-hidden="true">·</span>${filter}` : ""}${
             flags ? `<span class="dc-flags">${flags}</span>` : ""
-          }</div>
+          }</div>${groupChip ? `<div class="dc-group">${groupChip}</div>` : ""}
         </div>
         ${power}
       </div>
@@ -1268,7 +1271,23 @@ class LevoitEsphomePanel extends HTMLElement {
           this._groups = data;
           this._groupsError = null;
           if (this._view === "group") this._schedulePreview(1000);
-          if (this._view === "groups" || this._view === "group") this._render();
+          // the Devices cards and device pages show a group's status: render
+          // them when that changed, not on every reading
+          const sig = JSON.stringify(
+            (data.groups || []).map((g) => [
+              g.id,
+              g.name,
+              g.enabled,
+              g.mode,
+              g.state?.status,
+              g.state?.level,
+              g.state?.reason,
+              (g.state?.members || []).map((m) => [m.entity_id, m.in_control, m.paused_until]),
+            ]),
+          );
+          const changed = sig !== this._groupsSig;
+          this._groupsSig = sig;
+          if (this._view === "groups" || this._view === "group" || changed) this._render();
         },
         { type: "levoit_esphome/groups/subscribe" },
       );
@@ -1379,6 +1398,73 @@ class LevoitEsphomePanel extends HTMLElement {
     return `${head}${body}${this._suggestions()}`;
   }
 
+  // the group the purifier with this fan entity is in
+  _groupOf(fanEntity) {
+    const p = fanEntity ? this._purifier(fanEntity) : null;
+    return p?.group_id ? (this._groups?.groups || []).find((g) => g.id === p.group_id) || null : null;
+  }
+
+  _groupPill(g) {
+    const st = g.state || {};
+    const level = st.level || 0;
+    const [kind, text] = !g.enabled
+      ? ["paused", "Paused"]
+      : g.mode === "manual"
+        ? ["act", `Manual · level ${level} of ${g.max_speed}`]
+        : level > 0
+          ? ["act", `Auto · level ${level} of ${g.max_speed}`]
+          : st.status === "no_sensors"
+            ? ["warn", "No sensor values"]
+            : ["watch", "Auto · watching"];
+    return `<span class="pill ${kind}"><i></i>${esc(text)}</span>`;
+  }
+
+  _groupReason(g) {
+    const st = g.state || {};
+    if (!g.enabled) return "Group control is off · purifiers are left alone";
+    if (g.mode === "manual") return "All purifiers follow the speed you set";
+    if ((st.level || 0) > 0) return st.reason || "";
+    if (st.status === "no_sensors")
+      return g.sensors.length ? "None of its sensors has a value right now" : "No air sensors: add one in the editor";
+    return "All sensors below level 1 · purifiers run on their own";
+  }
+
+  // Devices card: the group the purifier is in, tinted while the group runs it
+  _groupChip(d) {
+    const g = this._groupOf(d.controls?.["fan.fan"]);
+    if (!g) return "";
+    const active = g.enabled && (g.state?.level || 0) > 0;
+    const path = this._groupsPath(encodeURIComponent(g.id));
+    return `<button class="chip group-chip${active ? " act" : ""}" data-action="navigate" data-path="${esc(
+      path,
+    )}" title="${esc(`Purifier group ${g.name}${active ? ": in control" : ""}`)}">${icon("group")}${esc(g.name)}</button>`;
+  }
+
+  // device page: which group runs this purifier, and what a change here does
+  _groupBanner() {
+    const fan = this._page?.controls?.["fan.fan"];
+    const g = this._groupOf(fan);
+    if (!g) return "";
+    const member = (g.state?.members || []).find((m) => m.entity_id === fan);
+    const note = !g.enabled
+      ? ""
+      : member?.paused_until
+        ? `Changed by hand: the group leaves this purifier alone until ${this._time(member.paused_until)}.`
+        : g.respect_manual
+          ? `Changing mode or speed here pauses the group for this purifier for ${g.manual_pause_min} minutes.`
+          : "The group sets mode and speed again after a change here.";
+    const path = this._groupsPath(encodeURIComponent(g.id));
+    return `<div class="card group-banner">
+      <span class="gb-icon">${icon("group")}</span>
+      <div class="gb-text">
+        <div class="gb-title"><span>In the group <b>${esc(g.name)}</b></span>${this._groupPill(g)}</div>
+        <div class="gb-reason">${esc(this._groupReason(g))}</div>
+        ${note ? `<div class="hint">${esc(note)}</div>` : ""}
+      </div>
+      <button class="btn" data-action="navigate" data-path="${esc(path)}">Open group</button>
+    </div>`;
+  }
+
   _groupCard(g) {
     const st = g.state || {};
     const on = g.enabled;
@@ -1386,26 +1472,6 @@ class LevoitEsphomePanel extends HTMLElement {
     const level = st.level || 0;
     const active = on && level > 0;
     const max = g.max_speed;
-    const [pillKind, pillText] = !on
-      ? ["paused", "Paused"]
-      : manual
-        ? ["act", `Manual · level ${level} of ${max}`]
-        : active
-          ? ["act", `Auto · level ${level} of ${max}`]
-          : st.status === "no_sensors"
-            ? ["warn", "No sensor values"]
-            : ["watch", "Auto · watching"];
-    const reason = !on
-      ? "Group control is off · purifiers are left alone"
-      : manual
-        ? "All purifiers follow the speed you set"
-        : active
-          ? st.reason || ""
-          : st.status === "no_sensors"
-            ? g.sensors.length
-              ? "None of its sensors has a value right now"
-              : "No air sensors: add one in the editor"
-            : "All sensors below level 1 · purifiers run on their own";
     const id = esc(g.id);
     const dis = on ? "" : "disabled";
     const seg = (field, value, label, current) =>
@@ -1449,7 +1515,7 @@ class LevoitEsphomePanel extends HTMLElement {
         )}" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}"><span></span></button>
       </div>
       <div class="gc-status">
-        <div><span class="pill ${pillKind}"><i></i>${esc(pillText)}</span><div class="gc-reason">${esc(reason)}</div></div>
+        <div>${this._groupPill(g)}<div class="gc-reason">${esc(this._groupReason(g))}</div></div>
         ${this._levelBars(active ? level : 0, max)}
       </div>
       <div class="gc-mode"><div class="segs" role="group" aria-label="Mode for ${esc(g.name)}">${modes}</div>${speeds}</div>
@@ -2196,6 +2262,7 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>`;
     return `${this._alerts()}
       ${this._hero()}
+      ${this._groupBanner()}
       ${this._historyCard()}
       <div class="sections">
         ${this._autoSection()}
@@ -3254,6 +3321,18 @@ details.section[open] > summary { padding-bottom: 8px; }
 .toolbar .title:has(.subtitle) { line-height: 1.25; }
 .tb-btn.strong { border: 1px solid currentColor; }
 
+.group-chip { font: inherit; font-size: 12px; font-weight: 500; border: 0; cursor: pointer; }
+.group-chip svg { width: 14px; height: 14px; }
+.dc-group { margin-top: 6px; }
+.group-chip.act { background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--lv-accent-text); }
+.group-chip:hover { filter: brightness(0.95); }
+.group-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 20px; margin-bottom: 16px; }
+.gb-icon { color: var(--lv-accent-text); display: inline-flex; }
+.gb-text { flex: 1; min-width: 220px; }
+.gb-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; font-size: 15px; }
+.gb-title b { font-weight: 500; }
+.gb-reason { font-size: 13px; color: var(--secondary-text-color); margin-top: 4px; }
+.group-banner .btn { margin: 0; }
 /* group editor */
 .ged { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
 .ged-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
