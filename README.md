@@ -526,7 +526,7 @@ source, the refresh stops before writing or building. Remove the template marker
 to maintain that file as a custom config. Use a Device Builder version that
 supports native OTA encryption for an encrypted device.
 
-### LV600S development support
+### LV600S support on the owner test branch
 
 The LV600S page maps native ESPHome entities by their reported names or the
 resolved device config. The fallback names cover English device examples and
@@ -540,7 +540,28 @@ start when an available tank, water, fault or MCU diagnostic rules it out.
 The off control remains available while power is reported on. Original Auto
 and Unknown appear as read-only choices.
 
-The test branch can recognise an LV600S running the fork firmware using its
-existing ESPHome entry. The Add Device catalogue reads upstream, so use the
-existing custom Device Builder configuration while testing the fork. Once the
-LV600S template lands upstream, use the channel that contains the component.
+The test branch recognises the LV600S through its existing ESPHome entry. The
+Add Device catalogue reads upstream. To reproduce the tested configuration, use
+the existing custom Device Builder profile from the
+[owner's secure firmware repository](https://github.com/mvs90/levoit-lv600s-local/tree/codex/tuct-alignment).
+
+### Local acceptance on three EU devices
+
+On 25 November 2026, Home Assistant 2026.11.3 ran integration `0.6.7` from code
+commit `45b4019ec185d972fc8140c13de89f8abe60890a`. All three devices were online
+and supported. The integration detected each custom configuration as local,
+and the ESPHome Device Builder successfully compiled all three through the
+integration.
+
+| Device | Firmware | Mapped ESPHome entities | Confirmed in Home Assistant |
+|---|---|---:|---|
+| Core 600S | `1.0.09-tuct-review` | 22 | Power, manual speed, display and timer |
+| Vital 100S | `1.0.06-tuct-review` | 24 | Power, manual 50% and 75%, display and timer |
+| LV600S | `1.2.02-tuct-review` | 20 | Humidity and temperature, tank/water and MCU status, power, mist/warm level, humidity target, operating modes, display and timer |
+
+For the LV600S follow-up, the time from a Home Assistant command to the matching
+Home Assistant state event was 1.00–1.12 seconds for mist, its app scale and
+warm level. The change is in the owner firmware profile. The integration uses
+the same native ESPHome entities and device entries. Full device findings and
+hardware work are recorded in the
+[firmware fork's verification report](https://github.com/mvs90/levoit/blob/codex/owner-test/docs/esphome-devices/owner-test.md).
