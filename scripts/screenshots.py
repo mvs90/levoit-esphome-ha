@@ -8,12 +8,14 @@
 
 The token is a long-lived access token of an admin (your profile -> Security),
 from HA_TOKEN or else the first line of ha_token in the repository (git-ignored);
-it is never written anywhere. The pictures go to images/:
+it is never written anywhere. Home Assistant has to run the version in this
+repository's manifest (update it first). The pictures go to images/:
 
     overview.png       Devices
     device-page.png    a device's page (--device, else the first running purifier)
     groups.png         Purifier groups
-    group-editor.png   a group's editor (--group, else the first group; none: skipped)
+    group-page.png     a group's page (--group, else the first group; none: skipped)
+    group-editor.png   that group's editor
     panel-updates.png  Updates & config
 
 Each picture is as tall as the page, at --width (default 1280) CSS pixels,
@@ -51,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--device", help="device name as in its page's URL (default: the first running purifier)"
     )
-    p.add_argument("--group", help="group id for the editor (default: the first group)")
+    p.add_argument("--group", help="group id for its page and editor (default: the first group)")
     p.add_argument("--out", type=pathlib.Path, default=ROOT / "images")
     p.add_argument("--width", type=int, default=1280)
     p.add_argument(
@@ -177,6 +179,15 @@ async def main() -> int:  # noqa: PLR0915 - one run, top to bottom
             )
 
         await open_("")
+        manifest = json.loads(
+            (ROOT / "custom_components" / "levoit_esphome" / "manifest.json").read_text("utf-8")
+        )
+        running = (await ws({"type": "manifest/get", "integration": "levoit_esphome"}))["version"]
+        if running != manifest["version"]:
+            raise SystemExit(
+                f"Home Assistant runs {running}, the repository {manifest['version']}: "
+                "update it first."
+            )
         await shoot("overview")
 
         device = args.device
@@ -206,9 +217,11 @@ async def main() -> int:  # noqa: PLR0915 - one run, top to bottom
             group = next((i for i in ids if i), None)
         if group:
             await open_(f"/groups/{group}")
+            await shoot("group-page")
+            await open_(f"/groups/{group}/edit")
             await shoot("group-editor")
         else:
-            print("group-editor skipped: no group yet")
+            print("group-page and group-editor skipped: no group yet")
 
         await open_("/config")
         await shoot("panel-updates")
