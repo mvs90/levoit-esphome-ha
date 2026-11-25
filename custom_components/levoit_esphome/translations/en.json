@@ -82,6 +82,21 @@
       },
       "group_air_quality": {
         "name": "Air quality"
+      },
+      "group_pm1": {
+        "name": "PM1"
+      },
+      "group_pm25": {
+        "name": "PM2.5"
+      },
+      "group_pm10": {
+        "name": "PM10"
+      },
+      "group_aqi": {
+        "name": "AQI index"
+      },
+      "group_cadr": {
+        "name": "CADR"
       }
     },
     "update": {

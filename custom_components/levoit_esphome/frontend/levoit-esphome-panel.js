@@ -51,6 +51,8 @@ const ICONS = {
     "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
   check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
   play: "M8,5.14V19.14L19,12.14L8,5.14Z",
+  pencil:
+    "M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z",
   delete: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
   fan: "M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C17,2 17.11,5.57 14.75,6.75C13.76,7.24 13.32,8.29 13.13,9.22C13.61,9.42 14.03,9.73 14.35,10.13C18.05,8.13 22.03,8.92 22.03,12.5C22.03,17 18.46,17.1 17.28,14.73C16.78,13.74 15.72,13.3 14.79,13.11C14.59,13.59 14.28,14 13.88,14.34C15.87,18.03 15.08,22 11.5,22C7,22 6.91,18.42 9.27,17.24C10.25,16.75 10.69,15.71 10.89,14.79C10.4,14.59 9.97,14.27 9.65,13.87C5.96,15.85 2,15.07 2,11.5C2,7 5.56,6.89 6.74,9.26C7.24,10.25 8.29,10.68 9.22,10.87C9.41,10.39 9.73,9.97 10.14,9.65C8.15,5.96 8.94,2 12.5,2Z",
   filter: "M14,12V19.88C14.04,20.18 13.94,20.5 13.71,20.71C13.32,21.1 12.69,21.1 12.3,20.71L10.29,18.7C10.06,18.47 9.96,18.16 10,17.87V12H9.97L4.21,4.62C3.87,4.19 3.95,3.56 4.38,3.22C4.57,3.08 4.78,3 5,3H19C19.22,3 19.43,3.08 19.62,3.22C20.05,3.56 20.13,4.19 19.79,4.62L14.03,12H14Z",
@@ -118,8 +120,16 @@ const HISTORY_REFRESH_MS = 5 * 60e3;
 // The Eleva's 0-500 index is shown with the band (its level when the model has
 // no 1-4 level sensor) and in the tooltip.
 const HISTORY_SERIES = [
-  { key: "sensor.pm25", title: "PM2.5", color: "pm", axis: "left" },
+  { key: "sensor.pm25", title: "PM2.5", color: "pm", axis: "left", area: true },
   { key: "sensor.current_cadr", title: "CADR", color: "cadr", axis: "right" },
+];
+// a group's page: its combined PM values on one left axis, its total CADR on
+// the right, and its level as the band (keys of the group's entities)
+const GROUP_HISTORY_SERIES = [
+  { key: "pm1", title: "PM1", color: "pm1", axis: "left" },
+  { key: "pm25", title: "PM2.5", color: "pm", axis: "left", area: true },
+  { key: "pm10", title: "PM10", color: "pm10", axis: "left" },
+  { key: "cadr", title: "CADR", color: "cadr", axis: "right" },
 ];
 
 // the purifiers' air quality level, 1 (very good) to 4 (poor)
@@ -271,6 +281,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._groupsUnsub = null;
     this._groupsSubscribing = false;
     this._groupKey = null; // the editor's group id, "new" or "new/<area_id>"
+    this._detailId = null; // the group page's group id
     this._edit = null; // the editor: {draft, addOpen, saving, preview, previewError, previewSeq}
     this._previewTimer = null;
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
@@ -331,7 +342,7 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!this._groupsUnsub && !this._groupsSubscribing) this._subscribeGroups();
     if (this._pageName && !this._page && !this._pageLoading && !this._pageError) this._loadPage();
     if (
-      this._page &&
+      (this._page || this._view === "groupdetail") &&
       this._history &&
       !this._historyLoading &&
       Date.now() - this._history.at > HISTORY_REFRESH_MS
@@ -342,16 +353,24 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   // Routes under the panel: "" the device overview, "/config" updates and
-  // configs, "/device/<name>" a device's page ("/<name>" from 0.6.x too).
+  // configs, "/device/<name>" a device's page ("/<name>" from 0.6.x too),
+  // "/groups" the groups, "/groups/<id>" a group's page, "/groups/<id>/edit"
+  // and "/groups/new[/<area_id>]" the editor.
   set route(route) {
     this._route = route;
     const parts = (route?.path || "").split("/").filter(Boolean).map(decodeURIComponent);
     let name = null;
     let groupKey = null;
+    let detailId = null;
     if (parts[0] === "config") this._view = "config";
     else if (parts[0] === "groups") {
-      groupKey = parts.slice(1).join("/") || null;
-      this._view = groupKey ? "group" : "groups";
+      const rest = parts.slice(1);
+      if (!rest.length) this._view = "groups";
+      else if (rest[0] === "new") groupKey = rest.join("/");
+      else if (rest[1] === "edit") groupKey = rest[0];
+      else detailId = rest[0];
+      if (groupKey) this._view = "group";
+      if (detailId) this._view = "groupdetail";
     } else if (parts[0] === "device" && parts[1]) name = parts[1];
     else if (parts[0]) name = parts[0];
     if (name) this._view = "device";
@@ -359,6 +378,12 @@ class LevoitEsphomePanel extends HTMLElement {
     if (groupKey !== this._groupKey) {
       this._groupKey = groupKey;
       this._edit = null;
+    }
+    if (detailId !== this._detailId) {
+      this._detailId = detailId;
+      this._history = null;
+      this._historyError = null;
+      this._hoverT = null;
     }
     if (name !== this._pageName) {
       this._pageName = name;
@@ -400,6 +425,12 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._view === "overview")
       return (this._data?.devices || []).flatMap((d) => Object.values(d.controls || {}));
     if (this._view === "groups") return (this._groups?.groups || []).flatMap((g) => g.members);
+    if (this._view === "groupdetail") {
+      const g = this._detailGroup();
+      if (!g) return [];
+      const cadr = (g.members || []).map((m) => this._purifier(m)?.cadr).filter(Boolean);
+      return [...g.members, ...g.sensors.map((s) => s.entity_id), ...Object.values(g.entities || {}), ...cadr];
+    }
     if (this._view === "group" && this._edit?.draft && this._groups)
       return [...this._edit.draft.members, ...this._draftSensors().map((s) => s.entity_id)];
     return [];
@@ -570,6 +601,13 @@ class LevoitEsphomePanel extends HTMLElement {
         break;
       case "group-set":
         await this._setGroup(target.dataset.id, target.dataset.field, parseValue(target.dataset.value));
+        break;
+      case "group-level":
+        await this._setGroup(target.dataset.id, {
+          enabled: true,
+          mode: "manual",
+          manual_level: Number(target.dataset.value),
+        });
         break;
       case "sug-dismiss":
         await this._dismissArea(target.dataset.area);
@@ -1038,12 +1076,14 @@ class LevoitEsphomePanel extends HTMLElement {
     const onConfig = this._view === "config";
     const onGroups = this._view === "groups";
     const onEditor = this._view === "group";
+    const onDetail = this._view === "groupdetail";
+    const detail = onDetail ? this._detailGroup() : null;
     const pageTitle =
       this._page?.title || this._device(this._pageName)?.title || this._pageName || "";
     const updates = (this._data?.devices || []).filter((d) => d.update_available).length;
     const onDevices = !onConfig && !onGroups;
     const tabs =
-      onPage || onEditor
+      onPage || onEditor || onDetail
         ? ""
         : `<div class="tabs" role="tablist">
           <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
@@ -1061,7 +1101,9 @@ class LevoitEsphomePanel extends HTMLElement {
           ? this._groupsView()
           : onEditor
             ? this._groupEditor()
-            : this._overview();
+            : onDetail
+              ? this._groupDetail()
+              : this._overview();
     const draft = onEditor ? this._edit?.draft : null;
     const invalid =
       !draft || this._draftMembers().length < 2 || Boolean(this._thresholdError()) || this._edit.saving;
@@ -1077,17 +1119,28 @@ class LevoitEsphomePanel extends HTMLElement {
         }${
           onPage
             ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="All devices" title="All devices">${icon("back")}</button>`
-            : onEditor
-              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath())}" aria-label="All purifier groups" title="All purifier groups">${icon("back")}</button>`
-              : ""
+            : onEditor && draft?.id
+              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath(encodeURIComponent(draft.id)))}" aria-label="Back to the group" title="Back to the group">${icon("back")}</button>`
+              : onEditor || onDetail
+                ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath())}" aria-label="All purifier groups" title="All purifier groups">${icon("back")}</button>`
+                : ""
         }
         <div class="title">${
           onPage
             ? esc(pageTitle)
             : onEditor
               ? `${esc(draft?.name?.trim() || (draft?.id ? "Purifier group" : "New group"))}<div class="subtitle">Purifier group</div>`
-              : "Levoit ESPHome"
+              : detail
+                ? `${esc(detail.name)}<div class="subtitle">Purifier group · ${detail.members.length} purifiers</div>`
+                : "Levoit ESPHome"
         }</div>
+        ${
+          detail
+            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(
+                this._groupsPath(`${encodeURIComponent(detail.id)}/edit`),
+              )}" title="Edit the group">${icon("pencil")}<span>Edit group</span></button>`
+            : ""
+        }
         ${
           draft?.id
             ? `<button class="tb-btn" data-action="ed-delete" title="Delete this group">${icon("delete")}<span>Delete group</span></button>`
@@ -1107,14 +1160,14 @@ class LevoitEsphomePanel extends HTMLElement {
             : ""
         }
         ${
-          builderUrl && !onPage && !onEditor
+          builderUrl && !onPage && !onEditor && !onDetail
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="Open the ESPHome Device Builder">${icon(
                 "builder",
               )}<span>Device Builder</span></button>`
             : ""
         }
         ${
-          onPage || onEditor
+          onPage || onEditor || onDetail
             ? ""
             : `<button class="tb-btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device (on the integration page)">${icon(
                 "plus",
@@ -1413,17 +1466,19 @@ class LevoitEsphomePanel extends HTMLElement {
   // what the backend takes: the config without its state; sensors picked from
   // the members are picked again there, so only the user's own are sent
   _groupPayload(g) {
-    const { state, ...rest } = g;
+    const { state, entities, ...rest } = g;
     return { ...rest, sensors: (rest.sensors || []).filter((s) => s.source === "manual") };
   }
 
+  // change a group's settings: one field, or several as an object
   async _setGroup(id, field, value) {
     const g = (this._groups?.groups || []).find((x) => x.id === id);
     if (!g) return;
+    const changes = typeof field === "object" ? field : { [field]: value };
     try {
       await this._hass.callWS({
         type: "levoit_esphome/groups/save",
-        group: { ...this._groupPayload(g), [field]: value },
+        group: { ...this._groupPayload(g), ...changes },
       });
     } catch (err) {
       this._toast(`${g.name}: ${err.message || err}`);
@@ -1587,7 +1642,9 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       <div class="gc-mode"><div class="segs" role="group" aria-label="Mode for ${esc(g.name)}">${modes}</div>${speeds}</div>
       <div class="gc-members">${members}</div>
-      <div class="gc-foot">${chips}<button class="btn text" data-action="navigate" data-path="${esc(path)}">Edit</button></div>
+      <div class="gc-foot">${chips}<button class="btn text" data-action="navigate" data-path="${esc(
+        this._groupsPath(`${encodeURIComponent(g.id)}/edit`),
+      )}">Edit</button></div>
     </div>`;
   }
 
@@ -1623,6 +1680,181 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
   }
 
+  // --- group page ------------------------------------------------------------------
+
+  _detailGroup() {
+    return (this._groups?.groups || []).find((g) => g.id === this._detailId) || null;
+  }
+
+  // a sensor's name: the purifier it belongs to, else its own
+  _sensorOwner(entityId) {
+    const owner = (this._groups?.purifiers || []).find((p) => p.sensors.some((s) => s.entity_id === entityId));
+    return owner ? owner.title : this._hass?.states?.[entityId]?.attributes?.friendly_name || entityId;
+  }
+
+  _groupDetail() {
+    if (this._groupsError)
+      return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
+        <button class="btn" data-action="groups-retry">Try again</button></div>`;
+    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+    const g = this._detailGroup();
+    if (!g)
+      return `<div class="card empty"><p>This group no longer exists.</p>
+        <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">All groups</button></div>`;
+    if (!this._history && !this._historyLoading && !this._historyError && this._historySeries().length)
+      Promise.resolve().then(() => this._loadHistory());
+    const st = g.state || {};
+    const on = g.enabled;
+    const manual = g.mode === "manual";
+    const level = st.level || 0;
+    const id = esc(g.id);
+    const dis = on ? "" : "disabled";
+
+    // power, mode and level
+    const modes = [
+      ["auto", "Auto"],
+      ["manual", "Manual"],
+    ]
+      .map(
+        ([k, l]) =>
+          `<button class="seg${on && g.mode === k ? " on" : ""}" aria-pressed="${on && g.mode === k}" ${dis} data-action="group-set" data-id="${id}" data-field="mode" data-value="${k}">${l}</button>`,
+      )
+      .join("");
+    const levels = GROUP_LEVELS.map((n) => {
+      const current = on && (manual ? g.manual_level === n : level === n);
+      return `<button class="seg${current ? " on" : ""}" aria-pressed="${current}" ${dis} aria-label="Level ${n}" title="Run every purifier at level ${n} (Manual)" data-action="group-level" data-id="${id}" data-value="${n}">${n}</button>`;
+    }).join("");
+    const title = !on
+      ? "Off"
+      : manual
+        ? `Manual · Level ${g.manual_level}`
+        : level
+          ? `Auto · Level ${level}`
+          : "Auto · not controlling";
+    const sub = !on
+      ? "Group control is off · purifiers are left alone"
+      : manual
+        ? "All purifiers follow this level"
+        : level
+          ? `${AQI_WORDS[level]} · ${st.reason || ""}`
+          : this._groupReason(g);
+
+    // tiles: the combined value of each sensor type, and the total CADR
+    const values = st.values || {};
+    const cap = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+    const tiles = SENSOR_TYPES.filter((t) => values[t]).map((t) => {
+      const v = values[t];
+      const n = v.sensors.length;
+      return {
+        label: SENSOR_TYPE_INFO[t].label,
+        value: t === "aqi" ? formatNumber(Math.round(v.value * 10) / 10) : formatNumber(Math.round(v.value)),
+        unit: t === "aqi" ? AQI_WORDS[v.level] : "µg/m³",
+        note: n > 1 ? `${cap(COMBINE_WORDS[v.how] || "highest")} of ${n}` : this._sensorOwner(v.sensors[0]),
+        dot: `q${v.level}`,
+      };
+    });
+    if (st.cadr?.sensors?.length)
+      tiles.push({
+        label: "CADR now",
+        value: st.cadr.value == null ? "—" : formatNumber(Math.round(st.cadr.value)),
+        unit: "m³/h",
+        note: `Total of ${st.cadr.sensors.length}`,
+        dot: "cadr",
+      });
+    const tileHtml = tiles.length
+      ? `<div class="gd-tiles">${tiles
+          .map(
+            (t) => `<div class="gd-tile"><div class="gd-tl">${esc(t.label)}</div>
+              <div class="gd-tv"><b>${esc(t.value)}</b><span>${esc(t.unit || "")}</span></div>
+              <div class="gd-tn"><i class="gd-dot ${t.dot}"></i>${esc(t.note)}</div></div>`,
+          )
+          .join("")}</div>`
+      : `<div class="hint">No sensor values yet</div>`;
+    const controls = `<div class="card gd-controls">
+      <div class="gd-main">
+        <button class="gd-power${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="Group control" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}">${icon(
+          "power",
+        )}</button>
+        <div class="gd-state">
+          <div class="gd-title"><span>${esc(title)}</span></div>
+          <div class="hint">${esc(sub)}</div>
+          <div class="gd-segs"><div class="segs" role="group" aria-label="Group mode">${modes}</div>
+            <div class="segs" role="group" aria-label="Group level">${levels}</div></div>
+        </div>
+      </div>
+      ${tileHtml}
+    </div>`;
+
+    // history of the group's own sensors
+    const history = this._historyCard();
+    const historyNote = history
+      ? `<div class="hint gd-note">Values are the group's combined readings, as set per sensor type in the editor; CADR is the total of its purifiers (right axis); the strip shows the group's level.</div>`
+      : "";
+
+    // the purifiers
+    const levelOf = st.air_quality_levels || {};
+    let online = 0;
+    let running = 0;
+    const rows = g.members
+      .map((m) => {
+        const p = this._purifier(m);
+        const d = p ? this._device(p.name) : null;
+        const member = (st.members || []).find((x) => x.entity_id === m);
+        const offline = this._offline(m);
+        const isOn = this._hass?.states?.[m]?.state === "on";
+        if (!offline) online += 1;
+        if (isOn) running += 1;
+        const pill = offline ? "warn" : on && member?.in_control ? "act" : isOn ? "watch" : "paused";
+        const chips = (p?.sensors || [])
+          .map((s) => {
+            const lvl = levelOf[s.entity_id];
+            return `<span class="chip gd-chip"><i class="gd-dot${lvl ? ` q${lvl}` : ""}"></i>${esc(
+              SENSOR_TYPE_INFO[s.type]?.label || s.type,
+            )} <b>${esc(this._sensorValue(s.entity_id, s.type))}</b></span>`;
+          })
+          .join("");
+        const name = p?.title || m;
+        const link = p?.name
+          ? `<a class="gd-name" href="${esc(this._devicePath(p.name))}" data-action="navigate" data-path="${esc(
+              this._devicePath(p.name),
+            )}">${esc(name)}</a>`
+          : `<span class="gd-name">${esc(name)}</span>`;
+        return `<div class="gd-row">
+          <span class="dev-tile">${deviceImage(p?.model)}</span>
+          <div class="gd-who">${link}<div class="gd-meta"><span class="pill ${pill}"><i></i>${esc(
+            this._memberState(m, member),
+          )}</span><span class="hint">${esc(p?.model || "")}</span></div></div>
+          <div class="gd-chips">${chips}</div>
+          <div class="gd-filter">${d ? this._filter(d) : ""}</div>
+        </div>`;
+      })
+      .join("");
+    const purifiers = `<div class="card gd-card gd-wide">
+      <div class="gd-head"><h2>Purifiers</h2><span class="hint">${online} online · ${running} running</span></div>
+      ${rows}
+    </div>`;
+
+    // sensors added in the editor, not part of a purifier
+    const extra = g.sensors.filter((s) => s.source === "manual");
+    const extras = extra.length
+      ? `<div class="card gd-card gd-side">
+          <div class="gd-head"><div><h2>Additional sensors</h2><div class="hint">Not part of a purifier, added in the editor</div></div></div>
+          ${extra
+            .map((s) => {
+              const lvl = levelOf[s.entity_id];
+              return `<div class="gd-xrow"><div class="gd-who"><div>${esc(
+                this._hass?.states?.[s.entity_id]?.attributes?.friendly_name || s.entity_id,
+              )}</div><div class="mono-id">${esc(s.entity_id)}</div></div>
+              <span class="chip gd-chip"><i class="gd-dot${lvl ? ` q${lvl}` : ""}"></i>${esc(
+                SENSOR_TYPE_INFO[s.type]?.label || s.type,
+              )} <b>${esc(this._sensorValue(s.entity_id, s.type))}</b></span></div>`;
+            })
+            .join("")}
+        </div>`
+      : "";
+    return `<div class="gd">${controls}${history}${historyNote}<div class="gd-cols">${purifiers}${extras}</div></div>`;
+  }
+
   // --- group editor ----------------------------------------------------------------
 
   // the draft for the route's group, once the groups are in
@@ -1646,7 +1878,7 @@ class LevoitEsphomePanel extends HTMLElement {
         this._edit = { missing: true };
         return;
       }
-      const { state, ...rest } = g;
+      const { state, entities, ...rest } = g;
       draft = JSON.parse(JSON.stringify(rest));
     }
     this._edit = { draft, addOpen: false, saving: false, preview: null, previewError: null, previewSeq: 0 };
@@ -2690,8 +2922,23 @@ class LevoitEsphomePanel extends HTMLElement {
 
   // --- device page: history chart ----------------------------------------------
 
+  // whose history is shown: the device page's or the group page's
+  _historyKey() {
+    if (this._view === "groupdetail") return this._detailId ? `group:${this._detailId}` : null;
+    return this._pageName ? `device:${this._pageName}` : null;
+  }
+
   // the air quality sensors this device has, one chart each (and the level band)
   _historySeries() {
+    if (this._view === "groupdetail") {
+      const entities = this._detailGroup()?.entities || {};
+      const series = GROUP_HISTORY_SERIES.filter((s) => entities[s.key]).map((s) => ({
+        ...s,
+        entity: entities[s.key],
+      }));
+      if (entities.level) series.push({ key: "band", title: "Level", band: true, entity: entities.level });
+      return series;
+    }
     const controls = this._page?.controls || {};
     const series = HISTORY_SERIES.filter((s) => controls[s.key]).map((s) => ({ ...s, entity: controls[s.key] }));
     const level = controls["sensor.aqi"];
@@ -2736,7 +2983,7 @@ class LevoitEsphomePanel extends HTMLElement {
   async _loadHistory() {
     const series = this._historySeries();
     if (!series.length || !this._hass) return;
-    const name = this._pageName;
+    const name = this._historyKey();
     const rangeKey = this._historyRange;
     const range = HISTORY_RANGES[rangeKey];
     const end = Date.now();
@@ -2751,7 +2998,7 @@ class LevoitEsphomePanel extends HTMLElement {
         period: range.period,
         types: ["mean"],
       });
-      if (name !== this._pageName || rangeKey !== this._historyRange) return;
+      if (name !== this._historyKey() || rangeKey !== this._historyRange) return;
       const data = {};
       for (const id of new Set(series.flatMap((s) => [s.entity, s.index].filter(Boolean))))
         data[id] = (result?.[id] || [])
@@ -2760,7 +3007,7 @@ class LevoitEsphomePanel extends HTMLElement {
       this._history = { name, range: rangeKey, start, end, at: Date.now(), data };
       this._historyError = null;
     } catch (err) {
-      if (name === this._pageName) this._historyError = err?.message || String(err);
+      if (name === this._historyKey()) this._historyError = err?.message || String(err);
     } finally {
       this._historyLoading = false;
       this._render();
@@ -2855,17 +3102,21 @@ class LevoitEsphomePanel extends HTMLElement {
     const axes = { left: "", right: "" };
     const paths = [];
     let any = false;
+    // series on one axis share its scale (a group's PM1, PM2.5 and PM10)
+    const peak = { left: 0, right: 0 };
+    for (const s of series)
+      for (const [, v] of h.data[s.entity] || []) peak[s.axis] = Math.max(peak[s.axis], v);
     for (const s of series) {
       const points = h.data[s.entity] || [];
       if (!points.length) continue;
       any = true;
-      const max = niceMax(Math.max(...points.map(([, v]) => v)));
+      const max = niceMax(peak[s.axis]);
       const yOf = y(max);
       const base = yOf(0);
       const line = (run) =>
         run.map(([t, v], i) => `${i ? "L" : "M"}${this._x(t, h).toFixed(1)},${yOf(v).toFixed(1)}`).join("");
       const runs = runsOf(points);
-      if (s.axis === "left")
+      if (s.area)
         paths.push(
           ...runs.map(
             (run) =>
@@ -3075,6 +3326,8 @@ const STYLE = `
   --lv-track: var(--secondary-background-color, rgba(127, 127, 127, 0.12));
   --lv-tile: rgba(127, 127, 127, 0.08);
   --lv-pm: var(--primary-color);
+  --lv-pm1: #4fb3e8;
+  --lv-pm10: #1a4f8b;
   --lv-cadr: #e65100;
   /* air quality level 1-4: lighter to darker as well as green to red */
   --lv-q1: #43a047; --lv-q2: #c0ca33; --lv-q3: #ffa000; --lv-q4: #c62828;
@@ -3083,6 +3336,8 @@ const STYLE = `
 }
 :host([dark]) {
   --lv-cadr: #ffa726;
+  --lv-pm1: #8fd3f7;
+  --lv-pm10: #5b8fd6;
   --lv-q4: #e53935;
   --lv-q1-bg: #1b3a1e; --lv-q1-fg: #a5d6a7; --lv-q2-bg: #2b3a1a; --lv-q2-fg: #c5e1a5;
   --lv-q3-bg: #3d2a10; --lv-q3-fg: #ffcc80; --lv-q4-bg: #421a1a; --lv-q4-fg: #ef9a9a;
@@ -3618,6 +3873,58 @@ details.section[open] > summary { padding-bottom: 8px; }
 .lmap.q2 { background: var(--lv-q2-bg); color: var(--lv-q2-fg); }
 .lmap.q3 { background: var(--lv-q3-bg); color: var(--lv-q3-fg); }
 .lmap.q4 { background: var(--lv-q4-bg); color: var(--lv-q4-fg); }
+.gd { display: flex; flex-direction: column; gap: 16px; }
+.gd-controls { margin: 0; padding: 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 24px 32px; }
+.gd-main { display: flex; align-items: center; gap: 18px; flex: 1 1 380px; min-width: 0; }
+.gd-power { width: 72px; height: 72px; flex: none; border-radius: 50%; border: 1.5px solid var(--divider-color);
+  background: transparent; color: var(--secondary-text-color); display: inline-flex; align-items: center;
+  justify-content: center; cursor: pointer; padding: 0; }
+.gd-power svg { width: 30px; height: 30px; }
+.gd-power.on { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+.gd-state { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gd-state .hint { margin: 0; }
+.gd-title { font-size: 22px; font-weight: 500; }
+.gd-segs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.gd-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; flex: 1 1 520px; }
+.gd-tile { background: var(--lv-track); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.gd-tl { font-size: 12px; color: var(--secondary-text-color); }
+.gd-tv { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; }
+.gd-tv b { font-size: 24px; font-weight: 500; }
+.gd-tv span { font-size: 12px; color: var(--secondary-text-color); }
+.gd-tn { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11px; color: var(--secondary-text-color);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gd-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--divider-color); display: inline-block; }
+.gd-dot.q1 { background: var(--lv-q1); } .gd-dot.q2 { background: var(--lv-q2); }
+.gd-dot.q3 { background: var(--lv-q3); } .gd-dot.q4 { background: var(--lv-q4); }
+.gd-dot.cadr { background: var(--lv-cadr); }
+.gd-note { margin: -8px 4px 0; }
+.gd .history { margin: 0; }
+.gd-cols { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.gd-card { margin: 0; overflow: hidden; min-width: 0; }
+.gd-wide { flex: 999 1 600px; }
+.gd-side { flex: 1 1 300px; }
+.gd-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 16px 20px 10px; }
+.gd-head h2 { margin: 0; font-size: 16px; font-weight: 500; }
+.gd-head .hint { margin: 2px 0 0; }
+.gd-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 20px;
+  border-top: 1px solid var(--divider-color); }
+.gd-who { flex: 1 1 200px; min-width: 0; }
+.gd-name { display: block; font-size: 15px; font-weight: 500; color: var(--primary-text-color); text-decoration: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gd-name:hover { color: var(--lv-accent-text); }
+.gd-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.gd-meta .hint { margin: 0; }
+.gd-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 220px; }
+.gd-chip { gap: 6px; font-variant-numeric: tabular-nums; }
+.gd-chip b { font-weight: 500; }
+.gd-filter { flex: none; width: 112px; }
+.gd-xrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px;
+  border-top: 1px solid var(--divider-color); }
+.sw.c-pm1 { background: var(--lv-pm1); } .sw.c-pm10 { background: var(--lv-pm10); }
+.sw.c-pm1, .sw.c-pm10 { height: 0; border-radius: 0; width: 14px; border-top: 2px solid; background: none; }
+.sw.c-pm1 { border-color: var(--lv-pm1); } .sw.c-pm10 { border-color: var(--lv-pm10); }
+.hist-plot .line.c-pm1 { stroke: var(--lv-pm1); } .hist-plot .line.c-pm10 { stroke: var(--lv-pm10); }
+.ytick.c-pm1, .ytick.c-pm10 { color: var(--lv-accent-text); }
 .now-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -6px -8px 0 0; }
 .play { width: 40px; height: 40px; padding: 0; border-radius: 50%; border: 0; background: var(--primary-color);
   color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }

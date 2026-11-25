@@ -545,6 +545,7 @@ class AirQuality:
     level: int | None  # 1-4; None while no sensor has a number
     worst: TypeValue | None
     levels: dict[str, int]  # per sensor with a number, on its own
+    types: tuple[TypeValue, ...] = ()  # per sensor type with a number
 
 
 def air_quality(config: GroupConfig, readings: Iterable[Reading]) -> AirQuality:
@@ -554,11 +555,13 @@ def air_quality(config: GroupConfig, readings: Iterable[Reading]) -> AirQuality:
     fast, and the same in Manual or when disabled.
     """
     readings = list(readings)
-    worst = _worst(type_values(config, readings))
+    types = type_values(config, readings)
+    worst = _worst(types)
     return AirQuality(
         level=worst.level if worst else None,
         worst=worst,
         levels=_sensor_levels(config, readings),
+        types=tuple(types),
     )
 
 

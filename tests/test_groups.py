@@ -801,3 +801,61 @@ async def test_group_saved_by_0_6(
         "fan.living": {"lowest": 1, "highest": 3},
     }
     assert "max_speed" not in group
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_group_value_sensors(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """One sensor per type the group has, combined as set, and the total CADR."""
+    _purifiers(hass)
+    _add_entities(hass, MAC, {"sensor.bedroom_cadr": "Current CADR"})
+    hass.states.async_set("sensor.bedroom_cadr", "120", {"unit_of_measurement": "m³/h"})
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    group = await _save(client, members=MEMBERS, rise={"enabled": False})
+    await _settle(hass)
+
+    pm25 = hass.states.get("sensor.living_room_pm2_5")
+    assert pm25.state == "5.0"
+    assert pm25.attributes["combine"] == "max"
+    assert pm25.attributes["sensors"] == ["sensor.bedroom_pm25", "sensor.living_pm25"]
+    assert pm25.attributes["level"] == 1
+    assert hass.states.get("sensor.living_room_cadr").state == "120.0"
+    assert hass.states.get("sensor.living_room_pm1") is None  # no PM1 sensor
+    assert hass.states.get("sensor.living_room_pm10") is None
+
+    _pm(hass, 10, "sensor.bedroom_pm25")
+    _pm(hass, 60)
+    await _save(
+        client,
+        id=group["id"],
+        members=MEMBERS,
+        rise={"enabled": False},
+        combine={"pm25": "avg"},
+        sensors=[{"entity_id": "sensor.wall_pm10", "type": "pm10", "source": "manual"}],
+    )
+    hass.states.async_set("sensor.wall_pm10", "63", UNIT)
+    await _settle(hass)
+    assert hass.states.get("sensor.living_room_pm2_5").state == "35.0"
+    assert hass.states.get("sensor.living_room_pm10").state == "63.0"
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    (listed,) = msg["result"]["groups"]
+    assert listed["entities"]["pm10"] == "sensor.living_room_pm10"
+    assert listed["state"]["values"]["pm25"]["how"] == "avg"
+    assert listed["state"]["cadr"] == {"value": 120.0, "sensors": ["sensor.bedroom_cadr"]}
+
+    # the PM10 sensor removed: its group sensor goes too
+    await _save(
+        client, id=group["id"], members=MEMBERS, rise={"enabled": False}, combine={"pm25": "avg"}
+    )
+    await _settle(hass)
+    assert hass.states.get("sensor.living_room_pm10") is None
+    assert (
+        er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"group_{group['id']}_pm10")
+        is None
+    )
+
+    hass.states.async_set("sensor.wall_pm10", "unavailable")
+    hass.states.async_set("sensor.bedroom_pm25", "unavailable")
+    hass.states.async_set("sensor.living_pm25", "unavailable")
+    await _settle(hass)
+    assert hass.states.get("sensor.living_room_pm2_5").state == "unavailable"

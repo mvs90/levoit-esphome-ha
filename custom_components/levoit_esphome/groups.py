@@ -69,6 +69,7 @@ from .groups_logic import (
     PM1,
     PM10,
     PM25,
+    SENSOR_TYPES,
     STEP_OFF,
     STEP_SLEEP,
     Evaluation,
@@ -105,6 +106,10 @@ PRESET_MANUAL = "Manual"
 PRESET_SLEEP = "Sleep"
 # the Everest Air's top speed is a preset, above its 3 fan speeds
 PRESET_TURBO = "Turbo"
+
+# a group's total CADR, next to its combined sensor types
+CADR = "cadr"
+CADR_KEY = "sensor.current_cadr"
 
 # controls.py keys of a purifier's air sensors
 SENSOR_KEYS = {
@@ -155,6 +160,7 @@ class LevoitFan:
     device_id: str
     area_id: str | None
     sensors: tuple[GroupSensor, ...]
+    cadr: str | None = None  # its CADR sensor
 
 
 def _number(state: State | None) -> float | None:
@@ -360,8 +366,30 @@ class GroupManager:
                     for key, kind in SENSOR_KEYS.items()
                     if key in controls
                 ),
+                cadr=controls.get(CADR_KEY),
             )
         return fans
+
+    @callback
+    def cadr_sensors(self, config: GroupConfig) -> tuple[str, ...]:
+        """The CADR sensors of a group's purifiers."""
+        fans = self.levoit_fans()
+        return tuple(c for m in config.members if m in fans and (c := fans[m].cadr))
+
+    @callback
+    def value_types(self, group_id: str) -> list[str]:
+        """What a group has a combined value of: its sensor types, and CADR.
+
+        A sensor type counts once the group has a sensor of it (with a value or
+        not); CADR once one of its purifiers has a CADR sensor.
+        """
+        if (config := self.groups.get(group_id)) is None:
+            return []
+        kinds = [t for t in SENSOR_TYPES if any(s.type == t for s in config.sensors)]
+        runner = self._runners.get(group_id)
+        if runner is not None and runner.cadr_sensors:
+            kinds.append(CADR)
+        return kinds
 
     @callback
     def _with_sensors(self, config: GroupConfig, fans: dict[str, LevoitFan]) -> GroupConfig:
@@ -469,6 +497,14 @@ class GroupManager:
         state["air_quality"] = quality.level
         state["air_quality_sensor"] = quality.worst.top if quality.worst else None
         state["air_quality_levels"] = quality.levels
+        # the combined value per sensor type, and the purifiers' total CADR
+        state["values"] = {
+            t.type: {"value": t.value, "level": t.level, "how": t.how, "sensors": list(t.sensors)}
+            for t in quality.types
+        }
+        cadr = runner.cadr_sensors if runner is not None else ()
+        numbers = [v for e in cadr if (v := _number(self.hass.states.get(e))) is not None]
+        state["cadr"] = {"value": sum(numbers) if numbers else None, "sensors": list(cadr)}
         return state
 
     @staticmethod
@@ -589,6 +625,7 @@ class GroupRunner:
         self.evaluation: Evaluation | None = None
         self.paused_until: dict[str, float] = {}
         self._targets: dict[str, Step] = {}  # step set per member the group runs
+        self.cadr_sensors: tuple[str, ...] = ()  # its purifiers' CADR, for the total
         self._own: deque[str] = deque(maxlen=64)  # context ids of our calls
         self._lock = asyncio.Lock()
         self._unsubs: list[CALLBACK_TYPE] = []
@@ -607,7 +644,12 @@ class GroupRunner:
     def _track(self) -> None:
         if self._unsubs:
             self._unsubs.pop(0)()
-        entities = [*self.config.members, *(s.entity_id for s in self.config.sensors)]
+        self.cadr_sensors = self.manager.cadr_sensors(self.config)
+        entities = [
+            *self.config.members,
+            *(s.entity_id for s in self.config.sensors),
+            *self.cadr_sensors,
+        ]
         self._unsubs.insert(
             0, async_track_state_change_event(self.hass, entities, self._state_changed)
         )
