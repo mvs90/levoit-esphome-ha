@@ -34,6 +34,7 @@ SUPPORTED_MODELS = frozenset(
         "CORE300S",
         "CORE400S",
         "CORE600S",
+        "LV600S",
         "VITAL100S",
         "VITAL200S",
         "EVERESTAIR",
@@ -56,6 +57,20 @@ PLATFORM_DOMAINS = {
 # key -> names in the tuct/levoit device configs, current first
 DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
     "fan.fan": ("Fan",),
+    "switch.power": ("Power",),
+    "select.humidifier_mode": ("Operating Mode",),
+    "number.humidity_target": ("Target Humidity",),
+    "number.mist_level": ("Mist Level",),
+    "number.warm_level": ("Warm Level",),
+    "sensor.humidity": ("Humidity",),
+    "sensor.temperature": ("Temperature",),
+    "sensor.timer_remaining_seconds": ("Timer Remaining Seconds",),
+    "binary_sensor.water_tank_empty": ("Water Tank Empty",),
+    "binary_sensor.tank_removed": ("Tank Removed",),
+    "binary_sensor.humidifying": ("Humidifying",),
+    "binary_sensor.heating_enabled": ("Heating Enabled",),
+    "binary_sensor.mcu_connection": ("MCU Connection",),
+    "binary_sensor.mcu_fault": ("MCU Fault",),
     # Auto
     "select.auto_mode": ("Auto Mode",),
     "number.auto_profile_room_size_input": ("Auto Mode Room Size Preset",),
@@ -117,6 +132,15 @@ DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
 
 # Where a model names an entity differently; tried before DEFAULT_NAMES.
 MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
+    "LV600S": {
+        "switch.power": ("Power", "Ein"),
+        "select.humidifier_mode": ("Operating Mode", "Betriebsmodus"),
+        "number.humidity_target": ("Target Humidity", "Zielfeuchtigkeit"),
+        "number.mist_level": ("Mist Level", "Nebelstufe"),
+        "number.warm_level": ("Warm Level", "Waermestufe"),
+        "sensor.humidity": ("Humidity", "Luftfeuchtigkeit"),
+        "sensor.temperature": ("Temperature", "Temperatur"),
+    },
     # The Eleva's "AQI" is the 0-500 index; its 1-4 level is "Air Quality Level".
     "ELEVA300X": {
         "sensor.aqi_index": ("AQI",),
@@ -155,6 +179,47 @@ def config_names(config: Mapping[str, Any]) -> dict[str, str]:
             name = entry.get("name")
             if isinstance(kind, str) and isinstance(name, str) and name:
                 names[f"{platform}.{kind}"] = name
+    # The LV600S component declares sensors within its parent block; controls
+    # are template entities. Read only explicit names/IDs, never execute lambdas.
+    lv = config.get("lv600s_humidifier")
+    if isinstance(lv, dict):
+        nested = {
+            "current_humidity": "sensor.humidity",
+            "current_temperature": "sensor.temperature",
+            "timer_remaining": "sensor.timer_remaining_seconds",
+            "water_lacks": "binary_sensor.water_tank_empty",
+            "tank_removed": "binary_sensor.tank_removed",
+            "humidifying": "binary_sensor.humidifying",
+            "warm_enabled": "binary_sensor.heating_enabled",
+            "online": "binary_sensor.mcu_connection",
+            "fault": "binary_sensor.mcu_fault",
+            "fault_message": "text_sensor.error_message",
+            "mcu_version": "text_sensor.mcu_version",
+            "esp_version": "text_sensor.esp_version",
+            "model_sensor": "text_sensor.model",
+        }
+        for key, kind in nested.items():
+            entry = lv.get(key)
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                names[kind] = entry["name"]
+        ids = {
+            "humidifier_power": "switch.power",
+            "humidifier_display": "switch.display",
+            "humidifier_mode": "select.humidifier_mode",
+            "humidifier_target": "number.humidity_target",
+            "humidifier_mist": "number.mist_level",
+            "humidifier_warm": "number.warm_level",
+            "humidifier_timer": "number.timer",
+        }
+        for platform in ("switch", "select", "number"):
+            for entry in config.get(platform) or []:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("platform") == "template"
+                    and entry.get("id") in ids
+                    and isinstance(entry.get("name"), str)
+                ):
+                    names[ids[entry["id"]]] = entry["name"]
     return names
 
 
