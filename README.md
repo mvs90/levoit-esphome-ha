@@ -517,25 +517,30 @@ sharper.
 
 ### Encrypted native OTA
 
-Template refreshes preserve a native OTA `encryption.key` (inline or `!secret`),
-independently of API encryption. They never replace it with password-free OTA.
-Unsupported encryption layouts/options fail before writing or uploading: remove
-the template marker and maintain such a config as a custom config. This needs an
-ESPHome Device Builder that supports encrypted native OTA.
+Template refreshes preserve the native ESPHome OTA encryption key and API
+key, whether inline or referenced by `!secret`. The integration inspects the
+YAML without loading packages or looking up secret values. It supports a single
+native OTA transport on a standalone template tracking upstream Main or Stable.
+If a marked template uses packages, an unsupported transport or a pinned/forked
+source, the refresh stops before writing or building. Remove the template marker
+to maintain that file as a custom config. Use a Device Builder version that
+supports native OTA encryption for an encrypted device.
 
 ### LV600S development support
 
-The matching firmware fork adds the LV600S (`lv600s_humidifier`, model `LV600S`),
-separate from the Superior 6000S. This integration recognises it by its component
-or Model/ESP Version sensor, maps its nested diagnostics and template controls,
-and displays humidity, temperature, power, modes, mist, warmth and timer settings.
-It does not treat the humidifier as a fan or include it in purifier groups.
-Original Auto and Unknown are read-only choices. Local/pinned owner configs keep
-their existing update restrictions and are never rewritten as an upstream template.
+The LV600S page maps native ESPHome entities by their reported names or the
+resolved device config. The fallback names cover English device examples and
+the German owner profile, including Tank Removed, Water Tank Empty, MCU
+Connection, MCU Fault and Timer Remaining.
 
-Development only: the firmware contribution must land before its template is
-available in tuct/levoit. Use Main while it is unreleased; select Stable only once
-that release includes the component. Both new firmware and this device UI need
-hardware validation before the contribution is submitted upstream. Existing
-ESPHome device identities, keys, custom partition tables and automations must be
-preserved during an owner's migration.
+The timer presets work when the MCU reports fresh status but has yet to send
+a timer snapshot. The page shows remaining seconds separately from the timer
+command. It disables incompatible controls in standby and sleep and blocks
+start when an available tank, water, fault or MCU diagnostic rules it out.
+The off control remains available while power is reported on. Original Auto
+and Unknown appear as read-only choices.
+
+The test branch can recognise an LV600S running the fork firmware using its
+existing ESPHome entry. The Add Device catalogue reads upstream, so use the
+existing custom Device Builder configuration while testing the fork. Once the
+LV600S template lands upstream, use the channel that contains the component.

@@ -9,9 +9,9 @@ Builder files pasted by hand are recognised by their generated header
 A config with neither is custom: it is never rewritten.
 
 Rendering takes the newest builder file and puts the device's own values in:
-its name, the secret names (or inline values) of its API key and OTA
-password, and its channel. Plain text edits on the known shape of the
-generated files; no YAML round trip, so comments and layout stay.
+its name, API and OTA credentials, and channel. Parse the old YAML structurally
+without resolving secrets, then edit the generated template as text so its
+comments and layout stay.
 Plain Python without Home Assistant, so it is easy to test.
 """
 
@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import json
 import re
 import secrets as pysecrets
 
 import aiohttp
+import yaml
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
-from .const import CHANNEL_MAIN, CHANNEL_STABLE, GITHUB_RAW
+from .const import CHANNEL_MAIN, CHANNEL_STABLE, GITHUB_RAW, GITHUB_REPO
 
 TEMPLATES_FILE = "devices/templates.json"
 # Templates come from main: the newest builder files. The component itself comes
@@ -85,7 +88,7 @@ class Value:
         """The value as written in the config."""
         if self.secret is not None:
             return f"!secret {self.secret}"
-        return '"' + (self.inline or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return json.dumps(self.inline or "", ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -156,19 +159,100 @@ def template_of(config_text: str, templates: list[Template]) -> Template | None:
     return None
 
 
-def _block(text: str, key: str) -> str | None:
-    """The lines of a top-level YAML key (`api:`, `ota:` ...), without the key."""
-    match = re.search(rf"(?m)^{re.escape(key)}:[ \t]*\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text)
-    return match.group(1) if match else None
+def _mapping(node: Node | None, label: str) -> dict[str, Node]:
+    """Inspect YAML structure without expanding ESPHome tags, includes or secrets."""
+    error = TemplateError(f"unsupported {label} configuration; use a custom config")
+    if not isinstance(node, MappingNode) or node.tag != "tag:yaml.org,2002:map":
+        raise error
+    fields: dict[str, Node] = {}
+    for key, value in node.value:
+        if (
+            not isinstance(key, ScalarNode)
+            or key.tag != "tag:yaml.org,2002:str"
+            or key.value in fields
+        ):
+            raise error
+        fields[key.value] = value
+    return fields
 
 
-def _value(raw: str) -> Value:
-    raw = raw.strip()
-    if raw.startswith("!secret"):
-        return Value(secret=raw.removeprefix("!secret").strip())
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
-        raw = raw[1:-1]
-    return Value(inline=raw)
+def _credential(node: Node | None, label: str) -> Value:
+    if isinstance(node, ScalarNode) and node.value:
+        if node.tag == "!secret" and re.fullmatch(r"[A-Za-z0-9_.-]+", node.value):
+            return Value(secret=node.value)
+        if node.tag == "tag:yaml.org,2002:str" and not re.search(r"\$\{|[\r\n]", node.value):
+            return Value(inline=node.value)
+    raise TemplateError(f"unsupported {label} credential; use a custom config")
+
+
+def _template_fields(config_text: str) -> dict[str, Node]:
+    try:
+        fields = _mapping(yaml.compose(config_text, Loader=yaml.SafeLoader), "template")
+    except yaml.YAMLError:
+        # Parser details can contain inline credentials.
+        raise TemplateError("invalid template YAML; use a custom config") from None
+    if "packages" in fields:
+        raise TemplateError("templates with packages must be managed as custom configs")
+    return fields
+
+
+def _string(node: Node | None) -> str | None:
+    if isinstance(node, ScalarNode) and node.tag == "tag:yaml.org,2002:str":
+        return node.value
+    return None
+
+
+def _template_channel(fields: dict[str, Node]) -> str:
+    """The renderer can update only the upstream main/stable builder source."""
+    external = fields.get("external_components")
+    if not isinstance(external, SequenceNode) or len(external.value) != 1:
+        raise TemplateError("unsupported component sources; use a custom config")
+    entry = _mapping(external.value[0], "external component")
+    source = _mapping(entry.get("source"), "component source")
+    url = _string(source.get("url")) or ""
+    ref = _string(source.get("ref")) if "ref" in source else CHANNEL_MAIN
+    if (
+        _string(source.get("type")) != "git"
+        or url.removesuffix(".git") != f"https://github.com/{GITHUB_REPO}"
+        or ref not in (CHANNEL_MAIN, CHANNEL_STABLE)
+    ):
+        raise TemplateError("pinned or custom component source; use a custom config")
+    return ref
+
+
+def _protection(fields: dict[str, Node]) -> tuple[Value | None, Value | None, Value | None]:
+    """Read the API and native OTA protection of a standalone builder template."""
+    api_key = None
+    api = fields.get("api")
+    if api is not None and api.tag != "tag:yaml.org,2002:null":
+        api_fields = _mapping(api, "API")
+        if "password" in api_fields:
+            raise TemplateError("legacy API password; use a custom config")
+        if "encryption" in api_fields:
+            encryption = _mapping(api_fields["encryption"], "API encryption")
+            if encryption.keys() != {"key"}:
+                raise TemplateError("unsupported API encryption options; use a custom config")
+            api_key = _credential(encryption["key"], "API encryption")
+
+    ota = fields.get("ota")
+    if (
+        not isinstance(ota, SequenceNode)
+        or ota.tag != "tag:yaml.org,2002:seq"
+        or len(ota.value) != 1
+    ):
+        raise TemplateError("unsupported encrypted OTA or transport layout; use a custom config")
+    native = _mapping(ota.value[0], "OTA")
+    if _string(native.get("platform")) != "esphome":
+        raise TemplateError("unsupported OTA platform; use a custom config")
+    if native.keys() - {"platform", "password", "encryption"}:
+        raise TemplateError("unsupported OTA options; use a custom config")
+    if "encryption" in native:
+        encryption = _mapping(native["encryption"], "encrypted OTA")
+        if "password" in native or encryption.keys() != {"key"}:
+            raise TemplateError("unsupported OTA encryption options; use a custom config")
+        return api_key, None, _credential(encryption["key"], "OTA encryption")
+    password = _credential(native["password"], "OTA password") if "password" in native else None
+    return api_key, password, None
 
 
 def config_values(config_text: str) -> ConfigValues:
@@ -180,35 +264,9 @@ def config_values(config_text: str) -> ConfigValues:
         raise TemplateError("the config has no device name")
     name = name_match.group(1).strip("'\"")
 
-    api_key = None
-    if (api := _block(config_text, "api")) is not None and (
-        key := re.search(r"(?m)^\s+key:\s*(.+?)\s*$", api)
-    ):
-        api_key = _value(key.group(1))
-
-    ota_password = None
-    if (ota := _block(config_text, "ota")) is not None and (
-        password := re.search(r"(?m)^\s+password:\s*(.+?)\s*$", ota)
-    ):
-        ota_password = _value(password.group(1))
-
-    ota_encryption_key = None
-    if ota is not None and re.search(r"(?m)^\s+encryption:", ota):
-        # Only the known native-OTA shape can be safely rendered. Fail before a
-        # config write instead of silently turning encryption into open OTA.
-        platforms = re.findall(r"(?m)^  - platform:\s*(\S+)", ota)
-        match = re.search(r"(?m)^    encryption:[ \t]*\n      key:[ \t]*(.+?)[ \t]*$", ota)
-        if platforms != ["esphome"] or match is None or ota_password is not None:
-            raise TemplateError("unsupported encrypted OTA configuration; use a custom config")
-        if re.search(r"(?m)^      (?!key:|#)\S", ota):
-            raise TemplateError("unsupported OTA encryption options; use a custom config")
-        ota_encryption_key = _value(match.group(1))
-
-    channel = None
-    if (ext := _block(config_text, "external_components")) is not None and (
-        ref := re.search(r"(?m)^\s+ref:\s*(\S+)", ext)
-    ):
-        channel = ref.group(1)
+    fields = _template_fields(config_text)
+    api_key, ota_password, ota_encryption_key = _protection(fields)
+    channel = _template_channel(fields)
 
     return ConfigValues(
         name=name,
