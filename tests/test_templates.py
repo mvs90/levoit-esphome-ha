@@ -249,3 +249,46 @@ def test_mixed_encrypted_ota_platforms_fail_closed() -> None:
     text = text.replace("ota:\n", "ota:\n  - platform: http_request\n")
     with pytest.raises(TemplateError, match="unsupported encrypted OTA"):
         config_values(text)
+
+
+def test_inline_encrypted_ota_and_yaml_comments() -> None:
+    text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
+    text = text.replace(
+        "ota:\n  - platform: esphome\n",
+        '"ota": [{platform: esphome, encryption: {key: !secret device_ota_key}}] # keep secure\n',
+    )
+    values = config_values(text)
+    assert values.ota_encryption_key == Value(secret="device_ota_key")
+    assert "    encryption:\n      key: !secret device_ota_key" in render(
+        BUILDER, EVEREST_C3, values
+    )
+
+
+@pytest.mark.parametrize(
+    "ota",
+    [
+        "ota: !include private-ota.yaml",
+        "ota: []",
+        "ota:\n  - platform: esphome\n    encryption: !include private-ota.yaml",
+        "ota: [{platform: esphome, encryption: {key: !secret ota_key, key: other}}]",
+        'ota: [{platform: esphome, encryption: {key: "${private_key}"}}]',
+        "ota: [{platform: esphome}]\npackages: !include private.yaml",
+        "ota: [{platform: esphome}]\nota: [{platform: esphome}]",
+    ],
+)
+def test_refuses_ota_that_cannot_be_preserved(ota: str) -> None:
+    text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
+    with pytest.raises(TemplateError, match="custom config"):
+        config_values(text.replace("ota:\n  - platform: esphome\n", ota + "\n"))
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("ref: stable", "ref: 1.7.3"),
+        ("https://github.com/tuct/levoit", "https://github.com/owner/levoit"),
+    ],
+)
+def test_refresh_refuses_to_rewrite_pinned_or_forked_source(before: str, after: str) -> None:
+    with pytest.raises(TemplateError, match="custom config"):
+        config_values(BUILDER.replace(before, after))

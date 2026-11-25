@@ -476,8 +476,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         template = tpl.template_of(text, await self.async_get_templates())
         if template is None:
             return False
+        values = tpl.config_values(text)
         source = await tpl.async_fetch_template_text(async_get_clientsession(self.hass), template)
-        new = tpl.render(source, template, tpl.config_values(text))
+        new = tpl.render(source, template, values)
         if new == text:
             return False
         await async_write_config(self.hass, builder, configuration, new, expected=text)
