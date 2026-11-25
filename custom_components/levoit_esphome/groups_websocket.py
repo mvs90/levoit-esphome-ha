@@ -9,6 +9,10 @@
 * levoit_esphome/groups/apply: run a group's saved settings now (the editor's
   apply button): the sensors' level at once, purifiers changed by hand too
 * levoit_esphome/groups/dismiss: hide the group suggestion for an area
+
+And for the dashboard cards, any user (read only):
+
+* levoit_esphome/cards: every purifier and group with the entities a card shows
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_preview)
     websocket_api.async_register_command(hass, ws_apply)
     websocket_api.async_register_command(hass, ws_dismiss)
+    websocket_api.async_register_command(hass, ws_cards)
 
 
 def _manager(hass: HomeAssistant) -> GroupManager | None:
@@ -162,6 +167,56 @@ def ws_subscribe(
     connection.subscriptions[msg_id] = unsubscribe
     connection.send_result(msg_id)
     attach()
+
+
+@callback
+def cards_snapshot(manager: GroupManager) -> dict[str, Any]:
+    """What the dashboard cards show: purifiers and groups with their entity ids.
+
+    Names and entity ids only: no configs, sensors' values come from the states.
+    """
+    data = manager.coordinator.data
+    devices = data.devices if data else {}
+    purifiers = []
+    for fan in sorted(manager.levoit_fans().values(), key=lambda f: f.title.lower()):
+        sensors = {s.type: s.entity_id for s in fan.sensors}
+        device = devices.get(fan.name)
+        group = manager.group_of(fan.entity_id)
+        purifiers.append(
+            {
+                "entity_id": fan.entity_id,
+                "name": fan.name,
+                "title": fan.title,
+                "model": fan.model,
+                "area_id": fan.area_id,
+                "pm25": sensors.get("pm25"),
+                "aqi": sensors.get("aqi"),
+                "cadr": fan.cadr,
+                "filter": device.filter_entity_id if device else None,
+                "group_id": group.id if group else None,
+            }
+        )
+    groups = [
+        {
+            "id": group_id,
+            "name": config.name,
+            "area_id": config.area_id,
+            "members": list(config.members),
+            "entities": group_entities(manager.hass, group_id),
+        }
+        for group_id, config in sorted(manager.groups.items(), key=lambda i: i[1].name.lower())
+    ]
+    return {"purifiers": purifiers, "groups": groups}
+
+
+@websocket_api.websocket_command({probatio.Required("type"): "levoit_esphome/cards"})
+@callback
+def ws_cards(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The purifiers and groups for the dashboard cards (any user)."""
+    if (manager := _manager_or_error(hass, connection, msg)) is not None:
+        connection.send_result(msg["id"], cards_snapshot(manager))
 
 
 @websocket_api.require_admin

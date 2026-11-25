@@ -859,3 +859,33 @@ async def test_group_value_sensors(hass: HomeAssistant, hass_ws_client: WebSocke
     hass.states.async_set("sensor.living_pm25", "unavailable")
     await _settle(hass)
     assert hass.states.get("sensor.living_room_pm2_5").state == "unavailable"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_cards_for_any_user(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """The dashboard cards' purifiers and groups, for a user who is not an admin."""
+    _purifiers(hass)
+    await _setup(hass)
+    admin = await hass_ws_client(hass)
+    group = await _save(admin, members=MEMBERS)
+    await _settle(hass)
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    msg = await _call(client, {"type": "levoit_esphome/cards"})
+    assert msg["success"], msg
+    bedroom = msg["result"]["purifiers"][0]
+    assert bedroom["entity_id"] == "fan.bedroom"
+    assert bedroom["pm25"] == "sensor.bedroom_pm25"
+    assert bedroom["group_id"] == group["id"]
+    (listed,) = msg["result"]["groups"]
+    assert listed["members"] == MEMBERS
+    assert listed["entities"]["fan"] == GROUP_FAN
+    assert "thresholds" not in listed  # names and entities only
+
+    # the panel's group commands stay admins only
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    assert msg["error"]["code"] == "unauthorized"

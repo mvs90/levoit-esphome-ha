@@ -149,6 +149,33 @@ are dropped, PM2.5 keeps where levels 2–4 started, and the max speed and *Up
 to* become each purifier's highest speed. Level 1 now runs the purifiers at
 their lowest step instead of letting go.
 
+## Dashboard cards
+
+Cards for any Home Assistant dashboard, for every user (not only admins). The
+integration loads them on every page: no resource to add. In the dashboard
+editor, *Add card* lists them as **Levoit purifier**.
+
+```yaml
+type: custom:levoit-purifier-card
+entity: fan.levoit_core600s_c3_fan   # the purifier's fan
+show: [pm25, aqi, cadr, filter, group]   # default: all
+controls: [speed, mode]                  # default: both
+grid_options:
+  columns: 12   # 6 = medium / small, 3 = compact
+  rows: 4       # 4 = large / medium, 2 = small, 1 = compact
+```
+
+The card follows its size in a sections view: **large** (12 × 4) with PM2.5,
+AQI and CADR, the speeds and a mode list; **medium** (6 × 4) with PM2.5 large,
+CADR, filter, speeds and modes; **small** (6 × 2) with the speeds; **compact**
+(6 × 1 or 3 × 1) with the state only. The icon or the name opens the fan's
+dialog; on the small and compact cards the icon turns it on and off. Turbo
+shows as the top speed (the Everest Air's Turbo mode, the Eleva's level 4).
+In Sleep, Auto or Pet the speeds are dimmed and show what it runs at; picking
+one switches to Manual.
+
+A card for a purifier group and a list of purifiers and groups follow.
+
 ## Manage and update the devices
 
 Firmware updates for every purifier, in Home Assistant's *Updates* and on
