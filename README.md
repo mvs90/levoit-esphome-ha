@@ -97,27 +97,33 @@ Run 2 or more purifiers together from shared air sensors, for example
 everything in one room. Groups run in the integration, so they keep working
 with the page closed and after a restart.
 
-* **The level:** the worst of the group's sensors, on the group's thresholds,
-  sets a level from 1 up to the group's max speed. It goes up at once and down
-  one step per hold time (2 minutes); a fast rise in PM2.5 jumps straight to
-  max speed.
-* **The purifiers** switch to Manual at their own speed for that level. A
-  3-speed model shares levels, so the top level is always its fastest. The
-  Everest Air counts its Turbo as speed 4, so the top level runs it in Turbo.
-  *Up to* holds one lower, for example a loud one up to speed 2 (or the
-  Everest Air up to 3: no Turbo).
-* **Letting go:** once the air is clean, the group is switched off or deleted,
-  or a purifier leaves it, the group sends nothing: each keeps running as it is.
+* **The level:** 1 (very good air) to 4 (poor). Each sensor type (PM1, PM2.5,
+  PM10, the purifiers' AQI index) gives a level: PM values on the group's
+  thresholds, the AQI index 1–4 as it is. Several sensors of one type are
+  combined into one value: the highest (default), average, median or lowest.
+  The worst type sets the group's level. It goes up at once and down one step
+  per hold time (2 minutes); a fast rise in PM2.5 jumps straight to level 4.
+* **The purifiers** each have a lowest and a highest step. Level 1 runs at the
+  lowest (Off, Sleep or a speed; speed 1 by default), level 4 at the highest,
+  and levels 2 and 3 are spread between them. The Everest Air counts its Turbo
+  as speed 4, so its highest is Turbo unless set to 3.
+* **Letting go:** when no sensor has a value, the group is switched off or
+  deleted, or a purifier leaves it, the group sends nothing: each keeps
+  running as it is.
 * **By hand:** if someone changes a purifier, the group leaves that one alone
   for 30 minutes.
-* **Manual:** one speed for all its purifiers instead of following the sensors.
+* **Manual:** one level for all its purifiers instead of following the sensors.
+* **Apply now:** ▶ in the editor runs the saved settings at once: the
+  sensors' level without waiting for the hold time, also for purifiers that
+  were changed by hand.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
 
 The editor picks the sensors from the purifiers and takes others from Home
-Assistant, sets thresholds, max speed, hold time and the speed limit per
-purifier, and shows live what the group would do right now. Rooms in Home
-Assistant with 2 or more purifiers are suggested as groups.
+Assistant, sets how several sensors of one type are combined, the thresholds,
+the hold time and each purifier's lowest and highest step, and shows live what
+the group would do right now. Rooms in Home Assistant with 2 or more purifiers
+are suggested as groups.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-editor.png?v=0.6.7" width="720" alt="The group editor: purifiers, sensors, thresholds, the speed each purifier runs per level, and what the group would do now">
 
@@ -125,11 +131,16 @@ Each group gets a device of its name, for dashboards, voice and automations:
 
 | Entity | What it shows / does |
 |--------|----------------------|
-| **The group** (fan) | The whole group like one purifier: on / off is *Control*, preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers (Manual, up to the group's max speed) |
+| **The group** (fan) | The whole group like one purifier: on / off is *Control*, preset *Auto* or *Manual*, and its 4 speeds set the level for all purifiers (Manual) |
 | **Control** (switch) | Off: the group leaves its purifiers alone |
-| **Level** (sensor) | 0–4, the level the group runs at, with the reason |
-| **Air quality** (sensor) | 0–4, the worst sensor on the group's thresholds (0 below level 1); also in Manual or with the group off |
-| **Active** (binary sensor) | On while the group runs its purifiers at a level above 0 |
+| **Level** (sensor) | 1–4, the level the group runs at, with the reason; 0 while it lets go |
+| **Air quality** (sensor) | 1–4, the worst sensor type on the group's thresholds; also in Manual or with the group off |
+| **Active** (binary sensor) | On while the group runs its purifiers |
+
+Groups saved by 0.6 keep working: their sensors of the Eleva's 0–500 AQI
+are dropped, PM2.5 keeps where levels 2–4 started, and the max speed and *Up
+to* become each purifier's highest speed. Level 1 now runs the purifiers at
+their lowest step instead of letting go.
 
 ## Manage and update the devices
 

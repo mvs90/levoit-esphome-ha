@@ -1,25 +1,32 @@
 """Purifier groups: the rules, without Home Assistant.
 
-A group ties two or more purifiers to shared air sensors. Each sensor's reading
-gives a level from its type's four thresholds; the worst sensor sets the group
-level, and every member runs at its own speed for that level. The level goes up
-at once and down one step per hold time; at level 0 the group lets go and
-leaves the purifiers as they are. groups.py runs this against Home Assistant
-states and services.
+A group ties two or more purifiers to shared air sensors. The sensors of one
+type (PM1, PM2.5, PM10, the Levoit AQI level) are combined into one value, by
+default the highest; each type's value gives a level from 1 (very good air) to
+4 (poor), and the worst type sets the group level. Each member runs at a step
+between its lowest (Off, Sleep or a speed) and its highest speed for that
+level. The level goes up at once and down one step per hold time; without any
+sensor value the group lets go and leaves the purifiers as they are.
+groups.py runs this against Home Assistant states and services.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
+from statistics import fmean, median
 from typing import Any
 
+PM1 = "pm1"
 PM25 = "pm25"
-AQI = "aqi"  # Levoit air quality level 1-4 (1 very good ... 4 poor)
-AQI_INDEX = "aqi_index"  # 0-500 index (Eleva 300X)
-SENSOR_TYPES = (PM25, AQI, AQI_INDEX)
+PM10 = "pm10"
+AQI = "aqi"  # Levoit air quality level 1-4 (1 very good ... 4 poor), a level as it is
+SENSOR_TYPES = (PM1, PM25, PM10, AQI)
+THRESHOLD_TYPES = (PM1, PM25, PM10)
+# earlier versions also had the Eleva's 0-500 index; a stored one is dropped
+LEGACY_TYPES = ("aqi_index",)
 
 SOURCE_AUTO = "auto"  # picked from a member
 SOURCE_MANUAL = "manual"  # added by the user
@@ -27,17 +34,31 @@ SOURCE_MANUAL = "manual"  # added by the user
 MODE_AUTO = "auto"  # the sensors pick the level
 MODE_MANUAL = "manual"  # the user picks one level for all members
 
+# how the sensors of one type make one value
+COMBINE_MAX = "max"
+COMBINE_AVG = "avg"
+COMBINE_MEDIAN = "median"
+COMBINE_MIN = "min"
+COMBINES = (COMBINE_MAX, COMBINE_AVG, COMBINE_MEDIAN, COMBINE_MIN)
+
+# a member's steps: Off, Sleep (fans with that preset), then its speeds
+STEP_OFF = "off"
+STEP_SLEEP = "sleep"
+type Step = int | str
 
 MAX_LEVEL = 4
 MIN_MEMBERS = 2
+MAX_FAN_SPEEDS = 10
 
-# Start of levels 1-4 per sensor type. The Levoit level: Good starts level 1,
-# Moderate level 2, Poor level 4.
+# Where levels 2, 3 and 4 start per sensor type, in µg/m³; level 1 is below.
+# PM2.5 as the Levoit AQI ring (very good to 12, good to 35, moderate to 55),
+# PM10 as the US AQI bands.
 DEFAULT_THRESHOLDS: dict[str, tuple[float, ...]] = {
-    PM25: (12, 35, 55, 150),
-    AQI: (2, 3, 4, 4),
-    AQI_INDEX: (50, 100, 150, 200),
+    PM1: (12, 35, 55),
+    PM25: (12, 35, 55),
+    PM10: (55, 155, 255),
 }
+THRESHOLD_COUNT = MAX_LEVEL - 1
 
 ERR_INVALID = "invalid"
 ERR_MEMBERS = "members"
@@ -64,12 +85,26 @@ class GroupSensor:
 
 @dataclass(frozen=True)
 class Rise:
-    """Rising fast: a climb this big within the window jumps to max speed."""
+    """Rising fast: a PM2.5 climb this big within the window jumps to level 4."""
 
     enabled: bool = True
     pm25: float = 20
-    aqi_index: float = 25
     window_min: int = 5
+
+
+@dataclass(frozen=True)
+class MemberSpeeds:
+    """A member's range in the group: level 1 runs at lowest, level 4 at highest."""
+
+    lowest: Step = 1  # STEP_OFF, STEP_SLEEP or a speed
+    highest: int | None = None  # None: its fastest speed
+
+    def as_dict(self) -> dict[str, Any]:
+        """As saved."""
+        return {"lowest": self.lowest, "highest": self.highest}
+
+
+DEFAULT_MEMBER_SPEEDS = MemberSpeeds()
 
 
 @dataclass(frozen=True)
@@ -83,7 +118,9 @@ class GroupConfig:
     enabled: bool = True
     sensors: tuple[GroupSensor, ...] = ()
     removed_sensors: tuple[str, ...] = ()
-    max_speed: int = MAX_LEVEL
+    combine: Mapping[str, str] = field(
+        default_factory=lambda: dict.fromkeys(SENSOR_TYPES, COMBINE_MAX)
+    )
     thresholds: Mapping[str, tuple[float, ...]] = field(
         default_factory=lambda: dict(DEFAULT_THRESHOLDS)
     )
@@ -94,8 +131,12 @@ class GroupConfig:
     manual_pause_min: int = 30
     mode: str = MODE_AUTO
     manual_level: int = 1
-    # per member: its highest speed in this group (absent: all its speeds)
-    member_max_speed: Mapping[str, int] = field(default_factory=dict)
+    # per member: its lowest and highest step (absent: speed 1 to its fastest)
+    member_speeds: Mapping[str, MemberSpeeds] = field(default_factory=dict)
+
+    def speeds_of(self, member: str) -> MemberSpeeds:
+        """A member's range (the default when it has none)."""
+        return self.member_speeds.get(member, DEFAULT_MEMBER_SPEEDS)
 
     def as_dict(self) -> dict[str, Any]:
         """The config as saved and sent to the panel."""
@@ -109,12 +150,11 @@ class GroupConfig:
                 {"entity_id": s.entity_id, "type": s.type, "source": s.source} for s in self.sensors
             ],
             "removed_sensors": list(self.removed_sensors),
-            "max_speed": self.max_speed,
-            "thresholds": {t: list(self.thresholds[t]) for t in SENSOR_TYPES},
+            "combine": dict(self.combine),
+            "thresholds": {t: list(self.thresholds[t]) for t in THRESHOLD_TYPES},
             "rise": {
                 "enabled": self.rise.enabled,
                 "pm25": self.rise.pm25,
-                "aqi_index": self.rise.aqi_index,
                 "window_min": self.rise.window_min,
             },
             "hold_min": self.hold_min,
@@ -123,7 +163,7 @@ class GroupConfig:
             "manual_pause_min": self.manual_pause_min,
             "mode": self.mode,
             "manual_level": self.manual_level,
-            "member_max_speed": dict(self.member_max_speed),
+            "member_speeds": {m: s.as_dict() for m, s in self.member_speeds.items()},
         }
 
 
@@ -158,25 +198,40 @@ def _choice(data: Mapping[str, Any], key: str, default: str, choices: Iterable[s
 
 
 def _thresholds(data: Any) -> dict[str, tuple[float, ...]]:
+    """Where levels 2-4 start per PM type.
+
+    Earlier versions kept 4 values (where level 1 started, below it the group
+    let go); the first one is dropped, so levels 2-4 start where they did.
+    """
     if data is None:
         data = {}
     if not isinstance(data, Mapping):
         raise GroupError(ERR_INVALID, "thresholds must be per sensor type")
     result: dict[str, tuple[float, ...]] = {}
-    for kind in SENSOR_TYPES:
+    for kind in THRESHOLD_TYPES:
         values = data.get(kind, DEFAULT_THRESHOLDS[kind])
+        if isinstance(values, (list, tuple)) and len(values) == THRESHOLD_COUNT + 1:
+            values = values[1:]
         if (
             not isinstance(values, (list, tuple))
-            or len(values) != MAX_LEVEL
-            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values)
+            or len(values) != THRESHOLD_COUNT
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in values)
         ):
-            raise GroupError(ERR_INVALID, f"thresholds.{kind} must be {MAX_LEVEL} numbers")
-        if any(b < a for a, b in pairwise(values)):
             raise GroupError(
-                ERR_THRESHOLDS, f"thresholds.{kind} must rise from level 1 to {MAX_LEVEL}"
+                ERR_INVALID, f"thresholds.{kind} must be {THRESHOLD_COUNT} numbers of 0 or more"
             )
+        if any(b < a for a, b in pairwise(values)):
+            raise GroupError(ERR_THRESHOLDS, f"thresholds.{kind} must rise from level 2 to 4")
         result[kind] = tuple(values)
     return result
+
+
+def _combine(data: Any) -> dict[str, str]:
+    if data is None:
+        data = {}
+    if not isinstance(data, Mapping):
+        raise GroupError(ERR_INVALID, "combine must be per sensor type")
+    return {kind: _choice(data, kind, COMBINE_MAX, COMBINES) for kind in SENSOR_TYPES}
 
 
 def _sensors(data: Any) -> tuple[GroupSensor, ...]:
@@ -189,6 +244,8 @@ def _sensors(data: Any) -> tuple[GroupSensor, ...]:
     for item in data:
         if not isinstance(item, Mapping) or not isinstance(item.get("entity_id"), str):
             raise GroupError(ERR_INVALID, "each sensor needs an entity_id")
+        if item.get("type") in LEGACY_TYPES:
+            continue
         kind = _choice(item, "type", "", SENSOR_TYPES)
         source = _choice(item, "source", SOURCE_MANUAL, (SOURCE_AUTO, SOURCE_MANUAL))
         if item["entity_id"] in seen:
@@ -206,17 +263,42 @@ def _entity_ids(data: Any, key: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(data))
 
 
-def _member_max(data: Any, members: Iterable[str]) -> dict[str, int]:
-    """Per-member speed limits, for members of the group only."""
-    if data is None:
-        return {}
+def _member_range(member: str, data: Any) -> MemberSpeeds:
     if not isinstance(data, Mapping):
-        raise GroupError(ERR_INVALID, "member_max_speed must be per purifier")
-    limits: dict[str, int] = {}
-    for member in members:
-        if member in data:
-            limits[member] = _int(data, member, MAX_LEVEL, 1, MAX_LEVEL)
-    return limits
+        raise GroupError(ERR_INVALID, f"member_speeds.{member} must have lowest and highest")
+    lowest = data.get("lowest", DEFAULT_MEMBER_SPEEDS.lowest)
+    if lowest not in (STEP_OFF, STEP_SLEEP):
+        lowest = _int(data, "lowest", 1, 1, MAX_FAN_SPEEDS)
+    highest = data.get("highest")
+    if highest is not None:
+        highest = _int(data, "highest", MAX_FAN_SPEEDS, 1, MAX_FAN_SPEEDS)
+    if isinstance(lowest, int) and highest is not None and lowest > highest:
+        raise GroupError(ERR_INVALID, f"{member}: the lowest speed is above the highest")
+    return MemberSpeeds(lowest, highest)
+
+
+def _member_speeds(data: Mapping[str, Any], members: Iterable[str]) -> dict[str, MemberSpeeds]:
+    """Per-member ranges, for members of the group only.
+
+    Earlier versions had a group max speed and a highest speed per member
+    (member_max_speed); a purifier's top speed was the lower of the two.
+    """
+    raw = data.get("member_speeds")
+    if raw is None:
+        max_speed = _int(data, "max_speed", MAX_LEVEL, 1, MAX_LEVEL)
+        limits = data.get("member_max_speed")
+        limits = limits if isinstance(limits, Mapping) else {}
+        result: dict[str, MemberSpeeds] = {}
+        for member in members:
+            limit = limits.get(member)
+            top = min(limit, max_speed) if isinstance(limit, int) else max_speed
+            if top < MAX_LEVEL or isinstance(limit, int):
+                result[member] = MemberSpeeds(1, max(1, top))
+        return result
+    if not isinstance(raw, Mapping):
+        raise GroupError(ERR_INVALID, "member_speeds must be per purifier")
+    ranges = {m: _member_range(m, raw[m]) for m in members if m in raw}
+    return {m: r for m, r in ranges.items() if r != DEFAULT_MEMBER_SPEEDS}
 
 
 def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> GroupConfig:
@@ -233,17 +315,12 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
     members = _entity_ids(data.get("members"), "members")
     if check_members and len(members) < MIN_MEMBERS:
         raise GroupError(ERR_MEMBERS, f"Pick at least {MIN_MEMBERS} purifiers")
-    max_speed = _int(data, "max_speed", MAX_LEVEL, 1, MAX_LEVEL)
     rise = data.get("rise") or {}
     if not isinstance(rise, Mapping):
         raise GroupError(ERR_INVALID, "rise must be an object")
     area_id = data.get("area_id")
     if area_id is not None and not isinstance(area_id, str):
         raise GroupError(ERR_INVALID, "area_id must be text")
-    manual_level = data.get("manual_level", 1)
-    if isinstance(manual_level, (int, float)) and not isinstance(manual_level, bool):
-        # clamped when max_speed drops
-        manual_level = min(max(int(manual_level), 1), max_speed)
     return GroupConfig(
         id=str(data.get("id") or ""),
         name=name.strip(),
@@ -252,12 +329,11 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
         enabled=_bool(data, "enabled", True),
         sensors=_sensors(data.get("sensors")),
         removed_sensors=_entity_ids(data.get("removed_sensors"), "removed_sensors"),
-        max_speed=max_speed,
+        combine=_combine(data.get("combine")),
         thresholds=_thresholds(data.get("thresholds")),
         rise=Rise(
             enabled=_bool(rise, "enabled", True),
             pm25=_number(rise, "pm25", Rise.pm25),
-            aqi_index=_number(rise, "aqi_index", Rise.aqi_index),
             window_min=_int(rise, "window_min", Rise.window_min, 1, 60),
         ),
         hold_min=_int(data, "hold_min", 2, 0, 240),
@@ -265,8 +341,8 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
         respect_manual=_bool(data, "respect_manual", True),
         manual_pause_min=_int(data, "manual_pause_min", 30, 1, 1440),
         mode=_choice(data, "mode", MODE_AUTO, (MODE_AUTO, MODE_MANUAL)),
-        manual_level=_int({"manual_level": manual_level}, "manual_level", 1, 1, max_speed),
-        member_max_speed=_member_max(data.get("member_max_speed"), members),
+        manual_level=_int(data, "manual_level", 1, 1, MAX_LEVEL),
+        member_speeds=_member_speeds(data, members),
     )
 
 
@@ -301,33 +377,56 @@ def speed_count(percentage_step: Any) -> int:
     return max(1, round(100 / step))
 
 
-def allowed_speeds(config: GroupConfig, member: str, speeds: int) -> int:
-    """How many of a member's speeds the group may use (its limit, if lower)."""
-    limit = config.member_max_speed.get(member)
-    return min(speeds, limit) if limit else speeds
+def member_ladder(speeds: int, has_sleep: bool) -> list[Step]:
+    """A member's steps, slowest first: Off, Sleep (if it has it), speeds 1 to N."""
+    return [STEP_OFF, *([STEP_SLEEP] if has_sleep else []), *range(1, max(1, speeds) + 1)]
 
 
-def member_speed(level: int, max_speed: int, speeds: int) -> int:
-    """The member's speed for a group level; 0 for level 0.
+def member_step(level: int, speeds: int, has_sleep: bool, rng: MemberSpeeds) -> Step | None:
+    """The member's step for a group level; None at level 0 (let go).
 
-    A member with fewer speeds than max_speed shares levels, so the top level
-    is always its fastest speed: 1 + round((L - 1)(N - 1) / (M - 1)), half up.
+    Level 1 runs at the lowest step and level 4 at the highest; levels 2 and 3
+    are spread between them: lowest + round((L - 1)(highest - lowest) / 3) on
+    the member's steps, half up. A range the purifier cannot do is narrowed:
+    Sleep without a Sleep preset is speed 1, speeds above its fastest are its
+    fastest.
     """
     if level <= 0:
-        return 0
-    level = min(level, max_speed)
-    if max_speed <= 1:
-        return 1
-    if max_speed <= speeds:
-        return level
-    numerator = (level - 1) * (speeds - 1)
-    denominator = max_speed - 1
-    return 1 + (2 * numerator + denominator) // (2 * denominator)
+        return None
+    ladder = member_ladder(speeds, has_sleep)
+    top = ladder[-1]
+    high = min(rng.highest or top, top)
+    low: Step = rng.lowest
+    if low == STEP_SLEEP and not has_sleep:
+        low = 1
+    if isinstance(low, int):
+        low = min(low, high)
+    lo, hi = ladder.index(low), ladder.index(high)
+    numerator = (min(level, MAX_LEVEL) - 1) * (hi - lo)
+    denominator = MAX_LEVEL - 1
+    return ladder[lo + (2 * numerator + denominator) // (2 * denominator)]
 
 
-def sensor_level(value: float, thresholds: Iterable[float]) -> int:
-    """Highest level whose threshold the value meets (0 below level 1)."""
-    return sum(1 for threshold in thresholds if value >= threshold)
+def type_level(config: GroupConfig, kind: str, value: float) -> int:
+    """The level 1-4 a value of this type gives.
+
+    The Levoit AQI level is the level; a PM value is 1 plus the number of the
+    type's thresholds it meets.
+    """
+    if kind == AQI:
+        return min(max(round(value), 1), MAX_LEVEL)
+    return 1 + sum(1 for threshold in config.thresholds[kind] if value >= threshold)
+
+
+def combine(values: Sequence[float], how: str) -> float:
+    """One value from a type's sensors."""
+    if how == COMBINE_MIN:
+        return min(values)
+    if how == COMBINE_AVG:
+        return fmean(values)
+    if how == COMBINE_MEDIAN:
+        return median(values)
+    return max(values)
 
 
 @dataclass(frozen=True)
@@ -340,13 +439,69 @@ class Reading:
 
 
 @dataclass(frozen=True)
+class TypeValue:
+    """A sensor type's combined value and level."""
+
+    type: str
+    value: float
+    level: int
+    how: str  # the combine used; it makes no difference with one sensor
+    sensors: tuple[str, ...]  # the sensors with a number
+    top: str  # the sensor with the highest value
+
+
+def type_values(config: GroupConfig, readings: Iterable[Reading]) -> list[TypeValue]:
+    """Per sensor type with a number: its value, combined as the group says."""
+    by_type: dict[str, list[Reading]] = {}
+    for reading in readings:
+        if reading.value is not None and reading.type in SENSOR_TYPES:
+            by_type.setdefault(reading.type, []).append(reading)
+    result: list[TypeValue] = []
+    for kind in SENSOR_TYPES:
+        if not (found := by_type.get(kind)):
+            continue
+        how = config.combine.get(kind, COMBINE_MAX)
+        value = combine([r.value for r in found if r.value is not None], how)
+        top = max(found, key=lambda r: r.value or 0)
+        result.append(
+            TypeValue(
+                type=kind,
+                value=value,
+                level=type_level(config, kind, value),
+                how=how,
+                sensors=tuple(r.entity_id for r in found),
+                top=top.entity_id,
+            )
+        )
+    return result
+
+
+def _sensor_levels(config: GroupConfig, readings: Iterable[Reading]) -> dict[str, int]:
+    """Each sensor's own level, as if it were alone."""
+    return {
+        r.entity_id: type_level(config, r.type, r.value)
+        for r in readings
+        if r.value is not None and r.type in SENSOR_TYPES
+    }
+
+
+def _worst(values: Iterable[TypeValue]) -> TypeValue | None:
+    worst: TypeValue | None = None
+    for value in values:
+        if worst is None or value.level > worst.level:
+            worst = value
+    return worst
+
+
+@dataclass(frozen=True)
 class Evaluation:
     """What the sensors ask for now."""
 
-    target: int  # capped at max_speed; max_speed while rising fast
-    levels: dict[str, int]  # per usable sensor
-    worst: Reading | None  # the sensor that sets the target
-    rising: Reading | None  # a sensor climbing fast, if any
+    target: int  # 1-4; 4 while rising fast; 0 without any sensor value
+    levels: dict[str, int]  # per sensor with a number, on its own
+    types: tuple[TypeValue, ...]  # per sensor type with a number
+    worst: TypeValue | None  # the type that sets the target
+    rising: Reading | None  # a PM2.5 sensor climbing fast, if any
     usable: int  # sensors with a number
 
 
@@ -387,51 +542,52 @@ class History:
 class AirQuality:
     """The group's air quality on its own thresholds."""
 
-    level: int | None  # 0 (below level 1) to 4; None while no sensor has a number
-    worst: Reading | None
-    levels: dict[str, int]  # per sensor with a number
+    level: int | None  # 1-4; None while no sensor has a number
+    worst: TypeValue | None
+    levels: dict[str, int]  # per sensor with a number, on its own
 
 
 def air_quality(config: GroupConfig, readings: Iterable[Reading]) -> AirQuality:
-    """The worst sensor's level, 0-4, on the group's thresholds.
+    """The worst type's level, 1-4, on the group's thresholds.
 
     What the air is like, not what the group does: no hold time, no rising
-    fast, not capped at max_speed, and the same in Manual or when disabled.
+    fast, and the same in Manual or when disabled.
     """
-    levels: dict[str, int] = {}
-    worst: Reading | None = None
-    worst_level = -1
-    for reading in readings:
-        if reading.value is None or reading.type not in config.thresholds:
-            continue
-        level = sensor_level(reading.value, config.thresholds[reading.type])
-        levels[reading.entity_id] = level
-        if level > worst_level:
-            worst, worst_level = reading, level
-    return AirQuality(level=worst_level if levels else None, worst=worst, levels=levels)
+    readings = list(readings)
+    worst = _worst(type_values(config, readings))
+    return AirQuality(
+        level=worst.level if worst else None,
+        worst=worst,
+        levels=_sensor_levels(config, readings),
+    )
 
 
 def evaluate(config: GroupConfig, readings: Iterable[Reading], history: History) -> Evaluation:
     """The level the sensors ask for (Auto mode)."""
-    levels: dict[str, int] = {}
-    worst: Reading | None = None
-    worst_level = -1
+    readings = list(readings)
+    types = type_values(config, readings)
+    worst = _worst(types)
     rising: Reading | None = None
-    usable = 0
-    for reading in readings:
-        if reading.value is None or reading.type not in config.thresholds:
-            continue
-        usable += 1
-        level = min(sensor_level(reading.value, config.thresholds[reading.type]), config.max_speed)
-        levels[reading.entity_id] = level
-        if level > worst_level:
-            worst, worst_level = reading, level
-        if config.rise.enabled and rising is None:
-            limit = {PM25: config.rise.pm25, AQI_INDEX: config.rise.aqi_index}.get(reading.type)
-            if limit is not None and history.climb(reading.entity_id, reading.value) >= limit:
-                rising = reading
-    target = config.max_speed if rising is not None else max(worst_level, 0)
-    return Evaluation(target=target, levels=levels, worst=worst, rising=rising, usable=usable)
+    if config.rise.enabled:
+        rising = next(
+            (
+                r
+                for r in readings
+                if r.type == PM25
+                and r.value is not None
+                and history.climb(r.entity_id, r.value) >= config.rise.pm25
+            ),
+            None,
+        )
+    target = MAX_LEVEL if rising is not None else (worst.level if worst else 0)
+    return Evaluation(
+        target=target,
+        levels=_sensor_levels(config, readings),
+        types=tuple(types),
+        worst=worst,
+        rising=rising,
+        usable=sum(1 for r in readings if r.value is not None and r.type in SENSOR_TYPES),
+    )
 
 
 class LevelKeeper:
@@ -446,13 +602,19 @@ class LevelKeeper:
 
     def manual(self, config: GroupConfig) -> None:
         """Manual mode: the user's level, for all members."""
-        self.level = min(max(config.manual_level, 1), config.max_speed)
+        self.level = min(max(config.manual_level, 1), MAX_LEVEL)
         # back in Auto, the first evaluation may step down without waiting
         self.since = None
         self._no_data_since = None
 
-    def step(self, config: GroupConfig, readings: list[Reading], now: float) -> Evaluation:
-        """Evaluate the sensors and move the level (Auto mode)."""
+    def step(
+        self, config: GroupConfig, readings: list[Reading], now: float, *, now_level: bool = False
+    ) -> Evaluation:
+        """Evaluate the sensors and move the level (Auto mode).
+
+        `now_level` (the editor's apply button) takes the sensors' level at
+        once, down too, without waiting for the hold time.
+        """
         self.history.add(readings, now, config.rise.window_min * 60)
         result = evaluate(config, readings, self.history)
         hold_s = config.hold_min * 60
@@ -466,7 +628,7 @@ class LevelKeeper:
                     self.since = now
             return result
         self._no_data_since = None
-        if result.target > self.level:
+        if result.target > self.level or (now_level and result.target != self.level):
             self.level = result.target
             self.since = now
         elif result.target < self.level and (self.since is None or now - self.since >= hold_s):

@@ -221,7 +221,7 @@ class LevoitFilterSensor(LevoitEsphomeEntity, SensorEntity):
 
 
 class GroupLevelSensor(LevoitGroupEntity, SensorEntity):
-    """A purifier group's level: 0 (air is clean) to its max speed."""
+    """A purifier group's level: 1-4, or 0 while it lets go (no sensor value, paused)."""
 
     _attr_translation_key = "group_level"
     _attr_icon = "mdi:air-purifier"
@@ -251,10 +251,10 @@ class GroupLevelSensor(LevoitGroupEntity, SensorEntity):
 
 
 class GroupAirQualitySensor(LevoitGroupEntity, SensorEntity):
-    """A purifier group's air quality, 0-4: its worst sensor on the group's thresholds.
+    """A purifier group's air quality, 1-4: its worst sensor type on the group's thresholds.
 
-    0 is below level 1. Unlike the level, no hold time, no rising-fast jump and
-    no max-speed cap, and it reads the same in Manual or with the group off.
+    Unlike the level, no hold time and no rising-fast jump, and it reads the
+    same in Manual or with the group off.
     """
 
     _attr_translation_key = "group_air_quality"
@@ -267,7 +267,7 @@ class GroupAirQualitySensor(LevoitGroupEntity, SensorEntity):
 
     @property
     def native_value(self) -> int | None:
-        """0-4; unknown while no sensor has a number."""
+        """1-4; unknown while no sensor has a number."""
         return self.group_state["air_quality"] if self.group is not None else None
 
     @property

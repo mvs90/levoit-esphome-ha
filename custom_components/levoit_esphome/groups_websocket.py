@@ -6,6 +6,8 @@
 * levoit_esphome/groups/save: create (no id) or change a group
 * levoit_esphome/groups/delete: delete a group (its purifiers stay as they are)
 * levoit_esphome/groups/preview: the editor's "Right now" for an unsaved config
+* levoit_esphome/groups/apply: run a group's saved settings now (the editor's
+  apply button): the sensors' level at once, purifiers changed by hand too
 * levoit_esphome/groups/dismiss: hide the group suggestion for an area
 """
 
@@ -20,7 +22,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DOMAIN, SIGNAL_COORDINATOR
-from .groups import GroupManager, speeds_of
+from .groups import GroupManager, has_sleep, speeds_of
 from .groups_logic import GroupError
 
 if TYPE_CHECKING:
@@ -37,6 +39,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_save)
     websocket_api.async_register_command(hass, ws_delete)
     websocket_api.async_register_command(hass, ws_preview)
+    websocket_api.async_register_command(hass, ws_apply)
     websocket_api.async_register_command(hass, ws_dismiss)
 
 
@@ -76,6 +79,7 @@ def groups_snapshot(manager: GroupManager) -> dict[str, Any]:
                 "device_id": fan.device_id,
                 "area_id": fan.area_id,
                 "speeds": speeds_of(hass, fan.entity_id),
+                "sleep": bool((st := hass.states.get(fan.entity_id)) and has_sleep(st)),
                 "sensors": [{"entity_id": s.entity_id, "type": s.type} for s in fan.sensors],
                 "group_id": group.id if (group := manager.group_of(fan.entity_id)) else None,
             }
@@ -203,6 +207,28 @@ def ws_preview(
         connection.send_error(msg["id"], err.code, str(err))
         return
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/groups/apply",
+        probatio.Required("group_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_apply(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Run a group's saved settings now; answers with its state after."""
+    if (manager := _manager_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        await manager.async_apply_now(msg["group_id"])
+    except GroupError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"], manager.state(msg["group_id"]))
 
 
 @websocket_api.require_admin
