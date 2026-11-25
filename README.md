@@ -617,8 +617,11 @@ sharper.
 
 ### Encrypted native OTA
 
-Template refreshes preserve a native OTA `encryption.key` (inline or `!secret`),
-independently of API encryption. They never replace it with password-free OTA.
-Unsupported encryption layouts/options fail before writing or uploading: remove
-the template marker and maintain such a config as a custom config. This needs an
-ESPHome Device Builder that supports encrypted native OTA.
+Template refreshes preserve the native ESPHome OTA encryption key and API
+key, whether inline or referenced by `!secret`. The integration inspects the
+YAML without loading packages or looking up secret values. It supports a single
+native OTA transport on a standalone template tracking upstream Main or Stable.
+If a marked template uses packages, an unsupported transport or a pinned/forked
+source, the refresh stops before writing or building. Remove the template marker
+to maintain that file as a custom config. Use a Device Builder version that
+supports native OTA encryption for an encrypted device.
