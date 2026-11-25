@@ -135,9 +135,10 @@ MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
     "LV600S": {
         "switch.power": ("Power", "Ein"),
         "select.humidifier_mode": ("Operating Mode", "Betriebsmodus"),
-        "number.humidity_target": ("Target Humidity", "Zielfeuchtigkeit"),
+        "number.humidity_target": ("Target Humidity", "Zielfeuchte"),
         "number.mist_level": ("Mist Level", "Nebelstufe"),
-        "number.warm_level": ("Warm Level", "Waermestufe"),
+        "number.timer": ("Timer (min)", "Timer Minuten"),
+        "number.warm_level": ("Warm Level", "Warmnebelstufe"),
         "sensor.humidity": ("Humidity", "Luftfeuchtigkeit"),
         "sensor.temperature": ("Temperature", "Temperatur"),
     },
