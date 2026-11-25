@@ -213,3 +213,39 @@ def test_parse_templates_skips_unknown_variants() -> None:
         "templates": [{**entry, "variant": "s3"}, {**entry, "variant": "c6"}],
     }
     assert [t.variant for t in parse_templates(data)] == ["s3"]
+
+
+@pytest.mark.parametrize("key", [Value(secret="device_ota_key"), Value(inline="A" * 43 + "=")])
+def test_encrypted_ota_survives_template_refresh(key: Value) -> None:
+    """Refreshing a marked template must not downgrade encrypted OTA to open OTA."""
+    values = ConfigValues(
+        name="secure-air", api_key=VALUES.api_key, ota_encryption_key=key, channel="stable"
+    )
+    text = render(BUILDER, EVEREST_C3, values)
+    assert "    encryption:\n      key: " + key.yaml in text
+    assert "ota_password" not in text
+    assert config_values(text) == values
+    assert render(BUILDER, EVEREST_C3, config_values(text)) == text
+
+
+def test_unrecognised_ota_encryption_fails_closed() -> None:
+    """A format we cannot preserve must fail before the config is written."""
+    text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
+    text = text.replace(
+        "  - platform: esphome",
+        "  - platform: esphome\n    encryption:\n"
+        "      key: !secret ota_key\n      allow_plaintext: true",
+    )
+    with pytest.raises(TemplateError, match="unsupported OTA encryption"):
+        config_values(text)
+
+
+def test_mixed_encrypted_ota_platforms_fail_closed() -> None:
+    text = render(
+        BUILDER,
+        EVEREST_C3,
+        ConfigValues(name="secure-air", ota_encryption_key=Value(secret="ota_key")),
+    )
+    text = text.replace("ota:\n", "ota:\n  - platform: http_request\n")
+    with pytest.raises(TemplateError, match="unsupported encrypted OTA"):
+        config_values(text)
