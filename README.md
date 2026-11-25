@@ -119,6 +119,11 @@ with the page closed and after a restart.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
 
+Each group has a page of its own: power, Auto or Manual and the level, a tile
+per sensor type with the group's combined value and the purifiers' total
+CADR, their history over 24 hours or 7 days with the level as a band, and its
+purifiers with their state, sensors and filter. *Edit group* opens the editor.
+
 The editor picks the sensors from the purifiers and takes others from Home
 Assistant, sets how several sensors of one type are combined, the thresholds,
 the hold time and each purifier's lowest and highest step, and shows live what
@@ -136,6 +141,8 @@ Each group gets a device of its name, for dashboards, voice and automations:
 | **Level** (sensor) | 1–4, the level the group runs at, with the reason; 0 while it lets go |
 | **Air quality** (sensor) | 1–4, the worst sensor type on the group's thresholds; also in Manual or with the group off |
 | **Active** (binary sensor) | On while the group runs its purifiers |
+| **PM1**, **PM2.5**, **PM10**, **AQI index** (sensors) | The group's combined value of each sensor type it has (as set in the editor: highest, average, median or lowest), with its level and sensors. Only for the types the group has a sensor of: added and removed as you change its sensors |
+| **CADR** (sensor) | The total CADR of its purifiers, m³/h |
 
 Groups saved by 0.6 keep working: their sensors of the Eleva's 0–500 AQI
 are dropped, PM2.5 keeps where levels 2–4 started, and the max speed and *Up
