@@ -57,20 +57,6 @@ PLATFORM_DOMAINS = {
 # key -> names in the tuct/levoit device configs, current first
 DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
     "fan.fan": ("Fan",),
-    "switch.power": ("Power",),
-    "select.humidifier_mode": ("Operating Mode",),
-    "number.humidity_target": ("Target Humidity",),
-    "number.mist_level": ("Mist Level",),
-    "number.warm_level": ("Warm Level",),
-    "sensor.humidity": ("Humidity",),
-    "sensor.temperature": ("Temperature",),
-    "sensor.timer_remaining_seconds": ("Timer Remaining Seconds",),
-    "binary_sensor.water_tank_empty": ("Water Tank Empty",),
-    "binary_sensor.tank_removed": ("Tank Removed",),
-    "binary_sensor.humidifying": ("Humidifying",),
-    "binary_sensor.heating_enabled": ("Heating Enabled",),
-    "binary_sensor.mcu_connection": ("MCU Connection",),
-    "binary_sensor.mcu_fault": ("MCU Fault",),
     # Auto
     "select.auto_mode": ("Auto Mode",),
     "number.auto_profile_room_size_input": ("Auto Mode Room Size Preset",),
@@ -141,6 +127,14 @@ MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
         "number.warm_level": ("Warm Level", "Warmnebelstufe"),
         "sensor.humidity": ("Humidity", "Luftfeuchtigkeit"),
         "sensor.temperature": ("Temperature", "Temperatur"),
+        "sensor.timer_remaining_seconds": ("Timer Remaining Seconds", "Timer Restzeit"),
+        "binary_sensor.water_tank_empty": ("Water Tank Empty", "Wassermangel"),
+        "binary_sensor.tank_removed": ("Tank Removed", "Tank entfernt"),
+        "binary_sensor.humidifying": ("Humidifying", "Befeuchtet"),
+        "binary_sensor.heating_enabled": ("Heating Enabled", "Waerme aktiv"),
+        "binary_sensor.mcu_connection": ("MCU Connection", "MCU Verbindung"),
+        "binary_sensor.mcu_fault": ("MCU Fault", "Geraetefehler"),
+        "text_sensor.error_message": ("Error", "Fehlermeldung"),
     },
     # The Eleva's "AQI" is the 0-500 index; its 1-4 level is "Air Quality Level".
     "ELEVA300X": {
@@ -164,7 +158,7 @@ def page_supported(
 
 
 def config_names(config: Mapping[str, Any]) -> dict[str, str]:
-    """Entity names per key, from a resolved device config (levoit platform only).
+    """Entity names per key, from the resolved purifier or LV600S config.
 
     Only the names are kept: the config itself has secrets.
     """
@@ -257,9 +251,10 @@ def match_controls(
             entities.append((entry.domain, _norm(entry.original_name), entry.entity_id))
 
     # keys with a specific source first: config names, then model exceptions
+    model_names = MODEL_NAMES.get(model or "", {})
     keys = sorted(
-        DEFAULT_NAMES,
-        key=lambda k: (k not in configured, k not in MODEL_NAMES.get(model or "", {})),
+        dict.fromkeys((*DEFAULT_NAMES, *model_names)),
+        key=lambda k: (k not in configured, k not in model_names),
     )
     found: dict[str, str] = {}
     used: set[str] = set()

@@ -1150,6 +1150,14 @@ class LevoitEsphomePanel extends HTMLElement {
     return d.online === false || (fan && !this._usable(fan) && fan.state !== "off");
   }
 
+  _lv600sUnsafe(state, controls) {
+    if (controls?.["binary_sensor.mcu_connection"] && state("binary_sensor.mcu_connection")?.state !== "on") {
+      return true;
+    }
+    return ["binary_sensor.water_tank_empty", "binary_sensor.tank_removed", "binary_sensor.mcu_fault"]
+      .some((key) => controls?.[key] && state(key)?.state !== "off");
+  }
+
   // a device's state for a controls key, from the subscription's mapping
   _dstate(d, key) {
     const entityId = d.controls?.[key];
@@ -1223,10 +1231,12 @@ class LevoitEsphomePanel extends HTMLElement {
       stat(aqiKey, "AQI", dotLevel),
       stat("sensor.current_cadr", "CADR"),
     ].join("");
+    const powerDisabled = offline || (d.model === "LV600S" && !on &&
+      this._lv600sUnsafe((key) => this._dstate(d, key), d.controls));
     const power = powerState
       ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? `Turn ${esc(d.title)} off` : `Turn ${esc(d.title)} on`}" title="${
           on ? "Turn off" : "Turn on"
-        }" ${dis} ${this._svc(fan ? "fan" : "switch", on ? "turn_off" : "turn_on", powerState.entity_id)}>${icon("power")}</button>`
+        }" ${powerDisabled ? "disabled" : ""} ${this._svc(fan ? "fan" : "switch", on ? "turn_off" : "turn_on", powerState.entity_id)}>${icon("power")}</button>`
       : "";
     // under the name: model and filter; a line below: timer, update, offline and group
     const filter =
@@ -2179,7 +2189,7 @@ class LevoitEsphomePanel extends HTMLElement {
     );
   }
 
-  _stepper(key, label, hint, { dim = false, format } = {}) {
+  _stepper(key, label, hint, { dim = false, format, integer = false } = {}) {
     const st = this._state(key);
     if (!st) return "";
     const a = st.attributes;
@@ -2189,7 +2199,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const step = Number(a.step) || 1;
     const show = format || ((v) => `${formatNumber(v)}${a.unit_of_measurement ? ` ${a.unit_of_measurement}` : ""}`);
     const button = (delta, text) => {
-      const next = Math.min(Number(a.max), Math.max(Number(a.min), value + delta));
+      const next = Math.min(Number(a.max), Math.max(Number(a.min), (integer ? Math.ceil(value) : value) + delta));
       return `<button class="step" aria-label="${delta < 0 ? "Less" : "More"}" ${
         off || next === value ? "disabled" : ""
       } ${this._svc("number", "set_value", st.entity_id, { value: next })}>${text}</button>`;
@@ -2391,28 +2401,50 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _humidifierPage() {
-    const unsafe = ["binary_sensor.water_tank_empty", "binary_sensor.tank_removed", "binary_sensor.mcu_fault"]
-      .some((key) => this._state(key)?.state === "on");
-    const sleep = ["Humidity Sleep", "Schlaf"].includes(this._state("select.humidifier_mode")?.state);
+    const power = this._state("switch.power");
+    const on = power?.state === "on";
+    const unsafe = !this._usable(power) || this._lv600sUnsafe((key) => this._state(key), this._page.controls);
+    const mode = this._state("select.humidifier_mode")?.state;
+    const sleep = ["Humidity Sleep", "Schlaf"].includes(mode);
+    const humidity = ["Humidity", "Feuchte"].includes(mode);
     return `<div class="card"><h2>${esc(this._page.title || "LV600S")}</h2>
       ${this._tile("sensor.humidity", "Humidity")}${this._tile("sensor.temperature", "Temperature")}</div>
       <div class="sections">${this._section("Humidifier", [
-        this._toggle("switch.power", "Power", "MCU-confirmed state"),
+        this._toggle("switch.power", "Power", "", { dim: unsafe && !on }),
         this._choices("select.humidifier_mode", "Mode", "Original Auto is reported only", { dim: unsafe,
           disabledOptions: ["Auto (read only)", "Auto (Original)", "Unknown", "Unbekannt"] }),
-        this._slider("number.humidity_target", "Target humidity", "40–80 %, in Humidity mode", { dim: unsafe, unit: "%" }),
+        this._slider("number.humidity_target", "Target humidity", "40–80 %, in Humidity mode", { dim: unsafe || !on || !humidity, unit: "%" }),
         this._stepper("number.mist_level", "Mist level", "1–9 internal levels", { dim: unsafe || sleep }),
         this._stepper("number.warm_level", "Warm mist", "Retained setting, not a measured temperature", { dim: unsafe || sleep }),
-      ])}${this._section("Timer", [
-        this._stepper("number.timer", "Turn off in", "0 cancels; at most 12 hours"),
-        this._readout("sensor.timer_remaining_seconds", "Remaining"),
-      ])}${this._displaySection()}${this._section("Appliance status", [
+      ])}${this._lv600sTimer(unsafe)}
+      ${this._section("Display", [this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep })])}
+      ${this._section("Appliance status", [
         this._readout("binary_sensor.water_tank_empty", "Water tank empty"),
         this._readout("binary_sensor.tank_removed", "Tank removed"),
         this._readout("binary_sensor.humidifying", "Humidifying"),
         this._readout("binary_sensor.heating_enabled", "Heating enabled"),
         this._readout("binary_sensor.mcu_connection", "MCU connection"),
       ])}${this._infoSection()}</div>`;
+  }
+
+  _lv600sTimer(unsafe) {
+    const timer = this._state("number.timer");
+    const seconds = this._number("sensor.timer_remaining_seconds");
+    const status = this._readout("sensor.timer_remaining_seconds", "Remaining");
+    if (!timer) return this._section("Timer", [status]);
+    const disabled = unsafe || timer.state === "unavailable";
+    const setTimer = (value, label) =>
+      `<button class="opt" ${disabled ? "disabled" : ""} ${this._svc(
+        "number", "set_value", timer.entity_id, { value },
+      )}>${esc(label)}</button>`;
+    const durations = [1, 30, 60, 120, 240, 480, 720]
+      .filter((value) => value >= Number(timer.attributes.min) && value <= Number(timer.attributes.max))
+      .map((value) => setTimer(value, formatMinutes(value)));
+    return this._section("Timer", [
+      status,
+      this._setting("Turn off in", "", `<div class="opts">${durations.join("")}</div>`),
+      this._stepper("number.timer", "Adjust minutes", "", { dim: disabled, integer: true }),
+    ], "", seconds === 0 ? "" : setTimer(0, "Cancel"));
   }
 
   _autoSection() {

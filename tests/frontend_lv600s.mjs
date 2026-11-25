@@ -42,3 +42,21 @@ states['switch.power'].state = 'unavailable';
 html = panel._deviceCard({ name: 'humidifier', title: 'Humidifier', model: 'LV600S', controls, online: false });
 assert(html.includes('disabled') && html.includes('Offline'));
 console.log('LV600S frontend: humidifier page/card, read-only modes, escaping and unavailable controls passed');
+states['switch.power'].state = 'on';
+add('binary_sensor.mcu_connection', 'on');
+add('binary_sensor.water_tank_empty', 'off');
+add('sensor.timer_remaining_seconds', 'unknown', { unit_of_measurement: 's' });
+states['number.timer'].state = 'unknown';
+const action = (markup, label) =>
+  [...markup.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map(([b]) => b)
+    .find((b) => b.endsWith('>' + label + '</button>'));
+html = panel._devicePage();
+assert(action(html, '30 min') && !action(html, '30 min').includes('disabled'));
+assert(action(html, 'Cancel').includes('&quot;value&quot;:0'));
+states['binary_sensor.water_tank_empty'].state = 'on';
+html = panel._devicePage();
+assert(action(html, '30 min').includes('disabled'));
+assert(!html.match(/<button[^>]*data-entity="switch.power"[^>]*>/)[0].includes('disabled'));
+states['switch.power'].state = 'off';
+html = panel._deviceCard({ name: 'humidifier', title: 'Humidifier', model: 'LV600S', controls, online: true });
+assert(html.match(/<button[^>]*data-entity="switch.power"[^>]*>/)[0].includes('disabled'));
