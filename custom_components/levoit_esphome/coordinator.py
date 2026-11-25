@@ -189,7 +189,8 @@ BUILD_STEPS = {
 
 BUILD_LOG_LINES = 400  # kept per device, the newest
 BUILD_LOG_IN_HA_LOG = 40  # copied into Home Assistant's log when a build fails
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# colour codes, also written out as text: the Device Builder 2026.11 sends "\033[32m"
+_ANSI = re.compile(r"(?:\x1b|\\033|\\x1b|\\u001b)\[[0-9;?]*[A-Za-z]")
 # best first: an error line names the cause, "[FAILED]" only that it failed
 _REASON_LINES = (re.compile(r"\bERROR\b|\berror:"), re.compile(r"\b(FAILED|Failed|failed)\b"))
 

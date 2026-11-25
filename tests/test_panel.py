@@ -109,7 +109,7 @@ async def test_subscribe_and_build(
     # failed compile: an error naming the cause, the failure and the output kept
     async def failing_compile(configuration: str, line_received_cb: Any = None) -> bool:
         for line in (
-            "INFO Compiling app...",
+            r"\033[32mINFO Compiling app...\033[0m",
             "\x1b[31msrc/main.cpp:12: error: 'foo' was not declared\x1b[0m",
             "========== [FAILED] ==========",
         ):
