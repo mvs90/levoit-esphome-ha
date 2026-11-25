@@ -1,10 +1,11 @@
 // Levoit ESPHome dashboard cards. Loaded on every Home Assistant page by the
-// integration (no resource to add): custom:levoit-purifier-card for now; the
-// group and list cards follow.
+// integration (no resource to add): custom:levoit-purifier-card,
+// custom:levoit-group-card and custom:levoit-list-card.
 //
 // The cards read entity states and call fan services only. Which entities
-// belong to a purifier (PM2.5, AQI, CADR, filter, its group) comes once from
-// levoit_esphome/cards, which any user may call.
+// belong to a purifier (PM2.5, AQI, CADR, filter, its group) and to a group
+// (its fan and sensors, its members) comes once from levoit_esphome/cards,
+// which any user may call.
 
 const DOC_URL = "https://github.com/tuct/levoit-esphome-ha#dashboard-cards";
 
@@ -322,7 +323,7 @@ class LevoitPurifierCard extends LevoitCardBase {
     if (!hass) body = "";
     else if (!entity || !st) body = `<div class="msg">${esc(entity ? `${entity} not found` : "Pick a purifier")}</div>`;
     else body = this._body(st);
-    this.shadowRoot.innerHTML = `<style>${BASE_STYLE}${PURIFIER_STYLE}</style><ha-card>${body}</ha-card>`;
+    this.shadowRoot.innerHTML = `<style>${BASE_STYLE}${CARD_STYLE}</style><ha-card>${body}</ha-card>`;
   }
 
   _body(st) {
@@ -446,7 +447,8 @@ class LevoitPurifierCard extends LevoitCardBase {
   }
 }
 
-const PURIFIER_STYLE = `
+// the layouts, shared by the purifier and the group card
+const CARD_STYLE = `
 .large, .medium, .small { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
 .large { padding: 14px 16px; gap: 12px; }
 .medium { padding: 12px; gap: 10px; }
@@ -477,14 +479,616 @@ const PURIFIER_STYLE = `
 .compact.narrow .nm { font-size: 13px; }
 `;
 
+// --- the group card ----------------------------------------------------------------
+
+const GROUP_SHOW = ["pm25", "aqi", "cadr", "members"];
+const GROUP_CONTROLS = ["mode", "level"];
+const GROUP_LEVELS = [1, 2, 3, 4];
+const COMBINE_SHORT = { max: "highest", avg: "avg", median: "median", min: "lowest" };
+
+// the fans of Levoit ESPHome groups (the integration's own fans)
+const groupFans = (hass) =>
+  Object.keys(hass?.states || {}).filter(
+    (id) => id.startsWith("fan.") && hass.entities?.[id]?.platform === "levoit_esphome",
+  );
+
+// A group as the cards show it, from its fan (on = in control, Auto / Manual,
+// 4 levels as 25 % steps) and its air quality sensor (1-4).
+const groupView = (hass, group) => {
+  const e = group?.entities || {};
+  const st = hass.states[e.fan];
+  const a = st?.attributes || {};
+  const offline = !usable(st);
+  const on = st?.state === "on";
+  const mode = a.preset_mode === "Manual" ? "Manual" : "Auto";
+  const level = on ? Math.round((Number(a.percentage) || 0) / 25) : 0;
+  const quality = levelOf(numberOf(hass.states[e.air_quality]));
+  const state = offline
+    ? "Unavailable"
+    : !on
+      ? "Off"
+      : level
+        ? `${mode} · Level ${level}`
+        : `${mode} · no sensor value`;
+  return { offline, on, mode, auto: mode === "Auto", level, quality, state };
+};
+
+// a combined value sensor of a group: its value, how and of how many sensors
+const valueOf = (hass, id) => {
+  const st = id ? hass.states[id] : null;
+  const a = st?.attributes || {};
+  return { value: numberOf(st), how: COMBINE_SHORT[a.combine] || a.combine || "", count: (a.sensors || []).length };
+};
+
+// what a member purifier runs at, for the group card's chips
+const stepOf = (v) => (v.offline ? "Offline" : !v.on ? "Off" : v.manual ? v.speedLabel || "On" : v.mode);
+
+class LevoitGroupCard extends LevoitCardBase {
+  static getConfigForm() {
+    return {
+      schema: [
+        { name: "entity", required: true, selector: { entity: { domain: "fan", integration: "levoit_esphome" } } },
+        { name: "name", selector: { text: {} } },
+        {
+          name: "show",
+          selector: {
+            select: {
+              multiple: true,
+              mode: "list",
+              options: [
+                { value: "pm25", label: "PM2.5" },
+                { value: "aqi", label: "AQI index" },
+                { value: "cadr", label: "CADR" },
+                { value: "members", label: "Purifiers" },
+              ],
+            },
+          },
+        },
+        {
+          name: "controls",
+          selector: {
+            select: {
+              multiple: true,
+              mode: "list",
+              options: [
+                { value: "mode", label: "Auto / Manual" },
+                { value: "level", label: "Level" },
+              ],
+            },
+          },
+        },
+      ],
+      computeLabel: (s) => ({ entity: "Group (its fan)", name: "Name", show: "Show", controls: "Controls" })[s.name],
+      computeHelper: (s) => (s.name === "entity" ? "The fan of a Levoit ESPHome purifier group" : undefined),
+    };
+  }
+
+  static getStubConfig(hass) {
+    return { entity: groupFans(hass)[0] || "" };
+  }
+
+  getCardSize() {
+    const { rows } = this._size(5);
+    return rows <= 1 ? 1 : rows <= 3 ? 2 : rows <= 4 ? 5 : 6;
+  }
+
+  getGridOptions() {
+    return { columns: 12, rows: 5, min_columns: 3, min_rows: 1 };
+  }
+
+  // by its fan (the editor's entity), or by the group's id
+  get _group() {
+    const c = this._config || {};
+    return (
+      (this._snap?.groups || []).find(
+        (g) => (c.group && g.id === c.group) || (c.entity && g.entities?.fan === c.entity),
+      ) || null
+    );
+  }
+
+  _watched() {
+    const g = this._group;
+    const e = g?.entities || {};
+    return [this._config?.entity, e.fan, e.level, e.air_quality, e.pm25, e.aqi, e.cadr, ...(g?.members || [])].filter(
+      Boolean,
+    );
+  }
+
+  _onClick(ev) {
+    const el = ev.target.closest("[data-act]");
+    if (!el || el.disabled) return;
+    const fan = this._group?.entities?.fan;
+    if (!fan) return;
+    const { act, value } = el.dataset;
+    if (act === "more") this._moreInfo(fan);
+    else if (act === "member") this._moreInfo(value);
+    else if (act === "power")
+      this._call("fan", groupView(this._hass, this._group).on ? "turn_off" : "turn_on", { entity_id: fan });
+    else if (act === "mode") this._call("fan", "set_preset_mode", { entity_id: fan, preset_mode: value });
+    // a level is Manual at that level: 25 % per level
+    else if (act === "level") this._call("fan", "set_percentage", { entity_id: fan, percentage: Number(value) * 25 });
+  }
+
+  _render() {
+    if (!this._config) return;
+    const hass = this._hass;
+    const c = this._config;
+    const g = this._group;
+    let body = "";
+    if (!hass) body = "";
+    else if (!c.entity && !c.group) body = `<div class="msg">Pick a group</div>`;
+    else if (this._error && !this._snap) body = `<div class="msg">${esc(this._error)}</div>`;
+    else if (this._snap && !g) {
+      // a group made after the page loaded: ask once more
+      if (!this._retried && !this._loading) {
+        this._retried = true;
+        this._load(true);
+      }
+      body = `<div class="msg">${esc(`${c.entity || c.group} is not a Levoit ESPHome group`)}</div>`;
+    } else if (g) body = this._body(g);
+    this.shadowRoot.innerHTML = `<style>${BASE_STYLE}${CARD_STYLE}${GROUP_STYLE}</style><ha-card>${body}</ha-card>`;
+  }
+
+  _body(g) {
+    const hass = this._hass;
+    const c = this._config;
+    const show = new Set((c.show || GROUP_SHOW).map((s) => (s === "aqi_index" ? "aqi" : s)));
+    const controls = new Set(c.controls || GROUP_CONTROLS);
+    const v = groupView(hass, g);
+    const e = g.entities || {};
+    const name = c.name || g.name;
+    const pm = show.has("pm25") && e.pm25 ? valueOf(hass, e.pm25) : null;
+    // the purifiers' AQI index combined, else the group's own air quality (its thresholds)
+    const aqiIndex = show.has("aqi") && e.aqi ? levelOf(numberOf(hass.states[e.aqi])) : null;
+    const aqi = aqiIndex || (show.has("aqi") ? v.quality : null);
+    const aqiName = aqiIndex ? "AQI index" : "Air quality";
+    const cadr = show.has("cadr") && e.cadr ? numberOf(hass.states[e.cadr]) : null;
+    const purifiers = this._snap?.purifiers || [];
+    const members = (g.members || []).map((id) => {
+      const p = purifiers.find((x) => x.entity_id === id);
+      const mv = fanView(hass.states[id], p?.model);
+      return {
+        id,
+        name: p?.title || hass.states[id]?.attributes?.friendly_name || id,
+        step: stepOf(mv),
+        cls: mv.offline ? "err" : mv.on ? "run" : "",
+        offline: mv.offline,
+      };
+    });
+    const offlineCount = members.filter((m) => m.offline).length;
+    // the controls need the group on: its power button (or icon) turns it on
+    const dis = v.offline || !v.on ? "disabled" : "";
+    const { rows, columns } = this._size(5);
+    const layout = rows <= 1 ? "compact" : rows <= 3 ? "small" : columns >= 9 ? "large" : "medium";
+    const word = v.quality ? AQI_WORDS[v.quality] : "";
+    const status = v.offline ? "Unavailable" : !v.on ? "Off · purifiers left alone" : [v.state, word].filter(Boolean).join(" · ");
+    const short = !v.on ? v.state : [v.mode, v.level ? `L${v.level}` : null].filter(Boolean).join(" · ");
+    const pmText = pm?.value != null ? `${whole(pm.value)} µg/m³` : null;
+
+    const iconCls = `icn${v.offline ? " offline" : v.on ? " on" : ""}`;
+    const power = `<button class="pwr${v.on ? " on" : ""}" data-act="power" aria-pressed="${v.on}" aria-label="Group control" ${
+      v.offline ? "disabled" : ""
+    }>${icon("power")}</button>`;
+    const offlinePill = v.offline ? `<span class="off-pill"><span class="dot"></span>Offline</span>` : "";
+    const seg = (label, cls, items) =>
+      `<div class="seg${cls}" role="group" aria-label="${label}">${items
+        .map(
+          (it) =>
+            `<button class="${it.on ? "on" : ""}" aria-pressed="${it.on}"${it.aria ? ` aria-label="${it.aria}"` : ""} data-act="${
+              it.act
+            }" data-value="${esc(it.value)}" ${dis}>${esc(it.label)}</button>`,
+        )
+        .join("")}</div>`;
+    const modeItems = ["Auto", "Manual"].map((m) => ({ act: "mode", value: m, label: m, on: v.on && v.mode === m }));
+    const levelItems = GROUP_LEVELS.map((n) => ({
+      act: "level",
+      value: n,
+      label: String(n),
+      aria: `Level ${n}`,
+      on: v.on && v.level === n,
+    }));
+    // in Auto the level row shows the sensors' level, dimmed
+    const modeSeg = controls.has("mode") ? seg("Mode", " modes", modeItems) : "";
+    const levelSeg = controls.has("level") ? seg("Level", v.auto ? " dim" : "", levelItems) : "";
+
+    if (layout === "compact") {
+      const narrow = columns <= 3;
+      const text = v.offline ? "Offline" : [short, !narrow && v.on ? pmText : null].filter(Boolean).join(" · ");
+      return `<div class="compact${narrow ? " narrow" : ""}" data-act="more" role="button" tabindex="0" aria-label="${esc(name)}">
+        <span class="${iconCls} ${narrow ? "xs" : "sm"}" aria-hidden="true">${icon("group")}</span>
+        <div class="who"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st${v.offline ? " bad-text" : ""}">${esc(
+          text,
+        )}</div></div>
+      </div>`;
+    }
+    if (layout === "small") {
+      // Auto and the levels in one row: a level is Manual at that level
+      const one = [
+        ...(controls.has("mode") ? [{ act: "mode", value: "Auto", label: "Auto", on: v.on && v.auto }] : []),
+        ...(controls.has("level") ? levelItems.map((it) => ({ ...it, on: v.on && !v.auto && v.level === it.value })) : []),
+      ];
+      return `<div class="small">
+        <div class="head"><button class="${iconCls}" data-act="power" aria-pressed="${v.on}" aria-label="Group control ${esc(
+          name,
+        )}" ${v.offline ? "disabled" : ""}>${icon("group")}</button>
+          <div class="who" data-act="more"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st">${esc(
+            v.offline ? "Unavailable" : [short, v.on ? pmText : null].filter(Boolean).join(" · "),
+          )}</div></div>${offlinePill}</div>
+        ${one.length ? seg("Mode and level", "", one) : ""}
+      </div>`;
+    }
+    if (layout === "medium") {
+      const facts = [
+        `${members.length} purifier${members.length === 1 ? "" : "s"}`,
+        offlineCount ? `${offlineCount} offline` : "",
+        cadr != null ? `CADR <b>${whole(cadr)}</b> m³/h` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `<div class="medium">
+        <div class="head"><span class="${iconCls}" aria-hidden="true">${icon("group")}</span>
+          <div class="who" data-act="more"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st">${esc(
+            // the air quality word is next to the PM2.5 below
+            v.on ? v.state : status,
+          )}</div></div>
+          ${offlinePill || power}</div>
+        ${
+          pm?.value != null || v.quality
+            ? `<div class="big">${
+                pm?.value != null
+                  ? `<b>${whole(pm.value)}</b><span class="muted">PM2.5${pm.count > 1 ? ` · ${esc(pm.how)}` : ""}</span>`
+                  : ""
+              }${
+                v.quality
+                  ? `<span class="lvl"><span class="dot q${v.quality}"></span><span class="muted">${esc(word)}</span></span>`
+                  : ""
+              }</div>`
+            : ""
+        }
+        ${show.has("members") || cadr != null ? `<div class="facts">${facts}</div>` : ""}
+        <div class="ctl">${modeSeg}${levelSeg}</div>
+      </div>`;
+    }
+    // large
+    const stats = [
+      pm?.value != null
+        ? `<div class="stat"><b>${whole(pm.value)}</b><span>PM2.5${pm.count > 1 ? ` · ${esc(pm.how)} of ${pm.count}` : " µg/m³"}</span></div>`
+        : "",
+      aqi
+        ? `<div class="stat"><b>${aqi} <span class="dot q${aqi}"></span></b><span>${aqiName} · ${esc(AQI_WORDS[aqi])}</span></div>`
+        : "",
+      cadr != null ? `<div class="stat"><b>${whole(cadr)}</b><span>CADR m³/h · total</span></div>` : "",
+    ].filter(Boolean);
+    const bars = GROUP_LEVELS.map((n) => `<i class="${v.on && n <= v.level ? "f" : ""}"></i>`).join("");
+    const chips = show.has("members")
+      ? members
+          .map(
+            (m) =>
+              `<button class="mchip" data-act="member" data-value="${esc(m.id)}"><span class="dot ${m.cls}"></span><span class="trunc">${esc(
+                m.name,
+              )}</span><b>${esc(m.step)}</b></button>`,
+          )
+          .join("")
+      : "";
+    return `<div class="large">
+      <div class="head"><span class="${iconCls}" aria-hidden="true">${icon("group")}</span>
+        <div class="who" data-act="more"><div class="trunc nm lg">${esc(name)}</div>
+          <div class="status muted"><span>${esc(status)}</span>${
+            v.on ? `<span class="lv" role="img" aria-label="Level ${v.level} of 4">${bars}</span>` : ""
+          }</div></div>
+        ${offlinePill || power}</div>
+      ${stats.length ? `<div class="stats" style="--n:${stats.length}">${stats.join("")}</div>` : ""}
+      ${chips ? `<div class="mchips">${chips}</div>` : ""}
+      <div class="ctl row">${modeSeg}${levelSeg}</div>
+    </div>`;
+  }
+}
+
+const GROUP_STYLE = `
+.lv { display: inline-flex; gap: 3px; }
+.lv i { width: 14px; height: 6px; border-radius: 2px; background: var(--divider-color); }
+.lv i.f { background: var(--primary-color); }
+.mchips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 0; overflow: hidden; }
+.mchip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 10px; border: 0; border-radius: 10px;
+  background: var(--lv-track); color: var(--primary-text-color); font: inherit; font-size: 12px; cursor: pointer; }
+.mchip b { font-weight: 500; }
+.dot.run { background: var(--success-color, #43a047); } .dot.err { background: var(--error-color, #db4437); }
+.ctl.row .seg.modes { flex: none; }
+.seg.modes button { padding: 0 14px; }
+`;
+
+// --- the list card -----------------------------------------------------------------
+
+const LIST_CONTROLS = ["mode", "speed", "power"];
+
+class LevoitListCard extends LevoitCardBase {
+  static getConfigForm() {
+    return {
+      schema: [
+        { name: "title", selector: { text: {} } },
+        {
+          name: "items",
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "all", label: "Groups and purifiers" },
+                { value: "groups", label: "Groups" },
+                { value: "devices", label: "Purifiers" },
+              ],
+            },
+          },
+        },
+        { name: "nest_members", selector: { boolean: {} } },
+        {
+          name: "controls",
+          selector: {
+            select: {
+              multiple: true,
+              mode: "list",
+              options: [
+                { value: "mode", label: "Mode" },
+                { value: "speed", label: "Speed / level" },
+                { value: "power", label: "Power" },
+              ],
+            },
+          },
+        },
+      ],
+      computeLabel: (s) =>
+        ({ title: "Title", items: "Show", nest_members: "Purifiers under their group", controls: "Controls" })[s.name],
+      computeHelper: (s) =>
+        s.name === "items" ? "In YAML also a list of group ids and fan entity ids, in that order" : undefined,
+    };
+  }
+
+  static getStubConfig() {
+    return { title: "Air purifiers", items: "all" };
+  }
+
+  getCardSize() {
+    return 1 + this._rows().length;
+  }
+
+  getGridOptions() {
+    return { columns: 12, rows: "auto", min_columns: 6, min_rows: 2 };
+  }
+
+  // groups (with their members under them) and purifiers, each once
+  _rows() {
+    const snap = this._snap;
+    if (!snap) return [];
+    const c = this._config || {};
+    const items = c.items || "all";
+    const nest = c.nest_members !== false;
+    const purifiers = snap.purifiers || [];
+    const groups = (snap.groups || []).filter((g) => g.entities?.fan);
+    const rows = [];
+    const seen = new Set();
+    const addPurifier = (p, sub) => {
+      if (!p || seen.has(p.entity_id)) return;
+      seen.add(p.entity_id);
+      rows.push({ p, sub });
+    };
+    const addGroup = (g) => {
+      if (seen.has(`group:${g.id}`)) return;
+      seen.add(`group:${g.id}`);
+      rows.push({ g });
+      if (nest) for (const m of g.members || []) addPurifier(purifiers.find((p) => p.entity_id === m), true);
+    };
+    if (Array.isArray(items))
+      for (const id of items) {
+        const g = groups.find((x) => x.id === id || x.entities.fan === id);
+        if (g) addGroup(g);
+        else addPurifier(purifiers.find((p) => p.entity_id === id), false);
+      }
+    else {
+      if (items !== "devices") groups.forEach(addGroup);
+      if (items !== "groups") for (const p of purifiers) addPurifier(p, false);
+    }
+    return rows;
+  }
+
+  _watched() {
+    return this._rows().flatMap((r) =>
+      r.g ? [r.g.entities.fan, r.g.entities.air_quality, r.g.entities.pm25] : [r.p.entity_id, r.p.pm25, r.p.aqi],
+    ).filter(Boolean);
+  }
+
+  // one row: a group (Auto / Manual, levels) or a purifier (its modes, speeds)
+  _view(r) {
+    const hass = this._hass;
+    if (r.g) {
+      const v = groupView(hass, r.g);
+      const pmId = r.g.entities.pm25;
+      return {
+        id: r.g.entities.fan,
+        group: true,
+        name: r.g.name,
+        offline: v.offline,
+        on: v.on,
+        quality: v.quality,
+        pm: pmId ? numberOf(hass.states[pmId]) : null,
+        hasPm: Boolean(pmId),
+        modes: ["Auto", "Manual"],
+        mode: v.on ? v.mode : "",
+        speeds: GROUP_LEVELS.map((n) => ({ value: String(n), label: `Level ${n}` })),
+        speed: v.on && v.level ? String(v.level) : "",
+        speedName: "Level",
+        count: 4,
+      };
+    }
+    const p = r.p;
+    const v = fanView(hass.states[p.entity_id], p.model);
+    return {
+      id: p.entity_id,
+      group: false,
+      sub: r.sub,
+      name: p.title,
+      offline: v.offline,
+      on: v.on,
+      quality: p.aqi ? levelOf(numberOf(hass.states[p.aqi])) : null,
+      pm: p.pm25 ? numberOf(hass.states[p.pm25]) : null,
+      hasPm: Boolean(p.pm25),
+      modes: v.modes,
+      mode: v.on ? v.mode : "",
+      speeds: v.speeds.map((s) => ({ value: String(s.value), label: s.label === "Turbo" ? "Turbo" : `Speed ${s.label}` })),
+      speed: v.on && v.speed ? String(v.speed) : "",
+      speedName: "Speed",
+      count: v.count,
+    };
+  }
+
+  _onClick(ev) {
+    const el = ev.target.closest("[data-act]");
+    if (!el || el.disabled) return;
+    const { act, id } = el.dataset;
+    if (act === "more") this._moreInfo(id);
+    else if (act === "power")
+      this._call("fan", this._hass.states[id]?.state === "on" ? "turn_off" : "turn_on", { entity_id: id });
+  }
+
+  _onChange(ev) {
+    const sel = ev.target.closest("select[data-act]");
+    if (!sel || !sel.value) return;
+    sel.blur();
+    const { act, id, count } = sel.dataset;
+    if (act === "mode") this._call("fan", "set_preset_mode", { entity_id: id, preset_mode: sel.value });
+    else if (act === "speed") {
+      if (sel.value === "turbo") this._call("fan", "set_preset_mode", { entity_id: id, preset_mode: "Turbo" });
+      // the lowest percentage of that speed or level
+      else
+        this._call("fan", "set_percentage", {
+          entity_id: id,
+          percentage: Math.floor((Number(sel.value) * 100) / Number(count)),
+        });
+    }
+  }
+
+  _render() {
+    if (!this._config) return;
+    let body = "";
+    if (!this._hass) body = "";
+    else if (this._error && !this._snap) body = `<div class="msg">${esc(this._error)}</div>`;
+    else if (this._snap) body = this._body();
+    this.shadowRoot.innerHTML = `<style>${BASE_STYLE}${CARD_STYLE}${LIST_STYLE}</style><ha-card>${body}</ha-card>`;
+  }
+
+  _body() {
+    const c = this._config;
+    const controls = new Set(c.controls || LIST_CONTROLS);
+    const views = this._rows().map((r) => this._view(r));
+    const { columns } = this._size(0);
+    const narrow = columns <= 6;
+    const devices = views.filter((v) => !v.group);
+    const offline = devices.filter((v) => v.offline).length;
+    const groups = views.length - devices.length;
+    const summary = devices.length
+      ? `${devices.filter((v) => v.on).length} of ${devices.length} purifier${devices.length === 1 ? "" : "s"} running${
+          offline ? ` · ${offline} offline` : ""
+        }`
+      : `${groups} group${groups === 1 ? "" : "s"}`;
+    const title = c.title ?? "Air purifiers";
+    const head = `<div class="lhead">${title ? `<div class="trunc nm lg">${esc(title)}</div>` : ""}<div class="trunc muted st">${esc(
+      summary,
+    )}</div></div>`;
+    if (!views.length) return `<div class="list">${head}<div class="msg">No Levoit purifiers</div></div>`;
+
+    const select = (v, act, label, options, value, width) =>
+      `<span class="sel sm"${width ? ` style="${width}"` : ""}><select data-act="${act}" data-id="${esc(v.id)}" data-count="${
+        v.count
+      }" aria-label="${esc(`${label} for ${v.name}`)}" ${v.offline ? "disabled" : ""}>${[
+        ...(value ? [] : [{ value: "", label: v.on || act === "speed" ? "—" : "Off" }]),
+        ...options,
+      ]
+        .map((o) => `<option value="${esc(o.value)}"${o.value === value ? " selected" : ""}>${esc(o.label)}</option>`)
+        .join("")}</select>${icon("chevron")}</span>`;
+    const row = (v) => {
+      const air = v.offline
+        ? "Unavailable"
+        : v.pm != null
+          ? `PM2.5 ${whole(v.pm)} µg/m³${v.quality ? ` · ${AQI_WORDS[v.quality]}` : ""}`
+          : v.quality
+            ? AQI_WORDS[v.quality]
+            : v.hasPm
+              ? "PM2.5 —"
+              : "No air sensor";
+      const who = `<span class="icn xs${v.offline ? " offline" : v.on ? " on" : ""}" aria-hidden="true">${icon(
+        v.group ? "group" : "purifier",
+      )}</span>
+        <div class="who" data-act="more" data-id="${esc(v.id)}"><div class="trunc nm${v.group ? " grp" : ""}">${esc(v.name)}</div>
+          <div class="trunc air${v.offline ? " bad-text" : " muted"}"><span class="dot${v.quality ? ` q${v.quality}` : ""}"></span>${esc(
+            air,
+          )}</div></div>`;
+      // no modes (offline, or a purifier without any): an empty slot keeps the columns
+      const mode = !controls.has("mode")
+        ? ""
+        : v.modes.length
+          ? select(v, "mode", "Mode", v.modes.map((m) => ({ value: m, label: m })), v.mode, narrow ? "width:84px" : "width:78px")
+          : `<span class="slot" style="${narrow ? "width:84px" : "width:78px"}"></span>`;
+      const speed = controls.has("speed")
+        ? select(v, "speed", v.speedName, v.speeds, v.speed, narrow ? "flex:1;min-width:0" : "width:86px")
+        : "";
+      const power = controls.has("power")
+        ? `<button class="pwr sm${v.on ? " on" : ""}" data-act="power" data-id="${esc(v.id)}" aria-pressed="${v.on}" aria-label="${esc(
+            `Power ${v.name}`,
+          )}" ${v.offline ? "disabled" : ""}>${icon("power")}</button>`
+        : "";
+      if (narrow)
+        return `<div class="nrow${v.sub ? " sub" : ""}"><div class="line">${who}${power}</div>${
+          mode || speed ? `<div class="line ctl2">${mode}${speed}</div>` : ""
+        }</div>`;
+      return `<div class="lrow${v.sub ? " sub" : ""}">${who}${mode}${speed}${power}</div>`;
+    };
+    return `<div class="list${narrow ? " narrow" : ""}">${head}<div class="rows">${views.map(row).join("")}</div></div>`;
+  }
+}
+
+const LIST_STYLE = `
+.list { height: 100%; box-sizing: border-box; padding: 14px 16px; display: flex; flex-direction: column; }
+.list.narrow { padding: 12px; }
+.lhead { padding-bottom: 10px; }
+.list.narrow .lhead { padding-bottom: 8px; }
+.list.narrow .nm.lg { font-size: 15px; }
+.lhead .st { margin-top: 2px; }
+.rows { min-height: 0; overflow-y: auto; }
+.lrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--divider-color); }
+.lrow.sub { padding-left: 22px; }
+.nrow { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-top: 1px solid var(--divider-color); }
+.nrow.sub { padding-left: 14px; }
+.line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.line.ctl2 { gap: 6px; }
+.nm.grp { font-weight: 500; }
+.lrow .nm:not(.grp), .nrow .nm:not(.grp) { font-weight: 400; }
+.air { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.slot { flex: none; }
+.pwr.sm { width: 36px; height: 36px; }
+.pwr.sm .i { width: 16px; height: 16px; }
+.sel.sm select { height: 28px; width: 100%; padding: 0 20px 0 8px; border-radius: 8px; font-size: 12px; }
+.sel.sm .i { width: 14px; height: 14px; right: 5px; top: 7px; }
+`;
+
 customElements.get("levoit-purifier-card") || customElements.define("levoit-purifier-card", LevoitPurifierCard);
+customElements.get("levoit-group-card") || customElements.define("levoit-group-card", LevoitGroupCard);
+customElements.get("levoit-list-card") || customElements.define("levoit-list-card", LevoitListCard);
 
 window.customCards = window.customCards || [];
-if (!window.customCards.some((c) => c.type === "levoit-purifier-card"))
-  window.customCards.push({
+for (const card of [
+  {
     type: "levoit-purifier-card",
     name: "Levoit purifier",
     description: "A Levoit purifier: power, PM2.5, AQI, CADR, filter, speed and mode. From 12 × 4 down to 3 × 1.",
-    preview: true,
-    documentationURL: DOC_URL,
-  });
+  },
+  {
+    type: "levoit-group-card",
+    name: "Levoit group",
+    description: "A Levoit ESPHome purifier group: its air, CADR, purifiers, Auto / Manual and level. From 12 × 5 down to 3 × 1.",
+  },
+  {
+    type: "levoit-list-card",
+    name: "Levoit list",
+    description: "Groups and purifiers in rows, each with mode, speed or level, and power.",
+  },
+])
+  if (!window.customCards.some((c) => c.type === card.type))
+    window.customCards.push({ ...card, preview: true, documentationURL: DOC_URL });
