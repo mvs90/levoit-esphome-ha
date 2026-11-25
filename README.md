@@ -18,8 +18,8 @@ quality history and all its settings, grouped instead of one long list.
 [More](#use-and-set-up-your-purifiers)
 
 <p>
-  <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7" width="49%" alt="The sidebar page: seven purifiers as cards, each with power, mode and speed, PM2.5, AQI and CADR">
-  <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.7" width="49%" alt="The Everest Air's page: power, mode and speed, PM2.5, PM1.0, PM10, AQI and CADR, its group, the 24 hour history and the settings">
+  <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.8" width="49%" alt="The sidebar page: seven purifiers as cards, each with power, mode and speed, PM2.5, AQI and CADR">
+  <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.8" width="49%" alt="The Everest Air's page: power, mode and speed, PM2.5, PM1.0, PM10, AQI and CADR, its group, the 24 hour history and the settings">
 </p>
 
 ### 2. Run several purifiers as one group
@@ -31,7 +31,7 @@ clears. Each group is also one fan entity, so a dashboard, voice or an
 automation runs the whole room like one purifier.
 [More](#purifier-groups)
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="49%" alt="Purifier groups: a group of two purifiers in Auto at level 3 of 4, and a suggested room">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.8" width="49%" alt="Purifier groups: a group of two purifiers in Auto at level 3 of 4, and a suggested room">
 
 ### 3. Manage and update the devices
 
@@ -42,7 +42,7 @@ Device Builder and uploads it over the air. *Add device* makes the config for
 a new purifier.
 [More](#manage-and-update-the-devices)
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.7" width="49%" alt="Updates and config: every device with its channel, installed and latest version, and Compile and Update">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.8" width="49%" alt="Updates and config: every device with its channel, installed and latest version, and Compile and Update">
 
 > **Early version.** Part of the
 > [firmware update plan](https://github.com/tuct/levoit/blob/main/docs/firmware-updates.md).
@@ -67,7 +67,7 @@ the model show an update that is out and the purifier's group (tinted while
 the group runs it). Offline cards keep their controls, greyed out. Click a
 card for the device's page.
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.7" width="720" alt="Devices: purifiers as cards with power, mode and speed, PM2.5, AQI and CADR">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/overview.png?v=0.6.8" width="720" alt="Devices: purifiers as cards with power, mode and speed, PM2.5, AQI and CADR">
 
 ### Device page
 
@@ -89,7 +89,7 @@ Assistant's device page. It needs no Device Builder config: the settings are
 found by their entity names, as the tuct/levoit configs name them (or as the
 device's config does, when there is one).
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.7" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.8" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
 
 ## Purifier groups
 
@@ -117,12 +117,14 @@ with the page closed and after a restart.
   sensors' level without waiting for the hold time, also for purifiers that
   were changed by hand.
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.7" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/groups.png?v=0.6.8" width="720" alt="Purifier groups: each group with its level, reason, sensors and purifiers">
 
 Each group has a page of its own: power, Auto or Manual and the level, a tile
 per sensor type with the group's combined value and the purifiers' total
 CADR, their history over 24 hours or 7 days with the level as a band, and its
 purifiers with their state, sensors and filter. *Edit group* opens the editor.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-page.png?v=0.6.8" width="720" alt="A group's page: power, Auto or Manual and level 1 to 4, tiles for PM2.5, AQI index and CADR, the 24 hour history with the level as a band, and its two purifiers">
 
 The editor picks the sensors from the purifiers and takes others from Home
 Assistant, sets how several sensors of one type are combined, the thresholds,
@@ -130,7 +132,7 @@ the hold time and each purifier's lowest and highest step, and shows live what
 the group would do right now. Rooms in Home Assistant with 2 or more purifiers
 are suggested as groups.
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-editor.png?v=0.6.7" width="720" alt="The group editor: purifiers, sensors, thresholds, the speed each purifier runs per level, and what the group would do now">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-editor.png?v=0.6.8" width="720" alt="The group editor: purifiers, sensors, thresholds, the speed each purifier runs per level, and what the group would do now">
 
 Each group gets a device of its name, for dashboards, voice and automations:
 
@@ -177,6 +179,8 @@ shows as the top speed (the Everest Air's Turbo mode, the Eleva's level 4).
 In Sleep, Auto or Pet the speeds are dimmed and show what it runs at; picking
 one switches to Manual.
 
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/cards-purifier.png?v=0.6.8" width="720" alt="The purifier card in its sizes: large with PM2.5, AQI, CADR, speeds and mode; small with the speeds; medium with PM2.5 large, the speeds and the modes; compact with the state only">
+
 ### Group card
 
 ```yaml
@@ -199,6 +203,8 @@ the group's control: off lets go of the purifiers and greys out the controls.
 A level switches the group to Manual at that level. Without an AQI index the
 group shows its air quality (its own thresholds, 1–4).
 
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/cards-group.png?v=0.6.8" width="720" alt="The group card in its sizes: large with the level bars, PM2.5, AQI index, CADR, its purifiers, Auto or Manual and the levels; medium; small with Auto and the levels in one row; compact">
+
 ### List card
 
 ```yaml
@@ -214,6 +220,8 @@ grid_options:
 
 A row per group and purifier: its PM2.5 and air quality, the mode and the
 speed (for a group the level) as lists, and power. The name opens the dialog.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/cards-list.png?v=0.6.8" width="720" alt="The list card: a group with its two purifiers under it, then the other purifiers, each with PM2.5, mode, speed or level and power; narrow at 6 columns with the lists on a second line">
 
 ## Manage and update the devices
 
@@ -235,7 +243,7 @@ The sidebar page's third tab has:
 * links to each device's page, the Device Builder and Add device; *check now*
   reads the latest versions from GitHub without waiting for the 6 hours
 
-<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.7" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.8" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
 
 ### Extra ESP or original ESP
 
@@ -593,8 +601,11 @@ pip install playwright
 HA_URL=http://homeassistant.local:8123 HA_TOKEN=<token> python scripts/screenshots.py
 ```
 
-It saves `overview.png`, `device-page.png`, `groups.png`, `group-editor.png` and
-`panel-updates.png` to `images/`. `--device` and `--group` pick which device and
-group, `--only overview groups` takes some, `--dark` uses the dark theme,
+It saves `overview.png`, `device-page.png`, `groups.png`, `group-page.png`,
+`group-editor.png` and `panel-updates.png` to `images/`, and the dashboard cards
+in their sizes as `cards-purifier.png`, `cards-group.png` and `cards-list.png`
+(drawn on the page as a sections view would, nothing is added to a dashboard).
+Home Assistant has to run the version in the manifest. `--device` and `--group`
+pick which device and group, `--only overview groups` takes some, `--dark` uses the dark theme,
 `--sidebar` keeps Home Assistant's sidebar and `--scale 2` makes them
 sharper.
