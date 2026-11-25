@@ -149,6 +149,72 @@ are dropped, PM2.5 keeps where levels 2–4 started, and the max speed and *Up
 to* become each purifier's highest speed. Level 1 now runs the purifiers at
 their lowest step instead of letting go.
 
+## Dashboard cards
+
+Cards for any Home Assistant dashboard, for every user (not only admins). The
+integration loads them on every page: no resource to add. In the dashboard
+editor, *Add card* lists them as **Levoit purifier**, **Levoit group** and
+**Levoit list**.
+
+### Purifier card
+
+```yaml
+type: custom:levoit-purifier-card
+entity: fan.levoit_core600s_c3_fan   # the purifier's fan
+show: [pm25, aqi, cadr, filter, group]   # default: all
+controls: [speed, mode]                  # default: both
+grid_options:
+  columns: 12   # 6 = medium / small, 3 = compact
+  rows: 4       # 4 = large / medium, 2 = small, 1 = compact
+```
+
+The card follows its size in a sections view: **large** (12 × 4) with PM2.5,
+AQI and CADR, the speeds and a mode list; **medium** (6 × 4) with PM2.5 large,
+CADR, filter, speeds and modes; **small** (6 × 2) with the speeds; **compact**
+(6 × 1 or 3 × 1) with the state only. The icon or the name opens the fan's
+dialog; on the small and compact cards the icon turns it on and off. Turbo
+shows as the top speed (the Everest Air's Turbo mode, the Eleva's level 4).
+In Sleep, Auto or Pet the speeds are dimmed and show what it runs at; picking
+one switches to Manual.
+
+### Group card
+
+```yaml
+type: custom:levoit-group-card
+entity: fan.living_room   # the group's fan (or group: <its id>)
+show: [pm25, aqi, cadr, members]   # default: all
+controls: [mode, level]            # default: both
+grid_options:
+  columns: 12   # 6 = medium / small, 3 = compact
+  rows: 5       # 4 = medium, 2 = small, 1 = compact
+```
+
+**Large** (12 × 5): the status with the level as 4 bars, PM2.5 (and how it is
+combined, "avg of 4"), the AQI index, the total CADR, a chip per purifier with
+what it runs at, Auto / Manual and the levels. **Medium** (6 × 4): PM2.5 large
+with the air quality, the purifiers and CADR, Auto / Manual and the levels.
+**Small** (6 × 2): Auto and the levels in one row. **Compact** (6 × 1 or
+3 × 1): "Auto · L4 · 360 µg/m³". The power button (on small cards the icon) is
+the group's control: off lets go of the purifiers and greys out the controls.
+A level switches the group to Manual at that level. Without an AQI index the
+group shows its air quality (its own thresholds, 1–4).
+
+### List card
+
+```yaml
+type: custom:levoit-list-card
+title: Air purifiers
+items: all            # groups / devices / a list of group ids and fan ids
+nest_members: true    # the purifiers under their group
+controls: [mode, speed, power]
+grid_options:
+  columns: 12         # 6 = narrow: the controls on a second line
+  rows: auto
+```
+
+A row per group and purifier: its PM2.5 and air quality, the mode and the
+speed (for a group the level) as lists, and power. The name opens the dialog.
+
 ## Manage and update the devices
 
 Firmware updates for every purifier, in Home Assistant's *Updates* and on
