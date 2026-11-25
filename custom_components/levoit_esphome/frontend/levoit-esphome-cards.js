@@ -745,7 +745,7 @@ class LevoitGroupCard extends LevoitCardBase {
               }</div>`
             : ""
         }
-        ${show.has("members") || cadr != null ? `<div class="facts">${facts}</div>` : ""}
+        ${show.has("members") || cadr != null ? `<div class="facts"><span>${facts}</span></div>` : ""}
         <div class="ctl">${modeSeg}${levelSeg}</div>
       </div>`;
     }
