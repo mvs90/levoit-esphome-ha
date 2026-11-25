@@ -77,7 +77,7 @@ const deviceShape = (model) => {
   if (m === "ELEVA300X") return "eleva";
   if (m.startsWith("VITAL") || m === "EVERESTAIR") return "tower";
   if (m === "SPROUT") return "sprout";
-  if (m === "SUPERIOR6000S") return "humidifier";
+  if (m === "SUPERIOR6000S" || m === "LV600S") return "humidifier";
   if (m.startsWith("AC0")) return "philips";
   return "core";
 };
@@ -1116,7 +1116,7 @@ class LevoitEsphomePanel extends HTMLElement {
     let offline = 0;
     let worst = null;
     for (const d of devices) {
-      const fan = this._dstate(d, "fan.fan");
+      const fan = this._dstate(d, "fan.fan") || this._dstate(d, "switch.power");
       if (!fan) continue;
       if (this._isOffline(d, fan)) {
         offline++;
@@ -1158,12 +1158,13 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _deviceCard(d) {
     const fan = this._dstate(d, "fan.fan");
-    const on = fan?.state === "on";
+    const powerState = fan || this._dstate(d, "switch.power");
+    const on = powerState?.state === "on";
     const a = fan?.attributes || {};
     const step = Number(a.percentage_step) || 25;
     const count = Math.max(1, Math.round(100 / step));
     const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
-    const offline = this._isOffline(d, fan);
+    const offline = this._isOffline(d, powerState);
     // speed buttons and the mode dropdown; picking either turns it on too
     const dis = offline ? "disabled" : "";
     const presets = a.preset_modes || [];
@@ -1217,15 +1218,15 @@ class LevoitEsphomePanel extends HTMLElement {
       }</div><div class="dc-label">${esc(label)}${unit ? ` ${esc(unit)}` : ""}</div></div>`;
     };
     const aqiKey = levelSt || d.controls?.["sensor.aqi"] ? "sensor.aqi" : "sensor.aqi_index";
-    const stats = [
+    const stats = d.model === "LV600S" ? [stat("sensor.humidity", "Humidity"), stat("sensor.temperature", "Temperature")].join("") : [
       stat("sensor.pm25", "PM2.5"),
       stat(aqiKey, "AQI", dotLevel),
       stat("sensor.current_cadr", "CADR"),
     ].join("");
-    const power = fan
+    const power = powerState
       ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? `Turn ${esc(d.title)} off` : `Turn ${esc(d.title)} on`}" title="${
           on ? "Turn off" : "Turn on"
-        }" ${dis} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
+        }" ${dis} ${this._svc(fan ? "fan" : "switch", on ? "turn_off" : "turn_on", powerState.entity_id)}>${icon("power")}</button>`
       : "";
     // under the name: model and filter; a line below: timer, update, offline and group
     const filter =
@@ -2136,14 +2137,14 @@ class LevoitEsphomePanel extends HTMLElement {
     );
   }
 
-  _choices(key, label, hint, { dim = false, labels = {} } = {}) {
+  _choices(key, label, hint, { dim = false, labels = {}, disabledOptions = [] } = {}) {
     const st = this._state(key);
     if (!st) return "";
     const off = !this._usable(st) || dim;
     const buttons = (st.attributes.options || [])
       .map(
         (option) =>
-          `<button class="seg${option === st.state ? " on" : ""}" ${off ? "disabled" : ""} ${this._svc(
+          `<button class="seg${option === st.state ? " on" : ""}" ${off || disabledOptions.includes(option) ? "disabled" : ""} ${this._svc(
             "select",
             "select_option",
             st.entity_id,
@@ -2262,6 +2263,7 @@ class LevoitEsphomePanel extends HTMLElement {
         <p class="muted">Its settings are on the Home Assistant device page.</p>
         ${haLink}
       </div>`;
+    if (page.model === "LV600S") return this._humidifierPage();
     const settings = Object.keys(page.controls).filter((key) => !key.startsWith("text_sensor."));
     if (!settings.length)
       return `<div class="card empty">
@@ -2386,6 +2388,31 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       ${vent}
     </div>`;
+  }
+
+  _humidifierPage() {
+    const unsafe = ["binary_sensor.water_tank_empty", "binary_sensor.tank_removed", "binary_sensor.mcu_fault"]
+      .some((key) => this._state(key)?.state === "on");
+    const sleep = ["Humidity Sleep", "Schlaf"].includes(this._state("select.humidifier_mode")?.state);
+    return `<div class="card"><h2>${esc(this._page.title || "LV600S")}</h2>
+      ${this._tile("sensor.humidity", "Humidity")}${this._tile("sensor.temperature", "Temperature")}</div>
+      <div class="sections">${this._section("Humidifier", [
+        this._toggle("switch.power", "Power", "MCU-confirmed state"),
+        this._choices("select.humidifier_mode", "Mode", "Original Auto is reported only", { dim: unsafe,
+          disabledOptions: ["Auto (read only)", "Auto (Original)", "Unknown", "Unbekannt"] }),
+        this._slider("number.humidity_target", "Target humidity", "40–80 %, in Humidity mode", { dim: unsafe, unit: "%" }),
+        this._stepper("number.mist_level", "Mist level", "1–9 internal levels", { dim: unsafe || sleep }),
+        this._stepper("number.warm_level", "Warm mist", "Retained setting, not a measured temperature", { dim: unsafe || sleep }),
+      ])}${this._section("Timer", [
+        this._stepper("number.timer", "Turn off in", "0 cancels; at most 12 hours"),
+        this._readout("sensor.timer_remaining_seconds", "Remaining"),
+      ])}${this._displaySection()}${this._section("Appliance status", [
+        this._readout("binary_sensor.water_tank_empty", "Water tank empty"),
+        this._readout("binary_sensor.tank_removed", "Tank removed"),
+        this._readout("binary_sensor.humidifying", "Humidifying"),
+        this._readout("binary_sensor.heating_enabled", "Heating enabled"),
+        this._readout("binary_sensor.mcu_connection", "MCU connection"),
+      ])}${this._infoSection()}</div>`;
   }
 
   _autoSection() {

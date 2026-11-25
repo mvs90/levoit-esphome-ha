@@ -522,3 +522,20 @@ independently of API encryption. They never replace it with password-free OTA.
 Unsupported encryption layouts/options fail before writing or uploading: remove
 the template marker and maintain such a config as a custom config. This needs an
 ESPHome Device Builder that supports encrypted native OTA.
+
+### LV600S development support
+
+The matching firmware fork adds the LV600S (`lv600s_humidifier`, model `LV600S`),
+separate from the Superior 6000S. This integration recognises it by its component
+or Model/ESP Version sensor, maps its nested diagnostics and template controls,
+and displays humidity, temperature, power, modes, mist, warmth and timer settings.
+It does not treat the humidifier as a fan or include it in purifier groups.
+Original Auto and Unknown are read-only choices. Local/pinned owner configs keep
+their existing update restrictions and are never rewritten as an upstream template.
+
+Development only: the firmware contribution must land before its template is
+available in tuct/levoit. Use Main while it is unreleased; select Stable only once
+that release includes the component. Both new firmware and this device UI need
+hardware validation before the contribution is submitted upstream. Existing
+ESPHome device identities, keys, custom partition tables and automations must be
+preserved during an owner's migration.
