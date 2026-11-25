@@ -96,6 +96,7 @@ class ConfigValues:
     api_key: Value | None = None  # None: no API encryption
     ota_password: Value | None = None  # None: no OTA password
     channel: str | None = None  # None: as in the template (stable)
+    ota_encryption_key: Value | None = None  # required encrypted native OTA
 
 
 @dataclass(frozen=True)
@@ -191,13 +192,31 @@ def config_values(config_text: str) -> ConfigValues:
     ):
         ota_password = _value(password.group(1))
 
+    ota_encryption_key = None
+    if ota is not None and re.search(r"(?m)^\s+encryption:", ota):
+        # Only the known native-OTA shape can be safely rendered. Fail before a
+        # config write instead of silently turning encryption into open OTA.
+        platforms = re.findall(r"(?m)^  - platform:\s*(\S+)", ota)
+        match = re.search(r"(?m)^    encryption:[ \t]*\n      key:[ \t]*(.+?)[ \t]*$", ota)
+        if platforms != ["esphome"] or match is None or ota_password is not None:
+            raise TemplateError("unsupported encrypted OTA configuration; use a custom config")
+        if re.search(r"(?m)^      (?!key:|#)\S", ota):
+            raise TemplateError("unsupported OTA encryption options; use a custom config")
+        ota_encryption_key = _value(match.group(1))
+
     channel = None
     if (ext := _block(config_text, "external_components")) is not None and (
         ref := re.search(r"(?m)^\s+ref:\s*(\S+)", ext)
     ):
         channel = ref.group(1)
 
-    return ConfigValues(name=name, api_key=api_key, ota_password=ota_password, channel=channel)
+    return ConfigValues(
+        name=name,
+        api_key=api_key,
+        ota_password=ota_password,
+        channel=channel,
+        ota_encryption_key=ota_encryption_key,
+    )
 
 
 # --- rendering ----------------------------------------------------------------
@@ -320,7 +339,16 @@ def _apply_values(text: str, values: ConfigValues) -> str:
             r"^    key: !secret api_key[ \t]*$", f"    key: {values.api_key.yaml}", text, "api key"
         )
 
-    if values.ota_password is None:
+    if values.ota_encryption_key is not None:
+        if values.ota_password is not None:
+            raise TemplateError("OTA encryption and password must not be combined")
+        text = _sub_once(
+            r"^    password: !secret ota_password[ \t]*$",
+            "    encryption:\n      key: " + values.ota_encryption_key.yaml,
+            text,
+            "ota encryption key",
+        )
+    elif values.ota_password is None:
         text = _sub_once(r"^    password: !secret ota_password[ \t]*\n", "", text, "ota password")
     else:
         text = _sub_once(

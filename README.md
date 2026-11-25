@@ -614,3 +614,11 @@ Home Assistant has to run the version in the manifest. `--device` and `--group`
 pick which device and group, `--only overview groups` takes some, `--dark` uses the dark theme,
 `--sidebar` keeps Home Assistant's sidebar and `--scale 2` makes them
 sharper.
+
+### Encrypted native OTA
+
+Template refreshes preserve a native OTA `encryption.key` (inline or `!secret`),
+independently of API encryption. They never replace it with password-free OTA.
+Unsupported encryption layouts/options fail before writing or uploading: remove
+the template marker and maintain such a config as a custom config. This needs an
+ESPHome Device Builder that supports encrypted native OTA.
