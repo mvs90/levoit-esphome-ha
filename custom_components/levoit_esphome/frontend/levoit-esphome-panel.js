@@ -28,6 +28,12 @@ const CHANNEL_LABELS = {
   pinned: "Pinned",
   local: "Local",
 };
+const NORMAL_PURIFIER_STATUS = new Set([
+  "ok",
+  "kein gemeldeter sensorfehler",
+  "keine mcu-stoerung",
+  "keine mcu-störung",
+]);
 
 const ICONS = {
   menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
@@ -2654,7 +2660,10 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._state("binary_sensor.cover_open")?.state === "on")
       alerts.push("The cover is open: the purifier stays off until it is closed.");
     const error = this._state("text_sensor.error_message");
-    if (this._usable(error) && !/^ok$/i.test(error.state)) alerts.push(`Error: ${error.state}`);
+    if (this._usable(error)) {
+      const status = error.state.trim();
+      if (status && !NORMAL_PURIFIER_STATUS.has(status.toLowerCase())) alerts.push(`Error: ${status}`);
+    }
     if (this._state("binary_sensor.filter_low")?.state === "on")
       alerts.push("The filter is nearly used up: time for a new one.");
     return alerts.map((text) => `<div class="notice warn">${esc(text)}</div>`).join("");
