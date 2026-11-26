@@ -547,29 +547,32 @@ underlying mode select can be hidden from the Home Assistant interface while
 remaining available to existing automations.
 
 **English.** The LV600S card shows the tank state next to the model, in the
-same position as the filter indicator on purifiers. The tank icon and text show
-whether the tank is installed or removed and whether water is available. The card
-offers three mist presets and an operating mode selector. Choosing a mist
+same position as the filter indicator on purifiers. A drop shows whether water
+is available or empty. If the tank is missing, a tank icon replaces the water
+status. The card offers three mist presets and an operating mode selector. Choosing a mist
 preset starts the unit if needed and waits for the device to confirm Manual
-before sending the level. The detail header shows the same mist presets and
-warm mist levels 1–3 plus Off. Below the 24-hour or 7-day history, the timer
-provides compact presets and a minute slider. Configuration contains the
+before sending the level. The detail header shows mist and warm mist to the
+right of the operating mode when space allows. Below the 24-hour or 7-day
+history, the timer uses the purifier's presets and shows the remaining time
+with a progress bar when the start is known. Configuration contains the
 target humidity and display controls. The history shows humidity, temperature
 and both device-reported mist settings, with gaps for unavailable readings.
 
 **Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
-an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
-zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
-ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+an derselben Stelle wie die Filteranzeige der Luftreiniger. Ein Tropfen zeigt
+„Wasser vorhanden“ oder „Wasser leer“. Fehlt der Tank, erscheint das
+Tank-Symbol mit „Tank fehlt“. Auf der Karte lassen sich drei Nebelstufen und
+der Betriebsmodus wählen.
 Bei Wahl einer Nebelstufe startet das Gerät bei Bedarf und bestätigt zuerst
 den Modus **Manuell**. Danach wird die Stufe gesendet.
 **Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
 **Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
-Der Kopf der Detailansicht zeigt die drei Nebelstufen sowie Warmnebel 1–3 und
-Aus. Der Verlauf zeigt Luftfeuchtigkeit, Temperatur und beide gemeldeten
-Stufen über 24 Stunden oder 7 Tage. Fehlende Messwerte erscheinen als Lücken.
-Darunter stehen kompakte Zeitvorgaben und ein Schieberegler für die
-Timerminuten. Zielfeuchte und Display stehen unter Konfiguration.
+Bei genügend Platz stehen Nebel- und Warmnebelstufen rechts neben der
+Moduswahl. Der Verlauf zeigt Luftfeuchtigkeit, Temperatur und beide
+gemeldeten Stufen über 24 Stunden oder 7 Tage. Fehlende Messwerte erscheinen
+als Lücken. Der Timer darunter nutzt dieselben Zeitvorgaben wie die
+Luftreiniger und zeigt bei bekanntem Timerstart einen Fortschrittsbalken.
+Zielfeuchte und Display stehen unter Konfiguration.
 
 On the owner's LV600S with firmware `1.2.06-mist-controls`, Home Assistant
 confirmed the switch from Auto to Manual and the subsequent mist level.

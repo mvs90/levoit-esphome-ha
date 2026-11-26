@@ -68,7 +68,6 @@ const ICONS = {
   water: "M12 2C9 6 5 10 5 15a7 7 0 0 0 14 0c0-5-4-9-7-13Z",
   waterEmpty: "M12 2C9 6 5 10 5 15a7 7 0 0 0 14 0c0-5-4-9-7-13Zm0 3.5c2.7 3.5 5 6.3 5 9.5a5 5 0 0 1-10 0c0-3.2 2.3-6 5-9.5ZM9 14h6v2H9Z",
   tankOut: "M12 1l4 4-1.4 1.4L13 4.8V10h-2V4.8L9.4 6.4 8 5ZM5 11h2v9h10v-9h2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2Z",
-  tank: "M5 4h14v2h-1v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6H5Zm3 2v14h8V6Z",
 };
 
 // Small outline drawings per purifier family for the overview (48 x 48, drawn
@@ -114,6 +113,22 @@ const formatMinutes = (minutes) => {
   const m = Math.round(minutes);
   if (m < 60) return `${m} min`;
   return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
+};
+
+const TIMER_PRESETS = [30, 60, 120, 240, 480, 720];
+
+// LV600S publishes remaining seconds. Recover the total from an observed start
+// or a new setting, allowing for the one-second reporting interval.
+const lv600sTimerReading = (previous, seconds, at) => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return { seconds, at, total: 0 };
+  const expected = Math.max(0, previous?.seconds - Math.max(0, (at - previous?.at) / 1000));
+  const changed = Math.abs(seconds - expected) > 3;
+  const minutes = Math.ceil(seconds / 60);
+  const presetReported = previous && !Number.isFinite(expected) && seconds === minutes * 60
+    && TIMER_PRESETS.includes(minutes);
+  const started = presetReported || (changed && minutes * 60 - seconds <= 2);
+  const total = started ? minutes : !changed && previous?.total >= minutes ? previous.total : 0;
+  return { seconds, at, total };
 };
 
 const formatNumber = (value) =>
@@ -332,6 +347,7 @@ class LevoitEsphomePanel extends HTMLElement {
     )
       this._loadHistory();
     // the device page shows live states: render when one of its entities changed
+    this._updateLv600sTimer();
     if (first || this._pageStatesChanged()) this._render();
   }
 
@@ -364,6 +380,7 @@ class LevoitEsphomePanel extends HTMLElement {
       this._historyLoading = false;
       this._historyError = null;
       this._hoverT = null;
+      this._lv600sTimerReading = null;
       if (name && this._hass) this._loadPage();
     }
     this._render();
@@ -380,6 +397,7 @@ class LevoitEsphomePanel extends HTMLElement {
       const page = await this._hass.callWS({ type: "levoit_esphome/device_controls", name });
       if (name === this._pageName) {
         this._page = page;
+        this._updateLv600sTimer();
         if (!this._history && !this._historyLoading) this._loadHistory();
       }
     } catch (err) {
@@ -1290,25 +1308,19 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _tankBadge(state, offline) {
     const connection = state("binary_sensor.mcu_connection");
-    const stale = offline || (connection && connection.state !== "on");
-    const removed = stale ? null : state("binary_sensor.tank_removed")?.state;
-    const empty = stale ? null : state("binary_sensor.water_tank_empty")?.state;
-    const installed = removed === "off" ? this._lvText("Tank in", "Tank eingesetzt") : "";
-    const water = empty === "on" ? this._lvText("empty", "leer") : this._lvText("water available", "Wasser vorhanden");
-    let glyph = "tank";
-    let label = this._lvText("Tank status unknown", "Tankstatus unbekannt");
-    if (removed === "on") {
-      glyph = "tankOut";
-      label = this._lvText("Tank removed", "Tank herausgenommen");
-    } else if (empty === "on" || empty === "off") {
-      glyph = empty === "on" ? "waterEmpty" : "water";
-      label = installed ? `${installed} · ${water}`
-        : empty === "on" ? this._lvText("Water tank empty", "Wassertank leer") : this._lvText("Water available", "Wasser vorhanden");
-    } else if (installed) {
-      label = `${installed} · ${this._lvText("water level unknown", "Wasserstand unbekannt")}`;
-    }
-    const tone = glyph === "tankOut" || glyph === "waterEmpty" ? " warning" : glyph === "water" ? " water" : "";
-    return `<span class="dc-tank${tone}" title="${esc(label)}">${icon(glyph)}${esc(label)}</span>`;
+    if (offline || (connection && connection.state !== "on")) return "";
+    const tank = state("binary_sensor.tank_removed");
+    if (tank && !this._usable(tank)) return "";
+    const missing = tank?.state === "on";
+    const water = state("binary_sensor.water_tank_empty")?.state;
+    if (!missing && water !== "on" && water !== "off") return "";
+
+    const glyph = missing ? "tankOut" : water === "on" ? "waterEmpty" : "water";
+    const label = missing ? this._lvText("Tank missing", "Tank fehlt")
+      : water === "on" ? this._lvText("Water empty", "Wasser leer")
+      : this._lvText("Water available", "Wasser vorhanden");
+    const tone = glyph === "water" ? "water" : "warning";
+    return `<span class="dc-tank ${tone}" title="${esc(label)}">${icon(glyph)}${esc(label)}</span>`;
   }
 
   _lv600sModeStatus(state) {
@@ -2652,7 +2664,7 @@ class LevoitEsphomePanel extends HTMLElement {
     return `${this._alerts()}
       <div class="card hero" aria-label="${esc(this._page.title || "LV600S")}">
         <div class="hero-main">
-          <div class="hero-controls">
+          <div class="hero-controls lv-hero-controls">
             ${power ? `<button class="power${on ? " on" : ""}" aria-label="${powerLabel}" title="${powerLabel}"
               ${offline || (unsafe && !on) ? "disabled" : ""} ${this._svc("switch", on ? "turn_off" : "turn_on", power.entity_id)}>${icon("power")}</button>` : ""}
             <div class="hero-rows">
@@ -2666,7 +2678,7 @@ class LevoitEsphomePanel extends HTMLElement {
         </div>
       </div>
       ${this._historyCard()}
-      <div class="sections">${this._lv600sTimer(unsafe)}
+      <div class="sections">${this._timerSection({ lv600s: true, unsafe })}
       ${this._section(t("Configuration", "Konfiguration"), [
         this._slider("number.humidity_target", t("Target humidity", "Zielfeuchte"),
           t("40–80 % in Auto mode", "40–80 % im Automatikmodus"), { dim: unsafe || !on || !humidity, unit: "%" }),
@@ -2682,25 +2694,44 @@ class LevoitEsphomePanel extends HTMLElement {
       ])}${this._infoSection()}</div>`;
   }
 
-  _lv600sTimer(unsafe) {
-    const t = (english, german) => this._lvText(english, german);
-    const timer = this._state("number.timer");
-    const seconds = this._number("sensor.timer_remaining_seconds");
-    const status = this._readout("sensor.timer_remaining_seconds", t("Remaining", "Restzeit"));
-    if (!timer) return this._section("Timer", [status]);
-    const disabled = unsafe || timer.state === "unavailable";
-    const setTimer = (value, label, buttonClass = "opt") =>
-      `<button class="${buttonClass}" ${disabled ? "disabled" : ""} ${this._svc(
-        "number", "set_value", timer.entity_id, { value },
-      )}>${esc(label)}</button>`;
-    const durations = [1, 30, 60, 120, 240, 480, 720]
-      .filter((value) => value >= Number(timer.attributes.min) && value <= Number(timer.attributes.max))
-      .map((value) => setTimer(value, formatMinutes(value)));
-    return this._section("Timer", [
-      status,
-      durations.length ? `<div class="opts" role="group" aria-label="${t("Turn off in", "Ausschalten in")}">${durations.join("")}</div>` : "",
-      this._slider("number.timer", t("Adjust minutes", "Minuten einstellen"), "", { dim: disabled, unit: "min" }),
-    ], "", seconds === 0 ? "" : setTimer(0, t("Cancel", "Abbrechen"), "btn text"));
+  _updateLv600sTimer() {
+    if (this._page?.model !== "LV600S") return;
+    const state = this._state("sensor.timer_remaining_seconds");
+    const previous = this._lv600sTimerReading;
+    if (!state || previous?.state === state) return;
+    const sameEntity = previous?.state.entity_id === state.entity_id;
+    const reading = lv600sTimerReading(sameEntity ? previous : null, Number(state.state),
+      Date.parse(state.last_updated) || Date.now());
+    this._lv600sTimerReading = { ...reading, state };
+    if (!sameEntity && reading.seconds > 0) this._restoreLv600sTimer(state.entity_id, reading.seconds);
+  }
+
+  async _restoreLv600sTimer(entityId, seconds) {
+    const name = this._pageName;
+    const end = Date.now();
+    const max = Number(this._state("number.timer")?.attributes.max) || 720;
+    const start = end - (Math.max(0, max * 60 - seconds) + 120) * 1000;
+    try {
+      const result = await this._hass.callWS({
+        type: "history/history_during_period", entity_ids: [entityId],
+        start_time: new Date(start).toISOString(), end_time: new Date(end).toISOString(),
+        include_start_time_state: true, minimal_response: true, no_attributes: true,
+      });
+      const current = this._lv600sTimerReading;
+      if (this._pageName !== name || current?.state.entity_id !== entityId || current.total) return;
+      let recorded;
+      for (const sample of result[entityId] || []) {
+        recorded = lv600sTimerReading(recorded, Number(sample.s), sample.lu * 1000);
+      }
+      if (!recorded?.total || Math.abs(current.seconds - recorded.seconds + (current.at - recorded.at) / 1000) > 3) return;
+      const restored = lv600sTimerReading(recorded, current.seconds, current.at);
+      if (restored.total) {
+        this._lv600sTimerReading = { ...restored, state: current.state };
+        this._render();
+      }
+    } catch {
+      // The live remaining time still works when recorder history is unavailable.
+    }
   }
 
   _autoSection() {
@@ -2787,38 +2818,47 @@ class LevoitEsphomePanel extends HTMLElement {
     );
   }
 
-  _timerSection() {
+  _timerSection({ lv600s = false, unsafe = false } = {}) {
     const timer = this._state("number.timer");
     if (!timer) return "";
-    const left = parseDuration(this._state("text_sensor.timer_duration_remaining")?.state) / 60;
-    const total = parseDuration(this._state("text_sensor.timer_duration_initial")?.state) / 60;
-    const running = left > 0;
+    const t = (english, german) => lv600s ? this._lvText(english, german) : english;
+    const left = (lv600s ? Number(this._state("sensor.timer_remaining_seconds")?.state)
+      : parseDuration(this._state("text_sensor.timer_duration_remaining")?.state)) / 60;
+    const total = lv600s ? this._lv600sTimerReading?.total
+      : parseDuration(this._state("text_sensor.timer_duration_initial")?.state) / 60;
+    const running = Number.isFinite(left) && left > 0;
     const max = Number(timer.attributes.max) || 1440;
-    const usable = this._usable(timer);
+    const usable = lv600s ? !unsafe && timer.state !== "unavailable" : this._usable(timer);
     // whole minutes the timer number takes, up to its max
-    const presets = [30, 60, 120, 240, 480, 720].filter((m) => m <= max);
+    const min = lv600s ? Number(timer.attributes.min) || 0 : 0;
+    const presets = TIMER_PRESETS.filter((m) => m >= min && m <= max);
     const set = (minutes, text, cls) =>
       `<button class="${cls}" ${usable ? "" : "disabled"} ${this._svc("number", "set_value", timer.entity_id, {
         value: minutes,
       })}>${esc(text)}</button>`;
     const status = running
       ? `<div class="timer-run">
-          <div class="big">${esc(formatMinutes(left))} <span class="muted">left${
-            total ? ` of ${esc(formatMinutes(total))}` : ""
+          <div class="big">${esc(formatMinutes(left))} <span class="muted">${t("left", "übrig")}${
+            total ? ` ${t("of", "von")} ${esc(formatMinutes(total))}` : ""
           }</span></div>
           ${total ? `<div class="bar"><span style="width:${Math.min(100, Math.round((left / total) * 100))}%"></span></div>` : ""}
         </div>`
-      : `<div class="muted pad">No timer running. Pick a time to turn the purifier off.</div>`;
+      : `<div class="muted pad">${!lv600s
+        ? "No timer running. Pick a time to turn the purifier off."
+        : Number.isFinite(left)
+          ? t("No timer running. Pick a time to turn the humidifier off.",
+              "Kein Timer aktiv. Wähle eine Zeit zum Ausschalten des Luftbefeuchters.")
+          : t("Timer status unavailable.", "Timerstatus nicht verfügbar.")}</div>`;
     return this._section(
       "Timer",
       [
         status,
-        `<div class="opts" role="group" aria-label="${running ? "New timer" : "Turn off in"}">${presets
+        `<div class="opts" role="group" aria-label="${running ? t("New timer", "Neuer Timer") : t("Turn off in", "Ausschalten in")}">${presets
           .map((m) => set(m, formatMinutes(m), "opt"))
           .join("")}</div>`,
       ],
       "",
-      running ? set(0, "Cancel", "btn text") : "",
+      running ? set(0, t("Cancel", "Abbrechen"), "btn text") : "",
     );
   }
 
@@ -3517,7 +3557,7 @@ select:disabled { opacity: 0.6; }
 .dc-controls { display: flex; align-items: center; gap: 8px; margin-top: auto; }
 .dc-controls .segs { flex-wrap: nowrap; }
 .seg.sm { font-size: 13px; height: 32px; padding: 0 10px; min-width: 32px; }
-.lv-quick { display: grid; justify-items: start; gap: 8px; min-width: 0; width: 100%; }
+.lv-quick { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; min-width: 0; width: 100%; }
 .lv-levels { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 14px; }
 .lv-level { display: grid; gap: 4px; }
 .lv-level-label { color: var(--secondary-text-color); font-size: 12px; }
@@ -3554,6 +3594,7 @@ select:disabled { opacity: 0.6; }
 .hero { padding: 20px; margin-bottom: 16px; }
 .hero-main { display: flex; flex-wrap: wrap; align-items: center; gap: 24px 32px; }
 .hero-controls { display: flex; align-items: center; gap: 18px; flex: 1 1 420px; min-width: 0; }
+.lv-hero-controls { flex-basis: max-content; }
 .hero-rows { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .hero-status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
 .hs-title { font-size: 22px; font-weight: 500; }
