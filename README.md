@@ -627,8 +627,8 @@ discovery.
 same position as the filter indicator on purifiers. The tank icon and text show
 whether the tank is installed or removed and whether water is available. The card
 offers three mist presets and an operating mode selector. The detail page adds
-precise mist and warm mist settings and a 24-hour or 7-day history for humidity,
-temperature and both mist settings. The chart shows device-reported settings and
+precise mist and warm mist settings, and graphs humidity, temperature and both
+mist settings over 12 hours, 24 hours, 7 days or 30 days. The chart shows device-reported settings and
 leaves gaps when readings are unavailable. The timer pairs compact presets with
 its remaining-seconds reading.
 
@@ -637,8 +637,8 @@ an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
 zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
 ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
 In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
-den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 24 Stunden
-oder 7 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
+den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 12 Stunden,
+24 Stunden, 7 Tage oder 30 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
 Messwerte erscheinen als Lücken. Der Timer zeigt kompakte Zeitvorgaben und
 die verbleibende Laufzeit in Sekunden.
 
