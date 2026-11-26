@@ -1117,6 +1117,7 @@ class LevoitEsphomePanel extends HTMLElement {
       this._deferred = true;
       return;
     }
+    const t = (english, german) => this._lvText(english, german);
     const showMenu = this._narrow || this._hass?.dockedSidebar === "always_hidden";
     const builderUrl = this._data?.builder_url;
     const version = this._panel?.config?.version;
@@ -1134,9 +1135,9 @@ class LevoitEsphomePanel extends HTMLElement {
       onPage || onEditor || onDetail
         ? ""
         : `<div class="tabs" role="tablist">
-          <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
-          <button class="tab${onGroups ? " on" : ""}" role="tab" aria-selected="${onGroups}" data-action="navigate" data-path="${esc(this._groupsPath())}">Purifier groups</button>
-          <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config${
+          <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">${t("Devices", "Geräte")}</button>
+          <button class="tab${onGroups ? " on" : ""}" role="tab" aria-selected="${onGroups}" data-action="navigate" data-path="${esc(this._groupsPath())}">${t("Purifier groups", "Luftreinigergruppen")}</button>
+          <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">${esc(t("Updates & config", "Updates & Konfiguration"))}${
             updates ? `<span class="tab-badge" title="${updates} with an update">${updates}</span>` : ""
           }</button>
         </div>`;
@@ -1166,7 +1167,7 @@ class LevoitEsphomePanel extends HTMLElement {
             : ""
         }${
           onPage
-            ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="All devices" title="All devices">${icon("back")}</button>`
+            ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="${t("All devices", "Alle Geräte")}" title="${t("All devices", "Alle Geräte")}">${icon("back")}</button>`
             : onEditor && draft?.id
               ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath(encodeURIComponent(draft.id)))}" aria-label="Back to the group" title="Back to the group">${icon("back")}</button>`
               : onEditor || onDetail
@@ -1202,9 +1203,9 @@ class LevoitEsphomePanel extends HTMLElement {
         }
         ${
           haDevice
-            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(haDevice)}" title="The Home Assistant device page: every entity">${icon(
+            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(haDevice)}" title="${t("Open the device and all its entities in Home Assistant", "Gerät und alle Entitäten in Home Assistant öffnen")}">${icon(
                 "open",
-              )}<span>Device page</span></button>`
+              )}<span>${t("Device page", "Geräteseite")}</span></button>`
             : ""
         }
         ${
@@ -1219,7 +1220,7 @@ class LevoitEsphomePanel extends HTMLElement {
             ? ""
             : `<button class="tb-btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device (on the integration page)">${icon(
                 "plus",
-              )}<span>Add device</span></button>`
+              )}<span>${t("Add device", "Gerät hinzufügen")}</span></button>`
         }
       </div>
       <div class="content">
@@ -1283,8 +1284,8 @@ class LevoitEsphomePanel extends HTMLElement {
     }
     if (!running && !off && !offline) return "";
     const counts = [
-      `<b>${running} running</b>`,
-      `${off} off`,
+      `<b>${running} ${this._lvText("running", "in Betrieb")}</b>`,
+      `${off} ${this._lvText("off", "aus")}`,
       offline ? `<span class="bad">${offline} offline</span>` : "",
     ].filter(Boolean);
     // only worth a mention when the air is not good (above the WHO day limit)
@@ -2903,6 +2904,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const tankStatus = offline ? "" : this._lv600sTankStatus(state);
     const powerLabel = on ? t("Turn off", "Ausschalten") : t("Turn on", "Einschalten");
     const status = offline ? "Offline" : on ? t("Running", "In Betrieb") : t("Off", "Aus");
+    const binary = { format: (value) => value === "on" ? t("Yes", "Ja") : t("No", "Nein") };
     const modeLabel = mode && (on || LV600S_READ_ONLY_MODES.has(mode)) ? this._lvModeLabel(mode) : "";
     return `${this._alerts()}
       <div class="card hero" aria-label="${esc(this._page.title || "LV600S")}">
@@ -2931,11 +2933,11 @@ class LevoitEsphomePanel extends HTMLElement {
       ])}${this._lv600sTimer(unsafe)}
       ${this._section("Display", [this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep })])}
       ${this._section(t("Appliance status", "Gerätestatus"), [
-        this._readout("binary_sensor.water_tank_empty", t("Water tank empty", "Wassertank leer")),
-        this._readout("binary_sensor.tank_removed", t("Tank removed", "Tank herausgenommen")),
-        this._readout("binary_sensor.humidifying", t("Humidifying", "Befeuchtet")),
-        this._readout("binary_sensor.heating_enabled", t("Heating enabled", "Heizung aktiv")),
-        this._readout("binary_sensor.mcu_connection", t("MCU connection", "MCU-Verbindung")),
+        this._readout("binary_sensor.water_tank_empty", t("Water tank empty", "Wassertank leer"), binary),
+        this._readout("binary_sensor.tank_removed", t("Tank removed", "Tank herausgenommen"), binary),
+        this._readout("binary_sensor.humidifying", t("Humidifying", "Befeuchtet"), binary),
+        this._readout("binary_sensor.heating_enabled", t("Heating enabled", "Heizung aktiv"), binary),
+        this._readout("binary_sensor.mcu_connection", t("MCU connected", "MCU verbunden"), binary),
       ])}${this._infoSection()}</div>`;
   }
 

@@ -618,6 +618,23 @@ timer map to ESPHome entities. The dedicated page shows Original Auto and Unknow
 as read-only choices. Auxiliary LV600S fans are excluded from purifier group
 discovery.
 
+**English.** The LV600S card shows the tank state next to the model, in the
+same position as the filter indicator on purifiers. The tank icon and text show
+whether the tank is installed or removed and whether water is available. The card
+offers three mist presets and an operating mode selector. The detail page adds
+precise mist and warm mist settings and a 24-hour or 7-day history for humidity,
+temperature and both mist settings. These settings show the levels reported by
+the device. The chart leaves gaps when readings are unavailable.
+
+**Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
+an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
+zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
+ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
+den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 24 Stunden
+oder 7 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
+Messwerte erscheinen als Lücken.
+
 The Add Device catalogue reads tuct/levoit. Before upstream includes the LV600S
 template, add the device using its custom ESPHome configuration. Preserve its
 ESPHome identity, keys and partition table.
