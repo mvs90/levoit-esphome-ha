@@ -115,6 +115,60 @@ assert(panel._deviceCard(card).includes('Tank status unknown'));
 states['binary_sensor.mcu_connection'].state = 'on';
 states['binary_sensor.water_tank_empty'].state = 'off';
 
+// Standby exposes the retained mode as a fresh choice and waits for confirmed power.
+assert.match(panel._deviceCard(card), /<option value="" disabled selected>Off<\/option>/);
+assert(!panel._deviceCard(card).includes('value="Humidity" selected'));
+const wakePanel = Object.create(Panel.prototype);
+wakePanel._data = { devices: [card] };
+wakePanel._lv600sStarting = new Set();
+const wakeCalls = [];
+const wakeErrors = [];
+wakePanel._hass = { states, callService: async (...args) => wakeCalls.push(args) };
+wakePanel._toast = (message) => wakeErrors.push(message);
+dropdown.value = 'Humidity';
+const selectingMode = wakePanel._onChange(change);
+const powerOn = ['switch', 'turn_on', { entity_id: 'switch.power' }];
+assert.deepEqual(wakeCalls, [powerOn]);
+await wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 9 });
+assert.deepEqual(wakeCalls, [powerOn]);
+states['switch.power'].state = 'on';
+await selectingMode;
+assert.deepEqual(wakeCalls, [powerOn, ['select', 'select_option', {
+  entity_id: 'select.humidifier_mode', option: 'Humidity',
+}]]);
+
+// The detail page resolves the same device even without an overview subscription.
+wakePanel._page = panel._page;
+wakePanel._data = null;
+wakeCalls.length = 0;
+states['switch.power'].state = 'off';
+const selectingMist = wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 5 });
+assert.deepEqual(wakeCalls, [powerOn]);
+states['switch.power'].state = 'on';
+await selectingMist;
+assert.deepEqual(wakeCalls, [powerOn, ['number', 'set_value', { entity_id: 'number.mist_level', value: 5 }]]);
+
+wakeCalls.length = 0;
+states['switch.power'].state = 'off';
+await wakePanel._callService('select', 'select_option', 'select.humidifier_mode', { option: 'Unknown' });
+states['binary_sensor.tank_removed'].state = 'on';
+await wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 1 });
+assert.deepEqual(wakeCalls, []);
+states['binary_sensor.tank_removed'].state = 'off';
+const interrupted = wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 1 });
+assert.deepEqual(wakeCalls, [powerOn]);
+states['binary_sensor.mcu_connection'].state = 'off';
+await interrupted;
+assert.deepEqual(wakeCalls, [powerOn]);
+assert.equal(wakeErrors.length, 1);
+states['binary_sensor.mcu_connection'].state = 'on';
+
+wakeCalls.length = 0;
+await wakePanel._callService('number', 'set_value', 'number.warm_level', { value: 0 });
+assert.deepEqual(wakeCalls, [['number', 'set_value', { entity_id: 'number.warm_level', value: 0 }]]);
+states['switch.power'].state = 'on';
+console.log('LV600S standby selection waits for power, enforces safety, and keeps heat-off non-waking');
+
 const requests = [];
 panel._render = () => {};
 panel._pageName = card.name;
