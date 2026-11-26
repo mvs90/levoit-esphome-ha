@@ -114,43 +114,97 @@ add('binary_sensor.water_tank_empty', 'off');
 add('binary_sensor.tank_removed', 'off');
 add('sensor.timer_remaining_seconds', 'unknown', { unit_of_measurement: 's' });
 states['number.timer'].state = 'unknown';
+states['number.timer'].attributes.max = 720;
 const action = (markup, label) =>
   [...markup.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map(([b]) => b)
     .find((b) => b.endsWith('>' + label + '</button>'));
 html = panel._devicePage();
 assert(action(html, '30 min') && !action(html, '30 min').includes('disabled'));
-assert(action(html, 'Cancel').includes('&quot;value&quot;:0'));
-states['sensor.timer_remaining_seconds'].state = '125';
-const timer = panel._lv600sTimer(false);
-assert(timer.includes('Remaining') && timer.includes('125 s'));
-assert.match(timer, /<div class="opts" role="group" aria-label="Turn off in"><button class="opt"/);
-assert(!timer.includes('class="s-label">Turn off in'));
-assert(timer.includes('Adjust minutes'));
-assert(timer.includes('<input type="range"') && timer.includes('data-number="number.timer"'));
+assert(html.includes('Timer status unavailable.'));
+const timerStatus = 'sensor.timer_remaining_seconds';
+const startedAt = Date.parse('2026-11-26T14:00:00Z');
+const remaining = (seconds, elapsed) => {
+  states[timerStatus] = {
+    ...states[timerStatus], state: String(seconds),
+    last_updated: new Date(startedAt + elapsed * 1000).toISOString(),
+  };
+};
+remaining(0, -1);
+panel._updateLv600sTimer();
+assert(!action(panel._timerSection({ lv600s: true }), 'Cancel'));
+remaining(28800, 0);
+panel._updateLv600sTimer();
+remaining(14400, 14400);
+states['number.timer'].state = '240';
+panel._updateLv600sTimer();
+const timer = panel._timerSection({ lv600s: true });
+assert.match(timer, /class="big">4 h <span class="muted">left of 8 h/);
+assert(timer.includes('style="width:50%"'));
+assert.match(timer, /<div class="opts" role="group" aria-label="New timer"><button class="opt"/);
+assert.deepEqual([...timer.matchAll(/class="opt"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]),
+  ['30 min', '1 h', '2 h', '4 h', '8 h', '12 h']);
+assert(!timer.includes('data-number="number.timer"'));
 assert(action(timer, 'Cancel').includes('class="btn text"'));
-states['sensor.timer_remaining_seconds'].state = '0';
-assert(!action(panel._lv600sTimer(false), 'Cancel'));
+assert(action(timer, 'Cancel').includes('&quot;value&quot;:0'));
+add('text_sensor.timer_duration_remaining', '4 h');
+add('text_sensor.timer_duration_initial', '8 h');
+assert.equal(panel._timerSection(), timer);
+for (const key of ['text_sensor.timer_duration_remaining', 'text_sensor.timer_duration_initial']) {
+  delete states[controls[key]];
+  delete controls[key];
+}
+
+const reopened = Object.create(Panel.prototype);
+reopened._page = panel._page;
+reopened._render = () => {};
+reopened._hass = {
+  states,
+  callWS: async (command) => {
+    assert.deepEqual(command.entity_ids, [timerStatus]);
+    return { [timerStatus]: [
+      { s: 'unknown', lu: startedAt / 1000 - 1 },
+      { s: '28800', lu: startedAt / 1000 },
+      { s: '14401', lu: startedAt / 1000 + 14399 },
+    ] };
+  },
+};
+reopened._lv600sTimerReading = { state: states[timerStatus], seconds: 14400, at: startedAt + 14400000, total: 0 };
+await reopened._restoreLv600sTimer(timerStatus, 14400);
+assert.match(reopened._timerSection({ lv600s: true }), /left of 8 h/);
+reopened._lv600sTimerReading.total = 0;
+reopened._hass.callWS = async () => { throw new Error('History unavailable'); };
+await reopened._restoreLv600sTimer(timerStatus, 14400);
+const withoutHistory = reopened._timerSection({ lv600s: true });
+assert.match(withoutHistory, /class="big">4 h <span class="muted">left<\/span>/);
+assert(!withoutHistory.includes('class="bar"'));
+remaining(7200, 14401);
+panel._updateLv600sTimer();
+assert.match(panel._timerSection({ lv600s: true }), /left of 2 h/);
+remaining(0, 14402);
+panel._updateLv600sTimer();
+assert(!action(panel._timerSection({ lv600s: true }), 'Cancel'));
 states['binary_sensor.water_tank_empty'].state = 'on';
 html = panel._devicePage();
 assert(action(html, '30 min').includes('disabled'));
 assert(!html.match(/<button[^>]*data-entity="switch.power"[^>]*>/)[0].includes('disabled'));
 states['switch.power'].state = 'off';
 html = panel._deviceCard(card);
-assert(html.includes('Tank in · empty'));
+assert(html.includes('title="Water empty"') && html.includes('M9 14h6v2H9Z'));
 assert(html.match(/class="dc-sub"[^\n]*class="dc-tank warning"/));
 assert(html.match(/<button[^>]*data-entity="switch.power"[^>]*>/)[0].includes('disabled'));
 assert(html.match(/<button[^>]*aria-label="Mist level 1"[^>]*>/)[0].includes('disabled'));
 assert(html.match(/<select[^>]*data-humidifier-mode[^>]*>/)[0].includes('disabled'));
 states['binary_sensor.tank_removed'].state = 'on';
 html = panel._deviceCard(card);
-assert(html.includes('Tank removed') && !html.includes('Tank in · empty'));
+assert(html.includes('title="Tank missing"') && html.includes('M12 1l4 4'));
+assert(!html.includes('Water empty') && !html.includes('Water available'));
 states['binary_sensor.tank_removed'].state = 'off';
 states['binary_sensor.water_tank_empty'].state = 'off';
-assert(panel._deviceCard(card).includes('Tank in · water available'));
+assert(panel._deviceCard(card).includes('title="Water available"'));
 states['binary_sensor.water_tank_empty'].state = 'unavailable';
-assert(panel._deviceCard(card).includes('Tank in · water level unknown'));
+assert(!panel._deviceCard(card).includes('class="dc-tank'));
 states['binary_sensor.mcu_connection'].state = 'off';
-assert(panel._deviceCard(card).includes('Tank status unknown'));
+assert(!panel._deviceCard(card).includes('class="dc-tank'));
 states['binary_sensor.mcu_connection'].state = 'on';
 states['binary_sensor.water_tank_empty'].state = 'off';
 
@@ -268,7 +322,15 @@ assert.equal(Date.parse(requests[1].end_time) - Date.parse(requests[1].start_tim
 
 panel._hass.locale = { language: 'de-DE' };
 html = panel._deviceCard(card);
-assert(html.includes('Tank eingesetzt · Wasser vorhanden'));
+assert(html.includes('title="Wasser vorhanden"') && !html.includes('Tank eingesetzt'));
+states['binary_sensor.water_tank_empty'].state = 'on';
+assert(panel._deviceCard(card).includes('title="Wasser leer"'));
+states['binary_sensor.tank_removed'].state = 'on';
+html = panel._deviceCard(card);
+assert(html.includes('title="Tank fehlt"') && !html.includes('Wasser leer'));
+states['binary_sensor.tank_removed'].state = 'off';
+states['binary_sensor.water_tank_empty'].state = 'off';
+html = panel._deviceCard(card);
 assert(html.includes('Nebelstufe 2') && html.includes('value="Humidity" selected>Auto'));
 html = panel._devicePage();
 for (const value of ['Verlauf', '12 h', '7 Tage', '30 Tage', 'Luftfeuchtigkeit', 'Temperatur', 'Nebelstufe', 'Warmnebelstufe']) {
