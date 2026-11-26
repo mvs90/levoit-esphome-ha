@@ -565,3 +565,11 @@ warm level. The change is in the owner firmware profile. The integration uses
 the same native ESPHome entities and device entries. Full device findings and
 hardware work are recorded in the
 [firmware fork's verification report](https://github.com/mvs90/levoit/blob/codex/owner-test/docs/esphome-devices/owner-test.md).
+
+The release review adds protection against matching an auxiliary ESPHome fan on
+an LV600S as a purifier or group member. The existing purifier matching rules
+and grouped controls remain available for purifier models. The separate
+[`codex/lv600s-support` branch](https://github.com/mvs90/levoit-esphome-ha/tree/codex/lv600s-support)
+applies the LV600S changes on upstream 0.6.8. The owner's live verification was
+on 0.6.7 and did not use that newer build.
+[Dependency and verification notes](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/RELEASE-REVIEW.md)
