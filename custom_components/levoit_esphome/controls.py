@@ -118,6 +118,9 @@ DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
 
 # Where a model names an entity differently; tried before DEFAULT_NAMES.
 MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
+    "SUPERIOR6000S": {
+        "binary_sensor.water_tank_empty": ("Water Level", "Water Tank Empty"),
+    },
     "LV600S": {
         "switch.power": ("Power", "Ein"),
         "select.humidifier_mode": ("Operating Mode", "Betriebsmodus"),

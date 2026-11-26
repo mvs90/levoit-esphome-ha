@@ -88,3 +88,12 @@ async def test_existing_owner_control_names(hass: HomeAssistant) -> None:
     assert "fan.fan" not in found
     assert match_controls(hass, device_id, "CORE600S")["fan.fan"] == ids["fan.auxiliary"]
     assert "switch.power" not in match_controls(hass, device_id, "CORE600S")
+
+
+async def test_superior_tank_status_has_only_water_level(hass: HomeAssistant) -> None:
+    add_esphome_device(hass, "superior", MAC, "Humidifier", None, model="SUPERIOR6000S")
+    ids = _add_entities(hass, MAC, {"binary_sensor.water_level": "Water Level"})
+    device_id = er.async_get(hass).async_get(ids["binary_sensor.water_level"]).device_id
+    assert match_controls(hass, device_id, "SUPERIOR6000S") == {
+        "binary_sensor.water_tank_empty": ids["binary_sensor.water_level"]
+    }
