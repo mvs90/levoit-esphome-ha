@@ -625,4 +625,8 @@ ESPHome identity, keys and partition table.
 Live verification on the EU unit used HA integration 0.6.7 and the secure owner
 profile. This contribution branch is based on upstream 0.6.8. The HA and
 frontend tests cover the contribution on that base.
+An isolated HA Core 2026.10.4 instance also connected to the real LV600S on
+`1.2.03-queue-review`. It matched 20 native ESPHome entities, read live water
+and MCU status, and verified blocked ON and confirmed OFF with an empty tank.
+The Device Builder listing was simulated for this check.
 [Device and dependency review](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/RELEASE-REVIEW.md)
