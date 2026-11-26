@@ -17,7 +17,7 @@ add('switch.power', 'on');
 add('switch.display', 'on');
 add('sensor.humidity', '42', { unit_of_measurement: '%' });
 add('sensor.temperature', '23', { unit_of_measurement: '°C' });
-add('select.humidifier_mode', 'Humidity', { options: ['Manual', 'Humidity', 'Humidity Sleep', 'Auto (read only)', 'Unknown'] });
+add('select.humidifier_mode', 'Humidity', { options: ['Manual', 'Humidity', 'Humidity Sleep', 'Auto (read only)', 'Unknown', 'Future Mode'] });
 for (const key of ['humidity_target', 'mist_level', 'warm_level', 'timer']) {
   add('number.' + key, '1', { min: 0, max: 80, step: 1 });
 }
@@ -33,22 +33,47 @@ assert(html.includes('LV &lt;600S&gt;'));
 assert(html.includes('Humidity'));
 assert(html.includes('data-domain="switch"'));
 assert(html.includes('class="card hero"') && html.includes('class="hero-segs"') && html.includes('class="tiles"'));
+assert(html.includes('Configuration'));
+assert.match(html, />Configuration<\/[^>]+>[\s\S]*?data-number="number.humidity_target"[\s\S]*?data-entity="switch.display"/);
+assert(html.includes('aria-label="Humidifier: Turn off"'));
 assert(!html.includes('data-domain="fan"'));
 assert(!html.includes('CADR') && !html.includes('PM2.5') && !html.includes('New filter'));
 const card = { name: 'humidifier', title: 'Humidifier', model: 'LV600S', controls, online: true };
 html = panel._deviceCard(card);
+assert(!html.match(/^<div[^>]+>/)[0].includes('data-action="navigate"'));
+assert.match(html, /class="dc-top" data-action="navigate"/);
+assert.match(html, /class="dc-controls" data-action="none"/);
 assert(html.includes('data-domain="switch"') && html.includes('switch.power'));
 assert(html.includes('Humidity') && !html.includes('data-domain="fan"'));
 assert(html.includes('data-humidifier-mode="select.humidifier_mode"'));
 assert(html.includes('value="Humidity" selected>Auto'));
 assert(html.includes('value="Manual"') && html.includes('value="Humidity Sleep"'));
 assert(!html.includes('value="Auto (read only)"') && !html.includes('value="Unknown"'));
-for (const [level, value] of [[1, 1], [2, 5], [3, 9]]) {
-  const button = html.match(new RegExp(`<button[^>]*aria-label="Mist level ${level}"[^>]*>`))[0];
-  assert(button.includes('data-entity="number.mist_level"'));
-  assert(button.includes(`&quot;value&quot;:${value}`));
-  assert(button.includes(`aria-pressed="${level === 2}"`));
+assert(!html.includes('value="Future Mode"'));
+const detail = panel._devicePage();
+assert(!html.includes('class="lv-level-label"'));
+assert(detail.includes('class="lv-level-label">Mist level</span>'));
+for (const markup of [html, detail]) {
+  assert.equal((markup.match(/aria-label="Mist level \d"/g) || []).length, 3);
+  for (const [level, value] of [[1, 1], [2, 5], [3, 9]]) {
+    const button = markup.match(new RegExp(`<button[^>]*aria-label="Mist level ${level}"[^>]*>`))[0];
+    assert(button.includes('data-entity="number.mist_level"'));
+    assert(button.includes(`&quot;value&quot;:${value}`));
+    assert(button.includes(`aria-pressed="${level === 2}"`));
+  }
 }
+assert(!html.includes('data-entity="number.warm_level"'));
+assert.equal((detail.match(/aria-label="Warm mist (?:Off|\d)"/g) || []).length, 4);
+for (const level of [0, 1, 2, 3]) {
+  const label = level === 0 ? 'Off' : level;
+  const button = detail.match(new RegExp(`<button[^>]*aria-label="Warm mist ${label}"[^>]*>`))[0];
+  assert(button.includes('data-entity="number.warm_level"'));
+  assert(button.includes(`&quot;value&quot;:${level}`));
+  assert(button.includes(`aria-pressed="${level === 1}"`));
+}
+const belowHeader = detail.indexOf('<div class="sections">');
+assert.match(detail.slice(0, belowHeader), /aria-label="Mist level 3"[\s\S]*?aria-label="Warm mist 3"/);
+assert(!detail.slice(belowHeader).includes("lv-level-options"));
 const modeChanges = [];
 panel._callService = async (...args) => modeChanges.push(args);
 const dropdown = { value: 'Manual', dataset: { humidifierMode: 'select.humidifier_mode' }, blur() {} };
@@ -65,9 +90,18 @@ assert(!panel._deviceCard(card).includes('Auto (Original)'));
 states['select.humidifier_mode'].state = 'Unknown';
 assert(panel._devicePage().includes('class="readout">Unknown'));
 assert(!panel._deviceCard(card).includes('Unknown'));
+states['select.humidifier_mode'].state = 'Humidity';
+add('text_sensor.humidifier_mode_status', 'Auto (Original)');
+assert(panel._devicePage().includes('class="readout">Auto (Original)'));
+html = panel._deviceCard(card);
+assert(!html.includes('value="Humidity" selected'));
+assert(!html.includes('value="Auto (Original)"'));
+delete controls['text_sensor.humidifier_mode_status'];
+delete states['text_sensor.humidifier_mode_status'];
 states['select.humidifier_mode'].state = 'Humidity Sleep';
 html = panel._deviceCard(card);
-assert(html.match(/<button[^>]*aria-label="Mist level 1"[^>]*>/)[0].includes('disabled'));
+assert(!html.match(/<button[^>]*aria-label="Mist level 1"[^>]*>/)[0].includes('disabled'));
+assert(panel._devicePage().match(/<button[^>]*aria-label="Warm mist 3"[^>]*>/)[0].includes('disabled'));
 assert(!html.match(/<select[^>]*data-humidifier-mode[^>]*>/)[0].includes('disabled'));
 states['select.humidifier_mode'].state = 'Humidity';
 states['switch.power'].state = 'unavailable';
@@ -92,6 +126,7 @@ assert(timer.includes('Remaining') && timer.includes('125 s'));
 assert.match(timer, /<div class="opts" role="group" aria-label="Turn off in"><button class="opt"/);
 assert(!timer.includes('class="s-label">Turn off in'));
 assert(timer.includes('Adjust minutes'));
+assert(timer.includes('<input type="range"') && timer.includes('data-number="number.timer"'));
 assert(action(timer, 'Cancel').includes('class="btn text"'));
 states['sensor.timer_remaining_seconds'].state = '0';
 assert(!action(panel._lv600sTimer(false), 'Cancel'));
@@ -124,7 +159,7 @@ assert.match(panel._deviceCard(card), /<option value="" disabled selected>Off<\/
 assert(!panel._deviceCard(card).includes('value="Humidity" selected'));
 const wakePanel = Object.create(Panel.prototype);
 wakePanel._data = { devices: [card] };
-wakePanel._lv600sStarting = new Set();
+wakePanel._lv600sSelecting = new Set();
 const wakeCalls = [];
 const wakeErrors = [];
 wakePanel._hass = { states, callService: async (...args) => wakeCalls.push(args) };
@@ -146,11 +181,39 @@ wakePanel._page = panel._page;
 wakePanel._data = null;
 wakeCalls.length = 0;
 states['switch.power'].state = 'off';
+states['select.humidifier_mode'].state = 'Humidity';
+add('text_sensor.humidifier_mode_status', 'Humidity');
+const reportedMode = states[controls['text_sensor.humidifier_mode_status']];
+const chooseManual = ['select', 'select_option', { entity_id: 'select.humidifier_mode', option: 'Manual' }];
+const settle = () => new Promise(resolve => setTimeout(resolve, 115));
 const selectingMist = wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 5 });
 assert.deepEqual(wakeCalls, [powerOn]);
 states['switch.power'].state = 'on';
+await settle();
+assert.deepEqual(wakeCalls, [powerOn, chooseManual]);
+states['select.humidifier_mode'].state = 'Manual';
+await settle();
+assert.deepEqual(wakeCalls, [powerOn, chooseManual]);
+reportedMode.state = 'Manual';
 await selectingMist;
-assert.deepEqual(wakeCalls, [powerOn, ['number', 'set_value', { entity_id: 'number.mist_level', value: 5 }]]);
+assert.deepEqual(wakeCalls, [powerOn, chooseManual, ['number', 'set_value', { entity_id: 'number.mist_level', value: 5 }]]);
+
+wakeCalls.length = 0;
+await wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 9 });
+assert.deepEqual(wakeCalls, [['number', 'set_value', { entity_id: 'number.mist_level', value: 9 }]]);
+
+wakeCalls.length = 0;
+reportedMode.state = 'Humidity Sleep';
+await wakePanel._callService('number', 'set_value', 'number.warm_level', { value: 1 });
+assert.deepEqual(wakeCalls, []);
+const leavingSleep = wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 1 });
+assert.deepEqual(wakeCalls, [chooseManual]);
+states['binary_sensor.tank_removed'].state = 'on';
+await leavingSleep;
+assert.deepEqual(wakeCalls, [chooseManual]);
+assert.match(wakeErrors.pop(), /did not confirm Manual/);
+states['binary_sensor.tank_removed'].state = 'off';
+reportedMode.state = 'Humidity';
 
 wakeCalls.length = 0;
 states['switch.power'].state = 'off';
@@ -171,7 +234,7 @@ wakeCalls.length = 0;
 await wakePanel._callService('number', 'set_value', 'number.warm_level', { value: 0 });
 assert.deepEqual(wakeCalls, [['number', 'set_value', { entity_id: 'number.warm_level', value: 0 }]]);
 states['switch.power'].state = 'on';
-console.log('LV600S standby selection waits for power, enforces safety, and keeps heat-off non-waking');
+console.log('LV600S mist selection waits for power and Manual, enforces safety, and keeps heat-off non-waking');
 
 const requests = [];
 panel._render = () => {};
@@ -195,6 +258,7 @@ assert.deepEqual(panel._history.data['number.warm_level'].map(([, value]) => val
 html = panel._devicePage();
 assert(html.indexOf('class="card hero"') < html.indexOf('class="card history"'));
 assert(html.indexOf('class="card history"') < html.indexOf('class="sections"'));
+assert(html.indexOf('aria-label="Warm mist 3"') < html.indexOf('class="card history"'));
 assert(html.includes('class="hist-levels"') && html.includes('line c-mist') && html.includes('line c-warm dashed'));
 assert(html.includes('100%') && html.includes('-5°C'));
 assert(html.includes('7 days') && !html.includes('NaN'));

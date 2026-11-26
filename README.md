@@ -628,23 +628,29 @@ are excluded from purifier group discovery.
 **English.** The LV600S card shows the tank state next to the model, in the
 same position as the filter indicator on purifiers. The tank icon and text show
 whether the tank is installed or removed and whether water is available. The card
-offers three mist presets and an operating mode selector. The detail page adds
-precise mist and warm mist settings, and graphs humidity, temperature and both
-mist settings over 12 hours, 24 hours, 7 days or 30 days. The chart shows device-reported settings and
-leaves gaps when readings are unavailable. The timer pairs compact presets with
-its remaining-seconds reading.
+offers three mist presets and an operating mode selector. Choosing a mist
+preset starts the unit if needed and waits for the device to confirm Manual
+before sending the level. The detail header shows the same mist presets and
+warm mist levels 1–3 plus Off. The history shows humidity, temperature and both
+device-reported mist settings over 12 hours, 24 hours, 7 days or 30 days. The
+chart leaves gaps for unavailable readings. The timer pairs compact presets
+and a minute slider with the remaining runtime. Configuration contains the
+target humidity and display controls.
 
 **Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
 an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
 zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
 ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+Bei Wahl einer Nebelstufe startet das Gerät bei Bedarf und bestätigt zuerst
+den Modus **Manuell**. Danach wird die Stufe gesendet.
 **Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
 **Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
-In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
-den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 12 Stunden,
-24 Stunden, 7 Tage oder 30 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
-Messwerte erscheinen als Lücken. Der Timer zeigt kompakte Zeitvorgaben und
-die verbleibende Laufzeit in Sekunden.
+Der Kopf der Detailansicht zeigt die drei Nebelstufen sowie Warmnebel 1–3 und
+Aus. Der Verlauf zeigt Luftfeuchtigkeit, Temperatur und beide gemeldeten
+Stufen über 12 Stunden, 24 Stunden, 7 Tage oder 30 Tage. Fehlende Messwerte
+erscheinen als Lücken. Der Timer bietet kompakte Zeitvorgaben, einen
+Schieberegler für die Minuten und die verbleibende Laufzeit. Zielfeuchte und
+Display stehen unter Konfiguration.
 
 Use an existing LV600S ESPHome configuration to add the device. Preserve its
 ESPHome identity, keys and partition table. The panel discovers the device

@@ -178,3 +178,39 @@ async def test_native_lv600s_humidifier(hass: HomeAssistant) -> None:
         "humidifier", "turn_off", {"entity_id": entity_id}, blocking=True
     )
     assert calls[-1] == "turn_off"
+
+
+@pytest.mark.usefixtures("patch_sources")
+@pytest.mark.parametrize("power_name", ["Ein", "Luftbefeuchter", "Humidifier"])
+async def test_native_lv600s_mode_status(hass: HomeAssistant, power_name: str) -> None:
+    """Confirm writes from the MCU status when the selector retains an old option."""
+    hass.config.components.add("esphome")
+    add_esphome_device(hass, "living-humidifier", MAC, "Humidifier", None, model="LV600S")
+    ids = _add_entities(
+        hass,
+        MAC,
+        {
+            "switch.power": power_name,
+            "select.mode": "Betriebsmodus",
+            "sensor.mode_status": "Betriebsmodus Status",
+        },
+    )
+    hass.states.async_set(ids["switch.power"], "on")
+    hass.states.async_set(ids["select.mode"], "Auto", {"options": ["Manuell", "Auto", "Schlaf"]})
+    hass.states.async_set(ids["sensor.mode_status"], "Auto (Original)")
+
+    async def mode(call):
+        assert call.data["option"] == "Auto"
+        hass.states.async_set(ids["sensor.mode_status"], "Auto")
+
+    await _setup(hass)
+    hass.services.async_register("select", "select_option", mode)
+    (entity,) = hass.states.async_all("humidifier")
+    assert entity.attributes["available_modes"] == ["manual", "auto", "sleep"]
+    assert entity.attributes["reported_mode"] == "original_auto"
+    assert entity.attributes.get("mode") is None
+    await hass.services.async_call(
+        "humidifier", "set_mode", {"entity_id": entity.entity_id, "mode": "auto"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(entity.entity_id).attributes["mode"] == "auto"
