@@ -148,9 +148,13 @@ html = panel._deviceCard(card);
 assert(html.includes('Tank eingesetzt · Wasser vorhanden'));
 assert(html.includes('Nebelstufe 2') && html.includes('value="Humidity" selected>Feuchte'));
 html = panel._devicePage();
-for (const value of ['Verlauf', '7 Tage', 'Luftfeuchtigkeit', 'Temperatur', 'Nebelstufe', 'Warmnebelstufe']) {
+for (const value of ['Verlauf', '12 h', '7 Tage', '30 Tage', 'Luftfeuchtigkeit', 'Temperatur', 'Nebelstufe', 'Warmnebelstufe']) {
   assert(html.includes(value));
 }
+panel._historyRange = 'month';
+await panel._loadHistory();
+assert.equal(Date.parse(requests[2].end_time) - Date.parse(requests[2].start_time), 30 * 86400000);
+assert(panel._historyCard().includes('aria-label="Verlauf des Luftbefeuchters, 30 Tage.'));
 delete panel._hass.locale;
 
 add('text_sensor.error_message', 'No reported MCU fault');

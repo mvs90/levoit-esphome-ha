@@ -125,8 +125,8 @@ const DAY_MS = 24 * HOUR_MS;
 const HISTORY_RANGES = {
   half: { label: "12 h", ms: 12 * HOUR_MS, period: "5minute", step: 5 * 60e3, tick: 2 * HOUR_MS },
   day: { label: "24 h", ms: DAY_MS, period: "5minute", step: 5 * 60e3, tick: 6 * HOUR_MS },
-  week: { label: "7 days", ms: 7 * DAY_MS, period: "hour", step: HOUR_MS, tick: DAY_MS },
-  month: { label: "30 days", ms: 30 * DAY_MS, period: "hour", step: HOUR_MS, tick: 7 * DAY_MS },
+  week: { label: "7 days", de: "7 Tage", ms: 7 * DAY_MS, period: "hour", step: HOUR_MS, tick: DAY_MS },
+  month: { label: "30 days", de: "30 Tage", ms: 30 * DAY_MS, period: "hour", step: HOUR_MS, tick: 7 * DAY_MS },
 };
 const HISTORY_REFRESH_MS = 5 * 60e3;
 // one small chart each, on a shared time axis: different units, never one axis.
@@ -3253,11 +3253,12 @@ class LevoitEsphomePanel extends HTMLElement {
     const h = this._history;
     const humidifier = this._page?.model === "LV600S";
     const t = (english, german) => humidifier ? this._lvText(english, german) : english;
+    const rangeLabel = ({ label, de }) => t(label, de ?? label);
     const ranges = Object.entries(HISTORY_RANGES)
       .map(
         ([key, r]) =>
           `<button class="seg${key === this._historyRange ? " on" : ""}" data-action="history-range" data-range="${key}">${esc(
-            key === "week" ? t(r.label, "7 Tage") : r.label,
+            rangeLabel(r),
           )}</button>`,
       )
       .join("");
@@ -3273,7 +3274,7 @@ class LevoitEsphomePanel extends HTMLElement {
       const readings = shown.filter((s) => !s.band && !s.level);
       const levels = shown.filter((s) => s.level);
       const historyLabel = humidifier ? t("Humidifier history", "Verlauf des Luftbefeuchters") : "Air quality history";
-      const range = h.range === "week" ? t("7 days", "7 Tage") : HISTORY_RANGES[h.range].label;
+      const range = rangeLabel(HISTORY_RANGES[h.range]);
       body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="${historyLabel}, ${range}. ${t(
         "Use the arrow keys to move through the readings.", "Mit den Pfeiltasten durch die Werte navigieren.",
       )}">
