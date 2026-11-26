@@ -628,9 +628,13 @@ are excluded from purifier group discovery.
 **English.** The LV600S card shows the tank state next to the model, in the
 same position as the filter indicator on purifiers. A drop shows whether water
 is available or empty. If the tank is missing, a tank icon replaces the water
-status. The card offers three mist presets and an operating mode selector. Choosing a mist
-preset starts the unit if needed and waits for the device to confirm Manual
-before sending the level. The detail header shows mist and warm mist to the
+status. The card offers three mist presets and shows the current warm mist
+level beside its icon. Selecting that level opens Off and levels 1–3 to the
+right. On narrow cards, the mode selector is hidden until the warm mist choice
+is made or the picker is closed. Choosing a mist preset starts the unit if
+needed and waits for Manual before sending the level. A mode selected in
+standby starts the device and the card follows its confirmed power, mode and
+mist states. The detail header shows mist and warm mist to the
 right of the operating mode when space allows. The history shows humidity, temperature and both
 device-reported mist settings over 12 hours, 24 hours, 7 days or 30 days. The
 chart leaves gaps for unavailable readings. The timer uses the purifier's
@@ -641,10 +645,13 @@ target humidity and display controls.
 **Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
 an derselben Stelle wie die Filteranzeige der Luftreiniger. Ein Tropfen zeigt
 „Wasser vorhanden“ oder „Wasser leer“. Fehlt der Tank, erscheint das
-Tank-Symbol mit „Tank fehlt“. Auf der Karte lassen sich drei Nebelstufen und
-der Betriebsmodus wählen.
-Bei Wahl einer Nebelstufe startet das Gerät bei Bedarf und bestätigt zuerst
-den Modus **Manuell**. Danach wird die Stufe gesendet.
+Tank-Symbol mit „Tank fehlt“. Die Karte zeigt drei Nebelstufen und die aktuelle
+Warmnebelstufe mit Symbol. Antippen klappt „Aus“ und die Stufen 1–3 nach rechts
+auf. Auf schmalen Karten erscheint die Moduswahl wieder, sobald die Stufe
+gewählt oder die Auswahl geschlossen wurde. Bei Wahl einer Nebelstufe startet
+das Gerät bei Bedarf und bestätigt zuerst **Manuell**. Bei einer Moduswahl aus
+dem Standby aktualisiert die Karte Einschaltzustand, Modus und Nebelstufe anhand
+der bestätigten Gerätewerte.
 **Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
 **Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
 Bei genügend Platz stehen Nebel- und Warmnebelstufen rechts neben der
@@ -653,6 +660,24 @@ gemeldeten Stufen über 12 Stunden, 24 Stunden, 7 Tage oder 30 Tage. Fehlende
 Messwerte erscheinen als Lücken. Der Timer nutzt dieselben Zeitvorgaben wie
 die Luftreiniger und zeigt bei bekanntem Timerstart einen Fortschrittsbalken.
 Zielfeuchte und Display stehen unter Konfiguration.
+
+
+With the tested `1.2.09-target-preset-startup` firmware, the ESPHome mist, warm
+mist and timer numbers allow presets in standby. The timer card shows the
+queued duration and starts counting at power-on. Setting Timer (min) to zero
+cancels a queued or running timer. With no active timer, both formatted timer
+sensors report `Off` once the MCU status arrives. Active mist uses a blue
+`mdi:scent` and active warmth an orange `mdi:heat-wave`. Their off icons are
+grey. The remaining entity defaults are in the
+[firmware guide](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/README.md#controls).
+
+Mit der getesteten Firmware `1.2.09-target-preset-startup` lassen sich Nebel,
+Warmnebel und der Timer über die ESPHome-Zahlen im Standby vormerken. Auf der
+Timerkarte steht bis zum Einschalten die vorgemerkte Dauer. `0` löscht einen
+vorgemerkten oder laufenden Timer. Ohne aktiven Timer zeigen beide Textsensoren
+nach der ersten MCU-Rückmeldung `Off`. Bei aktivem Nebel erscheint
+`mdi:scent` blau, bei aktiver Wärme `mdi:heat-wave` orange. Die Aus-Symbole
+sind grau.
 
 Use an existing LV600S ESPHome configuration to add the device. Preserve its
 ESPHome identity, keys and partition table. The panel discovers the device

@@ -42,7 +42,7 @@ const card = { name: 'humidifier', title: 'Humidifier', model: 'LV600S', control
 html = panel._deviceCard(card);
 assert(!html.match(/^<div[^>]+>/)[0].includes('data-action="navigate"'));
 assert.match(html, /class="dc-top" data-action="navigate"/);
-assert.match(html, /class="dc-controls" data-action="none"/);
+assert.match(html, /class="dc-controls humidifier-controls" data-action="none"/);
 assert(html.includes('data-domain="switch"') && html.includes('switch.power'));
 assert(html.includes('Humidity') && !html.includes('data-domain="fan"'));
 assert(html.includes('data-humidifier-mode="select.humidifier_mode"'));
@@ -51,8 +51,32 @@ assert(html.includes('value="Manual"') && html.includes('value="Humidity Sleep"'
 assert(!html.includes('value="Auto (read only)"') && !html.includes('value="Unknown"'));
 assert(!html.includes('value="Future Mode"'));
 const detail = panel._devicePage();
-assert(!html.includes('class="lv-level-label"'));
-assert(detail.includes('class="lv-level-label">Mist level</span>'));
+assert.match(html, /class="lv-level lv-warm-picker"/);
+assert.match(html, /icon="mdi:heat-wave".*title="Warm mist"/);
+assert.match(html, /aria-label="Warm mist: 1" aria-expanded="false"/);
+assert(!html.includes('aria-label="Warm mist 2"'));
+panel._lv600sWarmPicker = 'number.warm_level';
+const expanded = panel._deviceCard(card);
+assert.match(expanded, /lv-warm-picker expanded/);
+for (const level of ['Off', '1', '2', '3']) assert(expanded.includes(`aria-label="Warm mist ${level}"`));
+panel._lv600sWarmPicker = null;
+assert.match(detail, /class="lv-level-icon" icon="mdi:scent" aria-hidden="true" title="Mist level"/);
+assert.match(detail, /class="lv-level-icon" icon="mdi:heat-wave" aria-hidden="true" title="Warm mist"/);
+add('binary_sensor.humidifying', 'on');
+add('binary_sensor.heating_enabled', 'off');
+let levelIcons = panel._devicePage();
+assert.match(levelIcons, /class="lv-level-icon humidifying" icon="mdi:scent"/);
+assert.match(levelIcons, /class="lv-level-icon" icon="mdi:thermometer-off"/);
+states['binary_sensor.humidifying'].state = 'off';
+states['binary_sensor.heating_enabled'].state = 'on';
+levelIcons = panel._devicePage();
+assert.match(levelIcons, /class="lv-level-icon" icon="mdi:scent-off"/);
+assert.match(levelIcons, /class="lv-level-icon heating" icon="mdi:heat-wave"/);
+states['switch.power'].state = 'off';
+levelIcons = panel._devicePage();
+assert.match(levelIcons, /class="lv-level-icon" icon="mdi:scent-off"/);
+assert.match(levelIcons, /class="lv-level-icon" icon="mdi:thermometer-off"/);
+states['switch.power'].state = 'on';
 for (const markup of [html, detail]) {
   assert.equal((markup.match(/aria-label="Mist level \d"/g) || []).length, 3);
   for (const [level, value] of [[1, 1], [2, 5], [3, 9]]) {
@@ -62,7 +86,7 @@ for (const markup of [html, detail]) {
     assert(button.includes(`aria-pressed="${level === 2}"`));
   }
 }
-assert(!html.includes('data-entity="number.warm_level"'));
+assert(!html.match(/aria-label="Warm mist (?:Off|\d)"/));
 assert.equal((detail.match(/aria-label="Warm mist (?:Off|\d)"/g) || []).length, 4);
 for (const level of [0, 1, 2, 3]) {
   const label = level === 0 ? 'Off' : level;
@@ -74,6 +98,13 @@ for (const level of [0, 1, 2, 3]) {
 const belowHeader = detail.indexOf('<div class="sections">');
 assert.match(detail.slice(0, belowHeader), /aria-label="Mist level 3"[\s\S]*?aria-label="Warm mist 3"/);
 assert(!detail.slice(belowHeader).includes("lv-level-options"));
+states['select.humidifier_mode'].state = 'Manual';
+assert.match(panel._devicePage(), /data-number="number.humidity_target"[^>]*disabled/);
+panel._page.target_humidity_preset = true;
+assert.doesNotMatch(panel._devicePage(), /data-number="number.humidity_target"[^>]*disabled/);
+assert.match(panel._devicePage(), /40–80 % in Auto mode/);
+delete panel._page.target_humidity_preset;
+states['select.humidifier_mode'].state = 'Humidity';
 const modeChanges = [];
 panel._callService = async (...args) => modeChanges.push(args);
 const dropdown = { value: 'Manual', dataset: { humidifierMode: 'select.humidifier_mode' }, blur() {} };
@@ -132,6 +163,14 @@ const remaining = (seconds, elapsed) => {
 remaining(0, -1);
 panel._updateLv600sTimer();
 assert(!action(panel._timerSection({ lv600s: true }), 'Cancel'));
+states['switch.power'].state = 'off';
+states['number.timer'].state = '2';
+const queuedTimer = panel._timerSection({ lv600s: true });
+assert.match(queuedTimer, /2 min starts when switched on/);
+assert(!queuedTimer.includes('timer-run'));
+assert(action(queuedTimer, 'Cancel').includes('&quot;value&quot;:0'));
+states['switch.power'].state = 'on';
+states['number.timer'].state = '0';
 remaining(28800, 0);
 panel._updateLv600sTimer();
 remaining(14400, 14400);
@@ -149,6 +188,9 @@ assert(action(timer, 'Cancel').includes('&quot;value&quot;:0'));
 add('text_sensor.timer_duration_remaining', '4 h');
 add('text_sensor.timer_duration_initial', '8 h');
 assert.equal(panel._timerSection(), timer);
+remaining('4h 0 min', 14400);
+assert.equal(panel._timerSection({ lv600s: true }), timer);
+remaining(14400, 14400);
 for (const key of ['text_sensor.timer_duration_remaining', 'text_sensor.timer_duration_initial']) {
   delete states[controls[key]];
   delete controls[key];
@@ -190,6 +232,7 @@ assert(!html.match(/<button[^>]*data-entity="switch.power"[^>]*>/)[0].includes('
 states['switch.power'].state = 'off';
 html = panel._deviceCard(card);
 assert(html.includes('title="Water empty"') && html.includes('M9 14h6v2H9Z'));
+assert.match(panel._devicePage(), /class="hero-status"[\s\S]*?class="dc-tank warning" title="Water empty"/);
 assert(html.match(/class="dc-sub"[^\n]*class="dc-tank warning"/));
 assert(html.match(/<button[^>]*data-entity="switch.power"[^>]*>/)[0].includes('disabled'));
 assert(html.match(/<button[^>]*aria-label="Mist level 1"[^>]*>/)[0].includes('disabled'));
@@ -198,9 +241,11 @@ states['binary_sensor.tank_removed'].state = 'on';
 html = panel._deviceCard(card);
 assert(html.includes('title="Tank missing"') && html.includes('M12 1l4 4'));
 assert(!html.includes('Water empty') && !html.includes('Water available'));
+assert.match(panel._devicePage(), /class="hero-status"[\s\S]*?class="dc-tank warning" title="Tank missing"/);
 states['binary_sensor.tank_removed'].state = 'off';
 states['binary_sensor.water_tank_empty'].state = 'off';
 assert(panel._deviceCard(card).includes('title="Water available"'));
+assert.match(panel._devicePage(), /class="hero-status"[\s\S]*?class="dc-tank water" title="Water available"/);
 states['binary_sensor.water_tank_empty'].state = 'unavailable';
 assert(!panel._deviceCard(card).includes('class="dc-tank'));
 states['binary_sensor.mcu_connection'].state = 'off';
@@ -218,6 +263,9 @@ const wakeCalls = [];
 const wakeErrors = [];
 wakePanel._hass = { states, callService: async (...args) => wakeCalls.push(args) };
 wakePanel._toast = (message) => wakeErrors.push(message);
+const renders = [];
+wakePanel._render = () => renders.push(wakePanel._deviceCard(card));
+states['select.humidifier_mode'].state = 'Manual';
 dropdown.value = 'Humidity';
 const selectingMode = wakePanel._onChange(change);
 const powerOn = ['switch', 'turn_on', { entity_id: 'switch.power' }];
@@ -225,10 +273,17 @@ assert.deepEqual(wakeCalls, [powerOn]);
 await wakePanel._callService('number', 'set_value', 'number.mist_level', { value: 9 });
 assert.deepEqual(wakeCalls, [powerOn]);
 states['switch.power'].state = 'on';
-await selectingMode;
+await new Promise(resolve => setTimeout(resolve, 115));
+assert.match(renders.at(-1), /class="power small on"/);
 assert.deepEqual(wakeCalls, [powerOn, ['select', 'select_option', {
   entity_id: 'select.humidifier_mode', option: 'Humidity',
 }]]);
+states['select.humidifier_mode'].state = 'Humidity';
+states['number.mist_level'].state = '9';
+await selectingMode;
+assert.match(renders.at(-1), /class="power small on"/);
+assert.match(renders.at(-1), /class="seg sm on" aria-label="Mist level 3"/);
+assert.match(renders.at(-1), /value="Humidity" selected>Auto/);
 
 // The detail page resolves the same device even without an overview subscription.
 wakePanel._page = panel._page;
