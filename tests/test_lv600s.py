@@ -10,7 +10,7 @@ from custom_components.levoit_esphome.controls import config_names, match_contro
 from custom_components.levoit_esphome.versions import component_model, component_source
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .conftest import MAC, add_esphome_device
 from .test_controls import _add_entities
@@ -89,6 +89,17 @@ async def test_existing_owner_control_names(hass: HomeAssistant) -> None:
     assert "fan.fan" not in found
     assert match_controls(hass, device_id, "CORE600S")["fan.fan"] == ids["fan.auxiliary"]
     assert "switch.power" not in match_controls(hass, device_id, "CORE600S")
+
+    numeric = ids["sensor.timer_seconds"]
+    textual = _add_entities(hass, MAC, {"sensor.formatted_timer": "Timer Remaining"})
+    formatted = textual["sensor.formatted_timer"]
+    registry = er.async_get(hass)
+    registry.async_update_entity(numeric, new_unique_id=f"{MAC}/0/sensor/Timer Restzeit")
+    registry.async_update_entity(formatted, new_unique_id=f"{MAC}/0/text_sensor/Timer Remaining")
+    dr.async_get(hass).async_update_device(
+        device_id, sw_version="1.2.07-target-preset (ESPHome 2026.11.1)"
+    )
+    assert match_controls(hass, device_id, "LV600S")["sensor.timer_remaining_seconds"] == formatted
 
 
 async def test_superior_tank_status_has_only_water_level(hass: HomeAssistant) -> None:
@@ -187,6 +198,45 @@ async def test_native_lv600s_humidifier(hass: HomeAssistant) -> None:
         "humidifier", "turn_off", {"entity_id": entity_id}, blocking=True
     )
     assert calls[-1] == "turn_off"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_native_lv600s_forwards_presets_without_changing_mode(hass: HomeAssistant) -> None:
+    hass.config.components.add("esphome")
+    add_esphome_device(hass, "living-humidifier", MAC, "Humidifier", None, model="LV600S")
+    ids = _add_entities(
+        hass,
+        MAC,
+        {
+            "switch.power": "Ein",
+            "select.mode": "Betriebsmodus",
+            "number.target": "Zielfeuchte",
+            "binary_sensor.empty": "Wassermangel",
+        },
+    )
+    device_id = er.async_get(hass).async_get(ids["switch.power"]).device_id
+    dr.async_get(hass).async_update_device(
+        device_id, sw_version="1.2.07-target-preset (ESPHome 2026.11.1)"
+    )
+    hass.states.async_set(ids["switch.power"], "on")
+    hass.states.async_set(ids["select.mode"], "Manuell", {"options": ["Manuell", "Auto", "Schlaf"]})
+    hass.states.async_set(ids["binary_sensor.empty"], "off")
+    await _setup(hass)
+    (entity,) = hass.states.async_all("humidifier")
+    calls = []
+
+    async def save_target(call):
+        calls.append(call.data["value"])
+        hass.states.async_set(ids["number.target"], "58")
+
+    hass.services.async_register("number", "set_value", save_target)
+    await hass.services.async_call(
+        "humidifier", "set_humidity", {"entity_id": entity.entity_id, "humidity": 58}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert calls == [58]
+    assert hass.states.get(ids["select.mode"]).state == "Manuell"
+    assert hass.states.get(entity.entity_id).attributes["humidity"] == 58
 
 
 @pytest.mark.usefixtures("patch_sources")

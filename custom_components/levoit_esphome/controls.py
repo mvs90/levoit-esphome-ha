@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 ESPHOME_DOMAIN = "esphome"
 
@@ -131,7 +131,12 @@ MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
         "number.warm_level": ("Warm Level", "Warmnebelstufe"),
         "sensor.humidity": ("Humidity", "Luftfeuchtigkeit"),
         "sensor.temperature": ("Temperature", "Temperatur"),
-        "sensor.timer_remaining_seconds": ("Timer Remaining Seconds", "Timer Restzeit"),
+        "sensor.timer_remaining_seconds": (
+            "Timer Remaining",
+            "Timer Restzeit",
+            "Timer Remaining Seconds",
+        ),
+        "text_sensor.timer_duration_initial": ("Timer Duration", "Timer Dauer"),
         "binary_sensor.water_tank_empty": ("Water Tank Empty", "Wassermangel"),
         "binary_sensor.tank_removed": ("Tank Removed", "Tank entfernt"),
         "binary_sensor.humidifying": ("Humidifying", "Befeuchtet"),
@@ -234,6 +239,12 @@ def _candidates(key: str, model: str | None, configured: Mapping[str, str]) -> I
         yield from DEFAULT_NAMES.get(key, ())
 
 
+def lv600s_stores_target(hass: HomeAssistant, device_id: str) -> bool:
+    """Identify the owner firmware profiles that store the setpoint on the ESP."""
+    device = dr.async_get(hass).async_get(device_id)
+    return bool(device and "-target-preset" in (device.sw_version or "").partition(" ")[0])
+
+
 def match_controls(
     hass: HomeAssistant,
     device_id: str,
@@ -247,12 +258,15 @@ def match_controls(
     not the level.
     """
     configured = configured or {}
-    entities: list[tuple[str, str, str]] = []  # domain, normalised name, entity_id
+    entities: list[tuple[str, str, str, str]] = []
+    formatted_lv_timer = model == "LV600S" and lv600s_stores_target(hass, device_id)
     for entry in er.async_entries_for_device(er.async_get(hass), device_id):
         if entry.platform != ESPHOME_DOMAIN or entry.disabled_by is not None:
             continue
         if entry.original_name:
-            entities.append((entry.domain, _norm(entry.original_name), entry.entity_id))
+            entities.append(
+                (entry.domain, _norm(entry.original_name), entry.entity_id, entry.unique_id)
+            )
 
     # keys with a specific source first: config names, then model exceptions
     model_names = MODEL_NAMES.get(model or "", {})
@@ -271,8 +285,15 @@ def match_controls(
         domain = PLATFORM_DOMAINS[key.split(".", 1)[0]]
         for name in _candidates(key, model, configured):
             wanted = _norm(name)
-            for entity_domain, entity_name, entity_id in entities:
+            for entity_domain, entity_name, entity_id, unique_id in entities:
                 if entity_domain != domain or entity_id in used:
+                    continue
+                if (
+                    formatted_lv_timer
+                    and key == "sensor.timer_remaining_seconds"
+                    and unique_id.split("/", 3)[2:3] == ["sensor"]
+                ):
+                    # An old numeric Timer Restzeit can still be in the registry.
                     continue
                 # suffix: older configs without friendly_name put the device
                 # name in front ("bedroom Auto Mode")

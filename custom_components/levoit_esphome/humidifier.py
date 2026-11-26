@@ -20,7 +20,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
-from .controls import match_controls
+from .controls import lv600s_stores_target, match_controls
 from .entity import LevoitEsphomeEntity, async_add_per_device
 
 if TYPE_CHECKING:
@@ -266,5 +266,7 @@ class LV600SHumidifier(LevoitEsphomeEntity, HumidifierEntity):
                 raise HomeAssistantError(
                     translation_domain=DOMAIN, translation_key="lv600s_unready"
                 )
-            await self._set_mode(MODE_AUTO)
+            device = self.device
+            if device is None or not lv600s_stores_target(self.hass, device.esphome_device_id):
+                await self._set_mode(MODE_AUTO)
             await self._call(_TARGET, "set_value", value=humidity)
