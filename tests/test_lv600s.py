@@ -71,6 +71,7 @@ async def test_existing_owner_control_names(hass: HomeAssistant) -> None:
             "binary_sensor.removed": "Tank entfernt",
             "binary_sensor.fault": "Geraetefehler",
             "binary_sensor.connection": "MCU Verbindung",
+            "fan.auxiliary": "Fan",
         },
     )
     device_id = er.async_get(hass).async_get(ids["switch.power"]).device_id
@@ -85,4 +86,5 @@ async def test_existing_owner_control_names(hass: HomeAssistant) -> None:
     assert found["binary_sensor.mcu_fault"] == ids["binary_sensor.fault"]
     assert found["binary_sensor.mcu_connection"] == ids["binary_sensor.connection"]
     assert "fan.fan" not in found
+    assert match_controls(hass, device_id, "CORE600S")["fan.fan"] == ids["fan.auxiliary"]
     assert "switch.power" not in match_controls(hass, device_id, "CORE600S")

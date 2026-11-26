@@ -252,8 +252,12 @@ def match_controls(
 
     # keys with a specific source first: config names, then model exceptions
     model_names = MODEL_NAMES.get(model or "", {})
+    available_keys = dict.fromkeys((*DEFAULT_NAMES, *model_names))
+    if model == "LV600S":
+        # An auxiliary fan on this ESPHome node is not a purifier group member.
+        del available_keys["fan.fan"]
     keys = sorted(
-        dict.fromkeys((*DEFAULT_NAMES, *model_names)),
+        available_keys,
         key=lambda k: (k not in configured, k not in model_names),
     )
     found: dict[str, str] = {}
