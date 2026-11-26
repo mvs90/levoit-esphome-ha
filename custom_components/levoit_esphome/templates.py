@@ -100,6 +100,7 @@ class ConfigValues:
     ota_password: Value | None = None  # None: no OTA password
     channel: str | None = None  # None: as in the template (stable)
     ota_encryption_key: Value | None = None  # required encrypted native OTA
+    ota_uses_api_key: bool = False  # bare OTA encryption inherits the API key
 
 
 @dataclass(frozen=True)
@@ -220,7 +221,7 @@ def _template_channel(fields: dict[str, Node]) -> str:
     return ref
 
 
-def _protection(fields: dict[str, Node]) -> tuple[Value | None, Value | None, Value | None]:
+def _protection(fields: dict[str, Node]) -> tuple[Value | None, Value | None, Value | None, bool]:
     """Read the API and native OTA protection of a standalone builder template."""
     api_key = None
     api = fields.get("api")
@@ -247,12 +248,17 @@ def _protection(fields: dict[str, Node]) -> tuple[Value | None, Value | None, Va
     if native.keys() - {"platform", "password", "encryption"}:
         raise TemplateError("unsupported OTA options; use a custom config")
     if "encryption" in native:
-        encryption = _mapping(native["encryption"], "encrypted OTA")
-        if "password" in native or encryption.keys() != {"key"}:
+        if "password" in native:
             raise TemplateError("unsupported OTA encryption options; use a custom config")
-        return api_key, None, _credential(encryption["key"], "OTA encryption")
+        node = native["encryption"]
+        encryption = {} if node.tag == "tag:yaml.org,2002:null" else _mapping(node, "encrypted OTA")
+        if not encryption and api_key is not None:
+            return api_key, None, None, True
+        if encryption.keys() != {"key"}:
+            raise TemplateError("unsupported OTA encryption options; use a custom config")
+        return api_key, None, _credential(encryption["key"], "OTA encryption"), False
     password = _credential(native["password"], "OTA password") if "password" in native else None
-    return api_key, password, None
+    return api_key, password, None, False
 
 
 def config_values(config_text: str) -> ConfigValues:
@@ -265,7 +271,7 @@ def config_values(config_text: str) -> ConfigValues:
     name = name_match.group(1).strip("'\"")
 
     fields = _template_fields(config_text)
-    api_key, ota_password, ota_encryption_key = _protection(fields)
+    api_key, ota_password, ota_encryption_key, ota_uses_api_key = _protection(fields)
     channel = _template_channel(fields)
 
     return ConfigValues(
@@ -274,6 +280,7 @@ def config_values(config_text: str) -> ConfigValues:
         ota_password=ota_password,
         channel=channel,
         ota_encryption_key=ota_encryption_key,
+        ota_uses_api_key=ota_uses_api_key,
     )
 
 
@@ -385,7 +392,7 @@ def normalize_pin(pin: str) -> str | None:
 
 
 def _apply_values(text: str, values: ConfigValues) -> str:
-    """The device's name, API key, OTA password and channel."""
+    """The device's name, API and OTA credentials, and channel."""
     text = _sub_once(
         r"^  device_name:\s*\S+[ \t]*$", f"  device_name: {values.name}", text, "device_name"
     )
@@ -397,24 +404,29 @@ def _apply_values(text: str, values: ConfigValues) -> str:
             r"^    key: !secret api_key[ \t]*$", f"    key: {values.api_key.yaml}", text, "api key"
         )
 
-    if values.ota_encryption_key is not None:
+    ota_credential = ""
+    if values.ota_uses_api_key or values.ota_encryption_key is not None:
         if values.ota_password is not None:
             raise TemplateError("OTA encryption and password must not be combined")
-        text = _sub_once(
-            r"^    password: !secret ota_password[ \t]*$",
-            "    encryption:\n      key: " + values.ota_encryption_key.yaml,
-            text,
-            "ota encryption key",
-        )
-    elif values.ota_password is None:
-        text = _sub_once(r"^    password: !secret ota_password[ \t]*\n", "", text, "ota password")
-    else:
-        text = _sub_once(
-            r"^    password: !secret ota_password[ \t]*$",
-            f"    password: {values.ota_password.yaml}",
-            text,
-            "ota password",
-        )
+        if values.ota_uses_api_key and (
+            values.api_key is None or values.ota_encryption_key is not None
+        ):
+            raise TemplateError("inherited OTA encryption requires only an API key")
+        ota_credential = "    encryption:\n"
+        if values.ota_encryption_key is not None:
+            ota_credential += f"      key: {values.ota_encryption_key.yaml}\n"
+    elif values.ota_password is not None:
+        ota_credential = f"    password: {values.ota_password.yaml}\n"
+
+    # The generated native OTA stanza may start out password-based or encrypted.
+    text = _sub_once(
+        r"^  - platform: esphome[ \t]*\n"
+        r"    (?:password: !secret ota_password|encryption:(?: \{\})?"
+        r"(?:[ \t]*\n      key: !secret (?:api_key|ota_key))?)[ \t]*\n",
+        "  - platform: esphome\n" + ota_credential,
+        text,
+        "ota credential",
+    )
 
     if values.channel in (CHANNEL_STABLE, CHANNEL_MAIN):
         text = with_channel(text, values.channel)

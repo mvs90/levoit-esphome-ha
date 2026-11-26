@@ -618,7 +618,9 @@ sharper.
 ### Encrypted native OTA
 
 Template refreshes preserve the native ESPHome OTA encryption key and API
-key, whether inline or referenced by `!secret`. The integration inspects the
+key, whether inline or referenced by `!secret`. If `ota.encryption` is left
+empty, OTA continues to use the API encryption key. An explicit OTA key must
+resolve to the same value as a configured API key. The integration inspects the
 YAML without loading packages or looking up secret values. It supports a single
 native OTA transport on a standalone template tracking upstream Main or Stable.
 If a marked template uses packages, an unsupported transport or a pinned/forked

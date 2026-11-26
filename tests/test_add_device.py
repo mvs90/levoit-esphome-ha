@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -21,6 +21,7 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .conftest import (
@@ -197,14 +198,29 @@ async def test_existing_device_without_keys(
 
 
 @pytest.mark.usefixtures("esphome_devices")
+@pytest.mark.parametrize("protection", ["password", "explicit_key", "api_key"])
+@pytest.mark.parametrize(
+    "upstream_credential",
+    ["password: !secret ota_password", "encryption:", "encryption:\n      key: !secret api_key"],
+)
 async def test_install_refreshes_template_config(
-    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+    hass: HomeAssistant,
+    patch_sources: AsyncMock,
+    builder: FakeBuilder,
+    protection: str,
+    upstream_credential: str,
 ) -> None:
     """A template config is rewritten from the newest builder file, then built."""
     values = ConfigValues(
         name="bedroom-purifier",
         api_key=Value(secret="bedroom_purifier_api_key"),
-        ota_password=Value(secret="bedroom_purifier_ota_password"),
+        ota_password=Value(secret="bedroom_purifier_ota_password")
+        if protection == "password"
+        else None,
+        ota_encryption_key=Value(secret="bedroom_purifier_ota_key")
+        if protection == "explicit_key"
+        else None,
+        ota_uses_api_key=protection == "api_key",
         channel="stable",
     )
     old = render(BUILDER_TEXT.replace("level: DEBUG", "level: INFO"), EVEREST_C3, values)
@@ -212,12 +228,50 @@ async def test_install_refreshes_template_config(
     await _setup(hass)
     assert hass.states.get("sensor.bedroom_purifier_config_type").state == "xiao_c3"
 
-    await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    new_source = BUILDER_TEXT.replace("password: !secret ota_password", upstream_credential)
+    with patch(
+        "custom_components.levoit_esphome.templates.async_fetch_template_text",
+        AsyncMock(return_value=new_source),
+    ):
+        await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
 
     new = builder.files.configs["bedroom-purifier.yaml"]
     assert new == render(BUILDER_TEXT, EVEREST_C3, values)
     assert config_values(new) == values  # keeps name, secrets, channel
     assert_compiled(builder, "bedroom-purifier.yaml")
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_install_refuses_new_ota_transport(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """Keep the original file and stop if the refreshed builder adds an OTA transport."""
+    name = "bedroom-purifier.yaml"
+    values = ConfigValues(
+        name="bedroom-purifier",
+        api_key=Value(secret="bedroom_purifier_api_key"),
+        ota_uses_api_key=True,
+        channel="stable",
+    )
+    old = render(BUILDER_TEXT, EVEREST_C3, values)
+    builder.files.configs[name] = old
+    await _setup(hass)
+
+    new_source = BUILDER_TEXT.replace("ota:\n", "ota:\n  - platform: web_server\n", 1)
+    assert new_source != BUILDER_TEXT
+    with (
+        patch(
+            "custom_components.levoit_esphome.templates.async_fetch_template_text",
+            AsyncMock(return_value=new_source),
+        ),
+        pytest.raises(HomeAssistantError) as error,
+    ):
+        await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+
+    assert error.value.translation_key == "template_refresh_failed"
+    assert builder.files.configs[name] == old
+    assert builder.files.writes == []
+    builder.api.compile.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("esphome_devices")

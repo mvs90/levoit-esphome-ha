@@ -228,6 +228,20 @@ def test_encrypted_ota_survives_template_refresh(key: Value) -> None:
     assert render(BUILDER, EVEREST_C3, config_values(text)) == text
 
 
+@pytest.mark.parametrize("ota", ["encryption:", "encryption: {}"])
+def test_ota_inheriting_api_key_survives_refresh(ota: str) -> None:
+    original = BUILDER.replace("password: !secret ota_password", ota)
+    values = config_values(original)
+    expected = ConfigValues(
+        name=values.name, api_key=values.api_key, channel="stable", ota_uses_api_key=True
+    )
+    assert values == expected
+    refreshed = render(BUILDER, EVEREST_C3, values)
+    assert "  - platform: esphome\n    encryption:\n" in refreshed
+    assert config_values(refreshed) == expected
+    assert "ota_password" not in refreshed
+
+
 def test_unrecognised_ota_encryption_fails_closed() -> None:
     """A format we cannot preserve must fail before the config is written."""
     text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
@@ -269,6 +283,7 @@ def test_inline_encrypted_ota_and_yaml_comments() -> None:
     [
         "ota: !include private-ota.yaml",
         "ota: []",
+        "ota: [{platform: esphome, encryption: {}}]",
         "ota:\n  - platform: esphome\n    encryption: !include private-ota.yaml",
         "ota: [{platform: esphome, encryption: {key: !secret ota_key, key: other}}]",
         'ota: [{platform: esphome, encryption: {key: "${private_key}"}}]',

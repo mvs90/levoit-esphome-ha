@@ -480,6 +480,8 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         values = tpl.config_values(text)
         source = await tpl.async_fetch_template_text(async_get_clientsession(self.hass), template)
         new = tpl.render(source, template, values)
+        if tpl.config_values(new) != values:
+            raise tpl.TemplateError("template refresh could not preserve the device configuration")
         if new == text:
             return False
         await async_write_config(self.hass, builder, configuration, new, expected=text)
