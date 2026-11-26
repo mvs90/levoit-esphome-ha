@@ -72,8 +72,8 @@ card for the device's page.
 ### Device page
 
 On top, power, mode and speed with PM2.5, AQI and CADR (the Eleva 300X also
-shows its AQI index, 0–500). Below, the **history** of the last 24 hours or
-7 days from Home Assistant's statistics, in one chart: PM2.5 as an area
+shows its AQI index, 0–500). Below, the **history** of the last 12 hours, 24
+hours, 7 days or 30 days from Home Assistant's statistics, in one chart: PM2.5 as an area
 (left axis), CADR as a dashed line (right axis) and the air quality level as a
 coloured band under it; the legend chips switch each one on and off. A
 purifier in a group shows a banner with the group's status and what a change
@@ -121,7 +121,8 @@ with the page closed and after a restart.
 
 Each group has a page of its own: power, Auto or Manual and the level, a tile
 per sensor type with the group's combined value and the purifiers' total
-CADR, their history over 24 hours or 7 days with the level as a band, and its
+CADR, their history over 12 hours, 24 hours, 7 days or 30 days with the level
+as a band, and its
 purifiers with their state, sensors and filter. *Edit group* opens the editor.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/group-page.png?v=0.6.8" width="720" alt="A group's page: power, Auto or Manual and level 1 to 4, tiles for PM2.5, AQI index and CADR, the 24 hour history with the level as a band, and its two purifiers">
