@@ -53,13 +53,13 @@ def _steps(speeds: int, sleep: bool, lowest=1, highest=None) -> list:
     ("speeds", "expected"),
     [
         (4, [1, 2, 3, 4]),  # Core600S, Vital200S; Eleva 300X: 1, 2, 3, Turbo; Everest + Turbo
-        (3, [1, 2, 2, 3]),  # Core200S, Core300S
-        (2, [1, 1, 2, 2]),
+        (3, [1, 2, 3, 3]),  # Core200S, Core300S
+        (2, [1, 2, 2, 2]),
         (1, [1, 1, 1, 1]),
     ],
 )
 def test_member_step_default(speeds: int, expected: list[int]) -> None:
-    """Speed 1 to the fastest: fewer speeds share levels, as before."""
+    """Speed 1 to the fastest: with fewer speeds than levels the top ones stay at the fastest."""
     assert _steps(speeds, True) == expected
     assert member_step(0, speeds, True, MemberSpeeds()) is None  # level 0: let go
 
@@ -68,20 +68,25 @@ def test_member_step_off_and_sleep() -> None:
     """Off or Sleep as the lowest step: level 1 runs there."""
     assert member_ladder(3, True) == [STEP_OFF, STEP_SLEEP, 1, 2, 3]
     assert member_ladder(3, False) == [STEP_OFF, 1, 2, 3]
-    # Off, Sleep, 1, 2, 3, 4: level 1 Off, 4 at speed 4
-    assert _steps(4, True, STEP_OFF) == [STEP_OFF, 1, 2, 4]
-    assert _steps(4, True, STEP_SLEEP) == [STEP_SLEEP, 1, 3, 4]
+    # more steps than levels: even by speed (Sleep 0.5), bigger jumps on the left
+    assert _steps(4, True, STEP_OFF) == [STEP_OFF, 2, 3, 4]
+    assert _steps(4, False, STEP_OFF) == [STEP_OFF, 2, 3, 4]
+    assert _steps(4, True, STEP_SLEEP) == [STEP_SLEEP, 2, 3, 4]
+    assert _steps(4, True, STEP_OFF, 3) == [STEP_OFF, 1, 2, 3]
+    # as many steps as levels or fewer: one each, the rest at the highest
     assert _steps(3, True, STEP_SLEEP) == [STEP_SLEEP, 1, 2, 3]
-    assert _steps(3, True, STEP_SLEEP, 2) == [STEP_SLEEP, 1, 1, 2]
-    assert _steps(3, True, STEP_OFF, 1) == [STEP_OFF, STEP_SLEEP, STEP_SLEEP, 1]
+    assert _steps(4, True, STEP_OFF, 2) == [STEP_OFF, STEP_SLEEP, 1, 2]
+    assert _steps(3, True, STEP_SLEEP, 2) == [STEP_SLEEP, 1, 2, 2]
+    assert _steps(3, True, STEP_SLEEP, 1) == [STEP_SLEEP, 1, 1, 1]
+    assert _steps(3, True, STEP_OFF, 1) == [STEP_OFF, STEP_SLEEP, 1, 1]
 
 
 def test_member_step_narrowed() -> None:
     """Sleep without the preset is speed 1; a range above the fan's speeds is cut."""
-    assert _steps(3, False, STEP_SLEEP) == [1, 2, 2, 3]
-    assert _steps(3, True, 2, 6) == [2, 2, 3, 3]
+    assert _steps(3, False, STEP_SLEEP) == [1, 2, 3, 3]
+    assert _steps(3, True, 2, 6) == [2, 3, 3, 3]
     assert _steps(3, True, 4) == [3, 3, 3, 3]
-    assert _steps(4, True, 2, 3) == [2, 2, 3, 3]
+    assert _steps(4, True, 2, 3) == [2, 3, 3, 3]
 
 
 def test_speed_count() -> None:

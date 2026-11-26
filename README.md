@@ -105,8 +105,12 @@ with the page closed and after a restart.
   per hold time (2 minutes); a fast rise in PM2.5 jumps straight to level 4.
 * **The purifiers** each have a lowest and a highest step. Level 1 runs at the
   lowest (Off, Sleep or a speed; speed 1 by default), level 4 at the highest,
-  and levels 2 and 3 are spread between them. The Everest Air counts its Turbo
-  as speed 4, so its highest is Turbo unless set to 3.
+  and levels 2 and 3 in between. With 4 steps in that range or fewer, each
+  level takes the next step and the rest stay at the highest (Sleep to 3:
+  Sleep, 1, 2, 3; 1 to 2: 1, 2, 2, 2). With more, levels 2 and 3 are spread
+  evenly, Sleep counting as half a speed, and the bigger jumps come first (Off
+  to 4: Off, 2, 3, 4). The Everest Air counts its Turbo as speed 4, so its
+  highest is Turbo unless set to 3.
 * **Letting go:** when no sensor has a value, the group is switched off or
   deleted, or a purifier leaves it, the group sends nothing: each keeps
   running as it is.
