@@ -32,9 +32,10 @@ const NORMAL_DEVICE_STATUS = new Set([
   "ok", "unknown", "unavailable", "no reported mcu fault",
   "keine mcu-stoerung", "keine mcu-störung", "kein gemeldeter sensorfehler",
 ]);
-const LV600S_READ_ONLY_MODES = new Set(["Auto (read only)", "Auto (Original)", "Unknown", "Unbekannt"]);
-const LV600S_AUTO_MODES = new Set(["Humidity", "Feuchte"]);
+const LV600S_MANUAL_MODES = new Set(["Manual", "Manuell"]);
+const LV600S_AUTO_MODES = new Set(["Auto", "Auto (Feuchte)", "Humidity", "Feuchte"]);
 const LV600S_SLEEP_MODES = new Set(["Humidity Sleep", "Schlaf"]);
+const LV600S_WRITABLE_MODES = new Set([...LV600S_MANUAL_MODES, ...LV600S_AUTO_MODES, ...LV600S_SLEEP_MODES]);
 const LV600S_MODE_LABELS = [
   ["Manual", "Manuell"], ["Humidity Sleep", "Schlaf"],
   ["Unknown", "Unbekannt"],
@@ -268,7 +269,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._hoverT = null; // time under the crosshair
     this._histHidden = new Set(); // history series switched off in the legend
     this._updatingAll = false;
-    this._lv600sStarting = new Set();
+    this._lv600sSelecting = new Set();
     // purifier groups (route /levoit-esphome/groups/...)
     this._groups = null; // levoit_esphome/groups/subscribe: {groups, purifiers, dismissed_areas}
     this._groupsError = null;
@@ -624,8 +625,8 @@ class LevoitEsphomePanel extends HTMLElement {
           (d) => d?.model === "LV600S" && keys.some((key) => d.controls?.[key] === entityId),
         );
         if (device) {
-          if (mode && LV600S_READ_ONLY_MODES.has(args.option)) return;
-          if (!(await this._lv600sReadyForSelection(device, level, args))) return;
+          if (mode && !LV600S_WRITABLE_MODES.has(args.option)) return;
+          return await this._lv600sSelect(device, domain, service, entityId, args);
         }
       }
       await this._hass.callService(domain, service, { entity_id: entityId, ...args });
@@ -634,30 +635,55 @@ class LevoitEsphomePanel extends HTMLElement {
     }
   }
 
-  async _lv600sReadyForSelection(device, level, args) {
+  async _lv600sSelect(device, domain, service, entityId, args) {
     const state = (key) => this._dstate(device, key);
     const power = state("switch.power");
-    const safe = () => device.online !== false && !this._lv600sUnsafe(state, device.controls);
-    const selectable = () => !level || !LV600S_SLEEP_MODES.has(state("select.humidifier_mode")?.state);
-    if (!safe() || !selectable() || !["on", "off"].includes(power?.state)) return false;
-    if (this._lv600sStarting.has(power.entity_id)) return false;
-    if (power.state === "on" || (level && args.value === 0)) return true;
+    const mist = entityId === device.controls["number.mist_level"];
+    const warm = entityId === device.controls["number.warm_level"];
+    const reported = () => this._lv600sModeStatus(state)?.state;
+    const safe = () => device.online !== false && !this._lv600sUnsafe(state, device.controls)
+      && (!warm || !LV600S_SLEEP_MODES.has(reported()));
+    const on = () => state("switch.power")?.state === "on";
+    const manual = () => LV600S_MANUAL_MODES.has(reported());
+    if (!safe() || !["on", "off"].includes(power?.state) || (mist && !this._lv600sManualOption(state))) return;
+    if (this._lv600sSelecting.has(power.entity_id)) return;
 
-    this._lv600sStarting.add(power.entity_id);
+    this._lv600sSelecting.add(power.entity_id);
     try {
-      await this._hass.callService("switch", "turn_on", { entity_id: power.entity_id });
-      const deadline = Date.now() + 8000;
-      while (safe() && selectable() && Date.now() < deadline) {
-        if (state("switch.power")?.state === "on") return true;
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!on() && !(warm && args.value === 0)) {
+        await this._hass.callService("switch", "turn_on", { entity_id: power.entity_id });
+        await this._lv600sWaitFor(safe, on, this._lvText(
+          "The humidifier did not confirm a safe start.",
+          "Der Luftbefeuchter hat keinen sicheren Start bestätigt.",
+        ));
       }
-      throw new Error(this._lvText(
-        "The humidifier did not confirm a safe start. The setting was not sent.",
-        "Der Luftbefeuchter hat keinen sicheren Start bestätigt. Die Auswahl wurde nicht gesendet.",
-      ));
+      if (mist && !manual()) {
+        const option = this._lv600sManualOption(state);
+        if (!option || !safe() || !on()) return;
+        await this._hass.callService("select", "select_option", {
+          entity_id: state("select.humidifier_mode").entity_id,
+          option,
+        });
+        await this._lv600sWaitFor(() => safe() && on(), manual, this._lvText(
+          "The humidifier did not confirm Manual. The mist level was not sent.",
+          "Der Luftbefeuchter hat den manuellen Modus nicht bestätigt. Die Nebelstufe wurde nicht gesendet.",
+        ));
+      }
+      if (safe() && (!mist || (on() && manual()))) {
+        await this._hass.callService(domain, service, { entity_id: entityId, ...args });
+      }
     } finally {
-      this._lv600sStarting.delete(power.entity_id);
+      this._lv600sSelecting.delete(power.entity_id);
     }
+  }
+
+  async _lv600sWaitFor(safe, confirmed, message) {
+    const deadline = Date.now() + 8000;
+    while (safe() && Date.now() < deadline) {
+      if (confirmed()) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(message);
   }
 
   async _check() {
@@ -776,7 +802,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const humidifierMode = ev.target.closest("select[data-humidifier-mode]");
     if (humidifierMode) {
       const { value, disabled, dataset } = humidifierMode;
-      if (disabled || !value || LV600S_READ_ONLY_MODES.has(value)) return;
+      if (disabled || !LV600S_WRITABLE_MODES.has(value)) return;
       humidifierMode.blur();
       await this._callService("select", "select_option", dataset.humidifierMode, { option: value });
       return;
@@ -1285,36 +1311,66 @@ class LevoitEsphomePanel extends HTMLElement {
     return `<span class="dc-tank${tone}" title="${esc(label)}">${icon(glyph)}${esc(label)}</span>`;
   }
 
+  _lv600sModeStatus(state) {
+    return state("text_sensor.humidifier_mode_status") ?? state("select.humidifier_mode");
+  }
+
+  _lv600sManualOption(state) {
+    const mode = state("select.humidifier_mode");
+    return mode?.state !== "unavailable" ? mode?.attributes.options?.find((option) => LV600S_MANUAL_MODES.has(option)) : undefined;
+  }
+
+  _lv600sLevels(state, { disabled, on, compact }) {
+    const sleep = LV600S_SLEEP_MODES.has(this._lv600sModeStatus(state)?.state);
+    const off = this._lvText("Off", "Aus");
+    const controls = [
+      ["number.mist_level", this._lvText("Mist level", "Nebelstufe"), [1, 5, 9]],
+    ];
+    if (!compact) controls.push(["number.warm_level", this._lvText("Warm mist", "Warmnebelstufe"), [0, 1, 2, 3]]);
+    const groups = controls.map(([key, label, levels]) => {
+      const entity = state(key);
+      if (!entity) return "";
+      const warm = key === "number.warm_level";
+      const dim = disabled || !this._usable(entity) || (warm ? sleep : !this._lv600sManualOption(state));
+      const raw = Number(entity.state);
+      const current = on && this._usable(entity) ? (warm ? raw : Math.ceil(raw / 3)) : null;
+      const buttons = levels.map((value, index) => {
+        const level = warm ? value : index + 1;
+        const chosen = level === current;
+        const text = level === 0 ? off : level;
+        return `<button class="seg sm${chosen ? " on" : ""}" aria-label="${esc(`${label} ${text}`)}"
+          aria-pressed="${chosen}" ${dim ? "disabled" : ""} ${this._svc(
+            "number", "set_value", entity.entity_id, { value },
+          )}>${esc(text)}</button>`;
+      }).join("");
+      return `<div class="lv-level">
+        ${compact ? "" : `<span class="lv-level-label">${esc(label)}</span>`}
+        <div class="segs lv-level-options" role="group"
+          aria-label="${esc(label)}">${buttons}</div>
+      </div>`;
+    }).join("");
+    return groups ? `<div class="lv-levels">${groups}</div>` : "";
+  }
+
   _lv600sQuickControls(state, { disabled, compact, on }) {
     const mode = state("select.humidifier_mode");
-    const mist = state("number.mist_level");
-    const mistLabel = this._lvText("Mist level", "Nebelstufe");
+    const reported = this._lv600sModeStatus(state);
     const modeLabel = this._lvText("Mode", "Modus");
-    const raw = Number(mist?.state);
-    // The three VeSync-equivalent presets write internal levels 1, 5 and 9.
-    const current = on && raw >= 1 && raw <= 9 ? Math.ceil(raw / 3) : null;
-    const mistDisabled = disabled || !this._usable(mist) || LV600S_SLEEP_MODES.has(mode?.state);
-    const shortcuts = mist ? `<div class="segs" role="group" aria-label="${mistLabel}">${[1, 5, 9].map((value, i) => {
-      const level = i + 1;
-      return `<button class="seg${compact ? " sm" : ""}${current === level ? " on" : ""}" aria-label="${mistLabel} ${level}"
-        aria-pressed="${current === level}" ${mistDisabled ? "disabled" : ""} ${this._svc(
-          "number", "set_value", mist.entity_id, { value },
-        )}>${level}</button>`;
-    }).join("")}</div>` : "";
-    const options = (mode?.attributes.options || []).filter((option) => !LV600S_READ_ONLY_MODES.has(option));
-    if (!options.length) return shortcuts;
-    const modeDisabled = disabled || !this._usable(mode);
-    const currentMode = on && options.includes(mode.state) ? mode.state : "";
+    const levels = this._lv600sLevels(state, { disabled, on, compact });
+    const options = (mode?.attributes.options || []).filter((option) => LV600S_WRITABLE_MODES.has(option));
+    if (!options.length) return levels;
+    const modeDisabled = disabled || mode.state === "unavailable" || !this._usable(reported);
+    const currentMode = on && options.includes(reported?.state) ? reported.state : "";
     if (compact) {
       const placeholder = on ? modeLabel : this._lvText("Off", "Aus");
-      return `${shortcuts}<select class="mode-select" data-action="none" data-humidifier-mode="${esc(mode.entity_id)}" aria-label="${modeLabel}" ${modeDisabled ? "disabled" : ""}>
+      return `${levels}<select class="mode-select" data-action="none" data-humidifier-mode="${esc(mode.entity_id)}" aria-label="${modeLabel}" ${modeDisabled ? "disabled" : ""}>
         ${currentMode ? "" : `<option value="" disabled selected>${esc(placeholder)}</option>`}
         ${options.map((option) => `<option value="${esc(option)}" ${option === currentMode ? "selected" : ""}>${esc(this._lvModeLabel(option))}</option>`).join("")}
       </select>`;
     }
     const modes = options.map((option) => `<button class="seg${option === currentMode ? " on" : ""}" aria-pressed="${option === currentMode}"
       ${modeDisabled ? "disabled" : ""} ${this._svc("select", "select_option", mode.entity_id, { option })}>${esc(this._lvModeLabel(option))}</button>`).join("");
-    return `<div class="segs" role="group" aria-label="${modeLabel}">${modes}</div>${shortcuts}`;
+    return `<div class="lv-quick"><div class="segs" role="group" aria-label="${modeLabel}">${modes}</div>${levels}</div>`;
   }
 
   // a device's state for a controls key, from the subscription's mapping
@@ -1365,7 +1421,9 @@ class LevoitEsphomePanel extends HTMLElement {
     const quickControls = humidifier ? this._lv600sQuickControls(state, {
       disabled: offline || !this._usable(powerState) || humidifierUnsafe, compact: true, on,
     }) : `${speedButtons ? `<div class="segs" role="group" aria-label="Speed">${speedButtons}</div>` : ""}${modeSelect}`;
-    const controls = quickControls ? `<div class="dc-controls">${quickControls}</div>` : "";
+    const controls = quickControls
+      ? `<div class="dc-controls"${humidifier ? ' data-action="none"' : ""}>${quickControls}</div>`
+      : "";
     const timerLeft =
       (humidifier ? Number(state("sensor.timer_remaining_seconds")?.state)
         : parseDuration(state("text_sensor.timer_duration_remaining")?.state)) / 60;
@@ -1425,10 +1483,13 @@ class LevoitEsphomePanel extends HTMLElement {
     ].join("");
     const groupChip = this._groupChip(d);
     const path = this._devicePath(d.name);
-    return `<div class="dcard${on && !offline ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0" data-action="navigate" data-path="${esc(
+    // A native mode picker can finish with a click on its containing card.
+    // Keep the humidifier's navigation on its information areas.
+    const infoLink = humidifier ? ` data-action="navigate" data-path="${esc(path)}"` : "";
+    return `<div class="dcard${humidifier ? " humidifier" : ""}${on && !offline ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0"${humidifier ? "" : ' data-action="navigate"'} data-path="${esc(
       path,
     )}" aria-label="${esc(d.title)}: open its page">
-      <div class="dc-top">
+      <div class="dc-top"${infoLink}>
         <span class="dev-tile">${deviceImage(d.model)}</span>
         <div class="dc-name">
           <div class="name">${esc(d.title)}</div>
@@ -1438,7 +1499,7 @@ class LevoitEsphomePanel extends HTMLElement {
         </div>
         ${power}
       </div>
-      ${stats ? `<div class="dc-stats">${stats}</div>` : ""}
+      ${stats ? `<div class="dc-stats"${infoLink}>${stats}</div>` : ""}
       ${controls}
     </div>`;
   }
@@ -2576,15 +2637,18 @@ class LevoitEsphomePanel extends HTMLElement {
     const on = power?.state === "on";
     const offline = !this._usable(power);
     const unsafe = offline || this._lv600sUnsafe(state, this._page.controls);
-    const mode = state("select.humidifier_mode")?.state;
+    const modeStatus = this._lv600sModeStatus(state);
+    const mode = modeStatus?.state;
     const sleep = LV600S_SLEEP_MODES.has(mode);
     const humidity = LV600S_AUTO_MODES.has(mode);
     const tankStatus = offline ? "" : this._lv600sTankStatus(state);
-    const powerLabel = on ? t("Turn off", "Ausschalten") : t("Turn on", "Einschalten");
+    const powerLabel = on
+      ? t("Humidifier: Turn off", "Luftbefeuchter: Ausschalten")
+      : t("Humidifier: Turn on", "Luftbefeuchter: Einschalten");
     const status = offline ? "Offline" : on ? t("Running", "In Betrieb") : t("Off", "Aus");
     const binary = { format: (value) => value === "on" ? t("Yes", "Ja") : t("No", "Nein") };
-    const modeLabel = on && mode && !LV600S_READ_ONLY_MODES.has(mode) ? this._lvModeLabel(mode) : "";
-    const reportedMode = this._usable(state("select.humidifier_mode")) ? this._lvModeLabel(mode) : t("Unknown", "Unbekannt");
+    const modeLabel = on && LV600S_WRITABLE_MODES.has(mode) ? this._lvModeLabel(mode) : "";
+    const reportedMode = this._usable(modeStatus) ? this._lvModeLabel(modeStatus.state) : t("Unknown", "Unbekannt");
     return `${this._alerts()}
       <div class="card hero" aria-label="${esc(this._page.title || "LV600S")}">
         <div class="hero-main">
@@ -2602,15 +2666,12 @@ class LevoitEsphomePanel extends HTMLElement {
         </div>
       </div>
       ${this._historyCard()}
-      <div class="sections">${this._section(t("Humidifier", "Luftbefeuchter"), [
+      <div class="sections">${this._lv600sTimer(unsafe)}
+      ${this._section(t("Configuration", "Konfiguration"), [
         this._slider("number.humidity_target", t("Target humidity", "Zielfeuchte"),
           t("40–80 % in Auto mode", "40–80 % im Automatikmodus"), { dim: unsafe || !on || !humidity, unit: "%" }),
-        this._stepper("number.mist_level", t("Mist level", "Nebelstufe"),
-          t("1–9 internal levels", "1–9 interne Stufen"), { dim: unsafe || sleep }),
-        this._stepper("number.warm_level", t("Warm mist", "Warmnebelstufe"),
-          t("Stored heat setting", "Gespeicherte Heizstufe"), { dim: unsafe || sleep }),
-      ])}${this._lv600sTimer(unsafe)}
-      ${this._section("Display", [this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep })])}
+        this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep }),
+      ])}
       ${this._section(t("Appliance status", "Gerätestatus"), [
         this._setting(t("Reported mode", "Gemeldeter Modus"), "", `<span class="readout">${esc(reportedMode)}</span>`),
         this._readout("binary_sensor.water_tank_empty", t("Water tank empty", "Wassertank leer"), binary),
@@ -2638,7 +2699,7 @@ class LevoitEsphomePanel extends HTMLElement {
     return this._section("Timer", [
       status,
       durations.length ? `<div class="opts" role="group" aria-label="${t("Turn off in", "Ausschalten in")}">${durations.join("")}</div>` : "",
-      this._stepper("number.timer", t("Adjust minutes", "Minuten einstellen"), "", { dim: disabled, integer: true }),
+      this._slider("number.timer", t("Adjust minutes", "Minuten einstellen"), "", { dim: disabled, unit: "min" }),
     ], "", seconds === 0 ? "" : setTimer(0, t("Cancel", "Abbrechen"), "btn text"));
   }
 
@@ -3418,6 +3479,8 @@ select:disabled { opacity: 0.6; }
   border-radius: var(--ha-card-border-radius, 12px);
   border: 1px solid var(--ha-card-border-color, var(--divider-color, #e0e0e0)); }
 .dcard:hover { border-color: var(--primary-color); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08); }
+.dcard.humidifier { cursor: default; }
+.dcard.humidifier [data-action="navigate"] { cursor: pointer; }
 .dcard:focus-visible { box-shadow: 0 0 0 2px var(--primary-color); }
 .dc-top { display: flex; align-items: center; gap: 12px; }
 .dev-tile { width: 44px; height: 44px; border-radius: 12px; flex: none; display: inline-flex; align-items: center;
@@ -3454,6 +3517,11 @@ select:disabled { opacity: 0.6; }
 .dc-controls { display: flex; align-items: center; gap: 8px; margin-top: auto; }
 .dc-controls .segs { flex-wrap: nowrap; }
 .seg.sm { font-size: 13px; height: 32px; padding: 0 10px; min-width: 32px; }
+.lv-quick { display: grid; justify-items: start; gap: 8px; min-width: 0; width: 100%; }
+.lv-levels { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 14px; }
+.lv-level { display: grid; gap: 4px; }
+.lv-level-label { color: var(--secondary-text-color); font-size: 12px; }
+.lv-level-options > .seg.sm { padding: 0 8px; }
 .mode-select { margin-left: auto; height: 36px; min-width: 100px; padding: 0 10px 0 14px; border-radius: 18px;
   font-weight: 500; font-size: 13px; background: var(--card-background-color, #fff); cursor: pointer; }
 .mode-select:hover:not(:disabled) { border-color: var(--primary-color); }

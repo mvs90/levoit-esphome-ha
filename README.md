@@ -535,8 +535,8 @@ Connection, MCU Fault and Timer Remaining.
 
 The timer presets work when the MCU reports fresh status but has yet to send
 a timer snapshot. The page shows remaining seconds separately from the timer
-command. It disables incompatible controls in standby and sleep and blocks
-start when an available tank, water, fault or MCU diagnostic rules it out.
+command. It blocks start when an available tank, water, fault or MCU
+diagnostic rules it out.
 The power-off control remains available while power is reported on. Auto in the
 panel selects the existing target-humidity mode. Auto (Original) and Unknown
 appear only under the reported device status.
@@ -549,21 +549,30 @@ remaining available to existing automations.
 **English.** The LV600S card shows the tank state next to the model, in the
 same position as the filter indicator on purifiers. The tank icon and text show
 whether the tank is installed or removed and whether water is available. The card
-offers three mist presets and an operating mode selector. The detail page adds
-precise mist and warm mist settings and a 24-hour or 7-day history for humidity,
-temperature and both mist settings. These settings show the levels reported by
-the device. The chart leaves gaps when readings are unavailable.
+offers three mist presets and an operating mode selector. Choosing a mist
+preset starts the unit if needed and waits for the device to confirm Manual
+before sending the level. The detail header shows the same mist presets and
+warm mist levels 1–3 plus Off. Below the 24-hour or 7-day history, the timer
+provides compact presets and a minute slider. Configuration contains the
+target humidity and display controls. The history shows humidity, temperature
+and both device-reported mist settings, with gaps for unavailable readings.
 
 **Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
 an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
 zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
 ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+Bei Wahl einer Nebelstufe startet das Gerät bei Bedarf und bestätigt zuerst
+den Modus **Manuell**. Danach wird die Stufe gesendet.
 **Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
 **Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
-In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
-den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 24 Stunden
-oder 7 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
-Messwerte erscheinen als Lücken.
+Der Kopf der Detailansicht zeigt die drei Nebelstufen sowie Warmnebel 1–3 und
+Aus. Der Verlauf zeigt Luftfeuchtigkeit, Temperatur und beide gemeldeten
+Stufen über 24 Stunden oder 7 Tage. Fehlende Messwerte erscheinen als Lücken.
+Darunter stehen kompakte Zeitvorgaben und ein Schieberegler für die
+Timerminuten. Zielfeuchte und Display stehen unter Konfiguration.
+
+On the owner's LV600S with firmware `1.2.06-mist-controls`, Home Assistant
+confirmed the switch from Auto to Manual and the subsequent mist level.
 
 The test branch recognises the LV600S through its existing ESPHome entry. The
 Add Device catalogue reads upstream. To reproduce the tested configuration, use

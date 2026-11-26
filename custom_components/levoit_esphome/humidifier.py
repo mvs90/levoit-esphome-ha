@@ -33,6 +33,7 @@ PARALLEL_UPDATES = 0
 
 _POWER = "switch.power"
 _MODE = "select.humidifier_mode"
+_MODE_STATUS = "text_sensor.humidifier_mode_status"
 _TARGET = "number.humidity_target"
 _CONNECTION = "binary_sensor.mcu_connection"
 _HUMIDIFYING = "binary_sensor.humidifying"
@@ -42,10 +43,10 @@ _SAFETY = (
     "binary_sensor.tank_removed",
     "binary_sensor.mcu_fault",
 )
-_SOURCES = (_POWER, _MODE, _TARGET, _CONNECTION, _HUMIDIFYING, _HUMIDITY, *_SAFETY)
+_SOURCES = (_POWER, _MODE, _MODE_STATUS, _TARGET, _CONNECTION, _HUMIDIFYING, _HUMIDITY, *_SAFETY)
 _MODES = {
     "manual": ("Manual", "Manuell"),
-    MODE_AUTO: ("Humidity", "Feuchte"),
+    MODE_AUTO: ("Auto", "Auto (Feuchte)", "Humidity", "Feuchte"),
     MODE_SLEEP: ("Humidity Sleep", "Schlaf"),
 }
 
@@ -187,13 +188,17 @@ class LV600SHumidifier(LevoitEsphomeEntity, HumidifierEntity):
         return list(self._mode_options())
 
     @property
+    def _mode_source(self) -> str:
+        return _MODE_STATUS if self._state(_MODE_STATUS) is not None else _MODE
+
+    @property
     def mode(self) -> str | None:
-        raw = self._value(_MODE)
+        raw = self._value(self._mode_source)
         return next((mode for mode, aliases in _MODES.items() if raw in aliases), None)
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:
-        raw = self._value(_MODE)
+        raw = self._value(self._mode_source)
         if raw in ("Auto (read only)", "Auto (Original)"):
             return {"reported_mode": "original_auto"}
         return {"reported_mode": "unknown"} if self.mode is None else {}
@@ -239,9 +244,9 @@ class LV600SHumidifier(LevoitEsphomeEntity, HumidifierEntity):
         if option is None:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="lv600s_unready")
         await self._ensure_power()
-        if self._value(_MODE) != option:
+        if self._value(self._mode_source) != option:
             await self._call(_MODE, "select_option", option=option)
-            await self._wait_for(_MODE, option)
+            await self._wait_for(self._mode_source, option)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         async with self._commands:

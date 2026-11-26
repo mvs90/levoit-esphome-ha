@@ -122,8 +122,9 @@ MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
         "binary_sensor.water_tank_empty": ("Water Level", "Water Tank Empty"),
     },
     "LV600S": {
-        "switch.power": ("Power", "Ein"),
+        "switch.power": ("Humidifier", "Luftbefeuchter", "Power", "Ein"),
         "select.humidifier_mode": ("Operating Mode", "Betriebsmodus"),
+        "text_sensor.humidifier_mode_status": ("Operating Mode Status", "Betriebsmodus Status"),
         "number.humidity_target": ("Target Humidity", "Zielfeuchte"),
         "number.mist_level": ("Mist Level", "Nebelstufe"),
         "number.timer": ("Timer (min)", "Timer Minuten"),
