@@ -537,8 +537,14 @@ The timer presets work when the MCU reports fresh status but has yet to send
 a timer snapshot. The page shows remaining seconds separately from the timer
 command. It disables incompatible controls in standby and sleep and blocks
 start when an available tank, water, fault or MCU diagnostic rules it out.
-The off control remains available while power is reported on. Original Auto
-and Unknown appear as read-only choices.
+The power-off control remains available while power is reported on. Auto in the
+panel selects the existing target-humidity mode. Auto (Original) and Unknown
+appear only under the reported device status.
+
+Home Assistant also exposes a `humidifier` entity on the linked Levoit device.
+It uses the existing ESPHome power, mode, humidity and target entities. The
+underlying mode select can be hidden from the Home Assistant interface while
+remaining available to existing automations.
 
 **English.** The LV600S card shows the tank state next to the model, in the
 same position as the filter indicator on purifiers. The tank icon and text show
@@ -552,6 +558,8 @@ the device. The chart leaves gaps when readings are unavailable.
 an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
 zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
 ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+**Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
+**Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
 In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
 den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 24 Stunden
 oder 7 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende

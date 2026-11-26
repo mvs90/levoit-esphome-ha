@@ -1,0 +1,25 @@
+{
+  "entity": {
+    "humidifier": {
+      "lv600s": {
+        "state_attributes": {
+          "mode": {
+            "state": { "manual": "Manuell", "auto": "Auto", "sleep": "Schlaf" }
+          },
+          "reported_mode": {
+            "name": "Gemeldeter Modus",
+            "state": { "original_auto": "Auto (Original)", "unknown": "Unbekannt" }
+          }
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "lv600s_unready": {
+      "message": "Der LV600S ist für diese Aktion nicht bereit. Prüfe Verbindung, Wassertank und Gerätestatus."
+    },
+    "lv600s_no_confirmation": {
+      "message": "Der LV600S hat den angeforderten Zustand nicht bestätigt."
+    }
+  }
+}

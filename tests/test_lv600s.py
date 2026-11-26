@@ -9,6 +9,7 @@ import pytest
 from custom_components.levoit_esphome.controls import config_names, match_controls, page_supported
 from custom_components.levoit_esphome.versions import component_model, component_source
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
 from .conftest import MAC, add_esphome_device
@@ -97,3 +98,92 @@ async def test_superior_tank_status_has_only_water_level(hass: HomeAssistant) ->
     assert match_controls(hass, device_id, "SUPERIOR6000S") == {
         "binary_sensor.water_tank_empty": ids["binary_sensor.water_level"]
     }
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_native_lv600s_humidifier(hass: HomeAssistant) -> None:
+    """Expose real settings and hide diagnostic states from the supported modes."""
+    hass.config.components.add("esphome")
+    add_esphome_device(hass, "living-humidifier", MAC, "Humidifier", None, model="LV600S")
+    ids = _add_entities(
+        hass,
+        MAC,
+        {
+            "switch.power": "Ein",
+            "select.mode": "Betriebsmodus",
+            "number.target": "Zielfeuchte",
+            "sensor.humidity": "Luftfeuchtigkeit",
+            "binary_sensor.empty": "Wassermangel",
+            "binary_sensor.connection": "MCU Verbindung",
+            "binary_sensor.active": "Befeuchtet",
+        },
+    )
+    mode_attrs = {"options": ["Manuell", "Feuchte", "Schlaf", "Auto (Original)", "Unbekannt"]}
+    for key, value in {
+        "switch.power": "off",
+        "number.target": "unknown",
+        "sensor.humidity": "42",
+        "binary_sensor.empty": "off",
+        "binary_sensor.connection": "on",
+        "binary_sensor.active": "off",
+    }.items():
+        hass.states.async_set(ids[key], value)
+    hass.states.async_set(ids["select.mode"], "Manuell", mode_attrs)
+
+    calls = []
+
+    async def power(call):
+        calls.append(call.service)
+        hass.states.async_set(ids["switch.power"], "on" if call.service == "turn_on" else "off")
+
+    async def mode(call):
+        assert hass.states.get(ids["switch.power"]).state == "on"
+        calls.append(call.data["option"])
+        hass.states.async_set(ids["select.mode"], call.data["option"], mode_attrs)
+
+    async def target(call):
+        assert hass.states.get(ids["select.mode"]).state == "Feuchte"
+        calls.append(call.data["value"])
+        hass.states.async_set(ids["number.target"], "53")
+
+    await _setup(hass)
+    hass.services.async_register("switch", "turn_on", power)
+    hass.services.async_register("switch", "turn_off", power)
+    hass.services.async_register("select", "select_option", mode)
+    hass.services.async_register("number", "set_value", target)
+    (entity,) = hass.states.async_all("humidifier")
+    entity_id = entity.entity_id
+    assert entity.state == "off"
+    assert entity.attributes["device_class"] == "humidifier"
+    assert entity.attributes["available_modes"] == ["manual", "auto", "sleep"]
+    assert entity.attributes["current_humidity"] == 42
+
+    await hass.services.async_call(
+        "humidifier", "set_humidity", {"entity_id": entity_id, "humidity": 53}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert calls == ["turn_on", "Feuchte", 53]
+    assert hass.states.get(entity_id).state == "on"
+    assert hass.states.get(entity_id).attributes["humidity"] == 53
+    assert hass.states.get(entity_id).attributes["mode"] == "auto"
+
+    hass.states.async_set(ids["select.mode"], "Auto (Original)", mode_attrs)
+    hass.states.async_set(ids["binary_sensor.active"], "on")
+    await hass.async_block_till_done()
+    attributes = hass.states.get(entity_id).attributes
+    assert attributes.get("mode") is None
+    assert attributes["reported_mode"] == "original_auto"
+    assert attributes["action"] == "humidifying"
+
+    hass.states.async_set(ids["binary_sensor.empty"], "on")
+    with pytest.raises(HomeAssistantError) as error:
+        await hass.services.async_call(
+            "humidifier", "set_mode", {"entity_id": entity_id, "mode": "sleep"}, blocking=True
+        )
+    assert error.value.translation_key == "lv600s_unready"
+    assert calls == ["turn_on", "Feuchte", 53]
+
+    await hass.services.async_call(
+        "humidifier", "turn_off", {"entity_id": entity_id}, blocking=True
+    )
+    assert calls[-1] == "turn_off"

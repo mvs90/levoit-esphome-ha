@@ -40,7 +40,7 @@ html = panel._deviceCard(card);
 assert(html.includes('data-domain="switch"') && html.includes('switch.power'));
 assert(html.includes('Humidity') && !html.includes('data-domain="fan"'));
 assert(html.includes('data-humidifier-mode="select.humidifier_mode"'));
-assert(html.includes('value="Humidity" selected'));
+assert(html.includes('value="Humidity" selected>Auto'));
 assert(html.includes('value="Manual"') && html.includes('value="Humidity Sleep"'));
 assert(!html.includes('value="Auto (read only)"') && !html.includes('value="Unknown"'));
 for (const [level, value] of [[1, 1], [2, 5], [3, 9]]) {
@@ -60,7 +60,11 @@ await panel._onChange(change);
 assert.equal(modeChanges.length, 1);
 states['select.humidifier_mode'].state = 'Auto (read only)';
 html = panel._devicePage();
-assert(html.includes('Auto (read only)') && !html.includes('&quot;option&quot;:&quot;Auto (read only)&quot;'));
+assert(html.includes('Appliance status') && html.includes('class="readout">Auto (Original)'));
+assert(!panel._deviceCard(card).includes('Auto (Original)'));
+states['select.humidifier_mode'].state = 'Unknown';
+assert(panel._devicePage().includes('class="readout">Unknown'));
+assert(!panel._deviceCard(card).includes('Unknown'));
 states['select.humidifier_mode'].state = 'Humidity Sleep';
 html = panel._deviceCard(card);
 assert(html.match(/<button[^>]*aria-label="Mist level 1"[^>]*>/)[0].includes('disabled'));
@@ -200,7 +204,7 @@ assert.equal(Date.parse(requests[1].end_time) - Date.parse(requests[1].start_tim
 panel._hass.locale = { language: 'de-DE' };
 html = panel._deviceCard(card);
 assert(html.includes('Tank eingesetzt · Wasser vorhanden'));
-assert(html.includes('Nebelstufe 2') && html.includes('value="Humidity" selected>Feuchte'));
+assert(html.includes('Nebelstufe 2') && html.includes('value="Humidity" selected>Auto'));
 html = panel._devicePage();
 for (const value of ['Verlauf', '7 Tage', 'Luftfeuchtigkeit', 'Temperatur', 'Nebelstufe', 'Warmnebelstufe']) {
   assert(html.includes(value));
