@@ -2948,8 +2948,8 @@ class LevoitEsphomePanel extends HTMLElement {
     const status = this._readout("sensor.timer_remaining_seconds", t("Remaining", "Restzeit"));
     if (!timer) return this._section("Timer", [status]);
     const disabled = unsafe || timer.state === "unavailable";
-    const setTimer = (value, label) =>
-      `<button class="opt" ${disabled ? "disabled" : ""} ${this._svc(
+    const setTimer = (value, label, buttonClass = "opt") =>
+      `<button class="${buttonClass}" ${disabled ? "disabled" : ""} ${this._svc(
         "number", "set_value", timer.entity_id, { value },
       )}>${esc(label)}</button>`;
     const durations = [1, 30, 60, 120, 240, 480, 720]
@@ -2957,9 +2957,9 @@ class LevoitEsphomePanel extends HTMLElement {
       .map((value) => setTimer(value, formatMinutes(value)));
     return this._section("Timer", [
       status,
-      this._setting(t("Turn off in", "Ausschalten in"), "", `<div class="opts">${durations.join("")}</div>`),
+      durations.length ? `<div class="opts" role="group" aria-label="${t("Turn off in", "Ausschalten in")}">${durations.join("")}</div>` : "",
       this._stepper("number.timer", t("Adjust minutes", "Minuten einstellen"), "", { dim: disabled, integer: true }),
-    ], "", seconds === 0 ? "" : setTimer(0, t("Cancel", "Abbrechen")));
+    ], "", seconds === 0 ? "" : setTimer(0, t("Cancel", "Abbrechen"), "btn text"));
   }
 
   _autoSection() {
