@@ -29,10 +29,11 @@ const CHANNEL_LABELS = {
   local: "Local",
 };
 const LV600S_READ_ONLY_MODES = new Set(["Auto (read only)", "Auto (Original)", "Unknown", "Unbekannt"]);
+const LV600S_AUTO_MODES = new Set(["Humidity", "Feuchte"]);
 const LV600S_SLEEP_MODES = new Set(["Humidity Sleep", "Schlaf"]);
 const LV600S_MODE_LABELS = [
-  ["Manual", "Manuell"], ["Humidity", "Feuchte"], ["Humidity Sleep", "Schlaf"],
-  ["Auto (read only)", "Auto (Original)"], ["Unknown", "Unbekannt"],
+  ["Manual", "Manuell"], ["Humidity Sleep", "Schlaf"],
+  ["Unknown", "Unbekannt"],
 ];
 
 const ICONS = {
@@ -1355,6 +1356,8 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _lvModeLabel(value) {
+    if (LV600S_AUTO_MODES.has(value)) return "Auto";
+    if (value === "Auto (read only)") return "Auto (Original)";
     const labels = LV600S_MODE_LABELS.find((pair) => pair.includes(value));
     return labels ? this._lvText(...labels) : value;
   }
@@ -1417,9 +1420,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const modeDisabled = disabled || !this._usable(mode);
     const currentMode = on && options.includes(mode.state) ? mode.state : "";
     if (compact) {
-      const standby = this._lvText("Off", "Aus");
-      const placeholder = this._usable(mode) && (on || LV600S_READ_ONLY_MODES.has(mode.state))
-        ? this._lvModeLabel(mode.state) : standby;
+      const placeholder = on ? modeLabel : this._lvText("Off", "Aus");
       return `${shortcuts}<select class="mode-select" data-action="none" data-humidifier-mode="${esc(mode.entity_id)}" aria-label="${modeLabel}" ${modeDisabled ? "disabled" : ""}>
         ${currentMode ? "" : `<option value="" disabled selected>${esc(placeholder)}</option>`}
         ${options.map((option) => `<option value="${esc(option)}" ${option === currentMode ? "selected" : ""}>${esc(this._lvModeLabel(option))}</option>`).join("")}
@@ -2947,12 +2948,13 @@ class LevoitEsphomePanel extends HTMLElement {
     const unsafe = offline || this._lv600sUnsafe(state, this._page.controls);
     const mode = state("select.humidifier_mode")?.state;
     const sleep = LV600S_SLEEP_MODES.has(mode);
-    const humidity = ["Humidity", "Feuchte"].includes(mode);
+    const humidity = LV600S_AUTO_MODES.has(mode);
     const tankStatus = offline ? "" : this._lv600sTankStatus(state);
     const powerLabel = on ? t("Turn off", "Ausschalten") : t("Turn on", "Einschalten");
     const status = offline ? "Offline" : on ? t("Running", "In Betrieb") : t("Off", "Aus");
     const binary = { format: (value) => value === "on" ? t("Yes", "Ja") : t("No", "Nein") };
-    const modeLabel = mode && (on || LV600S_READ_ONLY_MODES.has(mode)) ? this._lvModeLabel(mode) : "";
+    const modeLabel = on && mode && !LV600S_READ_ONLY_MODES.has(mode) ? this._lvModeLabel(mode) : "";
+    const reportedMode = this._usable(state("select.humidifier_mode")) ? this._lvModeLabel(mode) : t("Unknown", "Unbekannt");
     const error = state("text_sensor.error_message");
     const fault = this._usable(error) && !/^(?:ok|no reported mcu fault)$/i.test(error.state.trim());
     return `${fault ? `<div class="notice warn">${t("Error", "Fehler")}: ${esc(error.state)}</div>` : ""}
@@ -2974,7 +2976,7 @@ class LevoitEsphomePanel extends HTMLElement {
       ${this._historyCard()}
       <div class="sections">${this._section(t("Humidifier", "Luftbefeuchter"), [
         this._slider("number.humidity_target", t("Target humidity", "Zielfeuchte"),
-          t("40–80 % in Humidity mode", "40–80 % im Feuchtemodus"), { dim: unsafe || !on || !humidity, unit: "%" }),
+          t("40–80 % in Auto mode", "40–80 % im Automatikmodus"), { dim: unsafe || !on || !humidity, unit: "%" }),
         this._stepper("number.mist_level", t("Mist level", "Nebelstufe"),
           t("1–9 internal levels", "1–9 interne Stufen"), { dim: unsafe || sleep }),
         this._stepper("number.warm_level", t("Warm mist", "Warmnebelstufe"),
@@ -2982,6 +2984,7 @@ class LevoitEsphomePanel extends HTMLElement {
       ])}${this._lv600sTimer(unsafe)}
       ${this._section("Display", [this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep })])}
       ${this._section(t("Appliance status", "Gerätestatus"), [
+        this._setting(t("Reported mode", "Gemeldeter Modus"), "", `<span class="readout">${esc(reportedMode)}</span>`),
         this._readout("binary_sensor.water_tank_empty", t("Water tank empty", "Wassertank leer"), binary),
         this._readout("binary_sensor.tank_removed", t("Tank removed", "Tank herausgenommen"), binary),
         this._readout("binary_sensor.humidifying", t("Humidifying", "Befeuchtet"), binary),

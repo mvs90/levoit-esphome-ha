@@ -619,9 +619,11 @@ sharper.
 
 The LV600S (`lv600s_humidifier`, model `LV600S`) uses its existing ESPHome device
 entry. Humidity, temperature, tank status, power, modes, mist, warm level and
-timer map to ESPHome entities. The dedicated page shows Original Auto and Unknown
-as read-only choices. Auxiliary LV600S fans are excluded from purifier group
-discovery.
+timer map to ESPHome entities. The panel labels the target-humidity mode Auto
+and shows Auto (Original) and Unknown only under the reported device status.
+The linked Levoit device exposes a Home Assistant `humidifier` entity backed
+by the ESPHome power, mode, humidity and target entities. Auxiliary LV600S fans
+are excluded from purifier group discovery.
 
 **English.** The LV600S card shows the tank state next to the model, in the
 same position as the filter indicator on purifiers. The tank icon and text show
@@ -636,6 +638,8 @@ its remaining-seconds reading.
 an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
 zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
 ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+**Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
+**Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
 In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
 den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 12 Stunden,
 24 Stunden, 7 Tage oder 30 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
