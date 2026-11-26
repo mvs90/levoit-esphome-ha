@@ -267,6 +267,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._hoverT = null; // time under the crosshair
     this._histHidden = new Set(); // history series switched off in the legend
     this._updatingAll = false;
+    this._lv600sStarting = new Set();
     // purifier groups (route /levoit-esphome/groups/...)
     this._groups = null; // levoit_esphome/groups/subscribe: {groups, purifiers, dismissed_areas}
     this._groupsError = null;
@@ -614,9 +615,47 @@ class LevoitEsphomePanel extends HTMLElement {
 
   async _callService(domain, service, entityId, args) {
     try {
+      const mode = domain === "select" && service === "select_option";
+      const level = domain === "number" && service === "set_value";
+      if (mode || level) {
+        const keys = mode ? ["select.humidifier_mode"] : ["number.mist_level", "number.warm_level"];
+        const device = [this._page, ...(this._data?.devices || [])].find(
+          (d) => d?.model === "LV600S" && keys.some((key) => d.controls?.[key] === entityId),
+        );
+        if (device) {
+          if (mode && LV600S_READ_ONLY_MODES.has(args.option)) return;
+          if (!(await this._lv600sReadyForSelection(device, level, args))) return;
+        }
+      }
       await this._hass.callService(domain, service, { entity_id: entityId, ...args });
     } catch (err) {
       this._toast(`${err.message || err}`);
+    }
+  }
+
+  async _lv600sReadyForSelection(device, level, args) {
+    const state = (key) => this._dstate(device, key);
+    const power = state("switch.power");
+    const safe = () => device.online !== false && !this._lv600sUnsafe(state, device.controls);
+    const selectable = () => !level || !LV600S_SLEEP_MODES.has(state("select.humidifier_mode")?.state);
+    if (!safe() || !selectable() || !["on", "off"].includes(power?.state)) return false;
+    if (this._lv600sStarting.has(power.entity_id)) return false;
+    if (power.state === "on" || (level && args.value === 0)) return true;
+
+    this._lv600sStarting.add(power.entity_id);
+    try {
+      await this._hass.callService("switch", "turn_on", { entity_id: power.entity_id });
+      const deadline = Date.now() + 8000;
+      while (safe() && selectable() && Date.now() < deadline) {
+        if (state("switch.power")?.state === "on") return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error(this._lvText(
+        "The humidifier did not confirm a safe start. The setting was not sent.",
+        "Der Luftbefeuchter hat keinen sicheren Start bestätigt. Die Auswahl wurde nicht gesendet.",
+      ));
+    } finally {
+      this._lv600sStarting.delete(power.entity_id);
     }
   }
 
@@ -1262,10 +1301,13 @@ class LevoitEsphomePanel extends HTMLElement {
     const options = (mode?.attributes.options || []).filter((option) => !LV600S_READ_ONLY_MODES.has(option));
     if (!options.length) return shortcuts;
     const modeDisabled = disabled || !this._usable(mode);
-    const currentMode = options.includes(mode.state) ? mode.state : "";
+    const currentMode = on && options.includes(mode.state) ? mode.state : "";
     if (compact) {
+      const standby = this._lvText("Off", "Aus");
+      const placeholder = this._usable(mode) && (on || LV600S_READ_ONLY_MODES.has(mode.state))
+        ? this._lvModeLabel(mode.state) : standby;
       return `${shortcuts}<select class="mode-select" data-action="none" data-humidifier-mode="${esc(mode.entity_id)}" aria-label="${modeLabel}" ${modeDisabled ? "disabled" : ""}>
-        ${currentMode ? "" : `<option value="" disabled selected>${esc(this._usable(mode) ? this._lvModeLabel(mode.state) : modeLabel)}</option>`}
+        ${currentMode ? "" : `<option value="" disabled selected>${esc(placeholder)}</option>`}
         ${options.map((option) => `<option value="${esc(option)}" ${option === currentMode ? "selected" : ""}>${esc(this._lvModeLabel(option))}</option>`).join("")}
       </select>`;
     }
