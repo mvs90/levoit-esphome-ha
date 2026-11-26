@@ -225,7 +225,9 @@ def _protection(fields: dict[str, Node]) -> tuple[Value | None, Value | None, Va
     """Read the API and native OTA protection of a standalone builder template."""
     api_key = None
     api = fields.get("api")
-    if api is not None and api.tag != "tag:yaml.org,2002:null":
+    if api is None:
+        raise TemplateError("templates without the native API must be managed as custom configs")
+    if api.tag != "tag:yaml.org,2002:null":
         api_fields = _mapping(api, "API")
         if "password" in api_fields:
             raise TemplateError("legacy API password; use a custom config")

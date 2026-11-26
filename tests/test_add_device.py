@@ -32,6 +32,7 @@ from .conftest import (
     FakeBuilder,
     add_esphome_device,
     assert_compiled,
+    assert_uploaded,
 )
 
 UPDATE = "update.bedroom_purifier_component_firmware"
@@ -198,7 +199,7 @@ async def test_existing_device_without_keys(
 
 
 @pytest.mark.usefixtures("esphome_devices")
-@pytest.mark.parametrize("protection", ["password", "explicit_key", "api_key"])
+@pytest.mark.parametrize("protection", ["password", "explicit_key", "api_key", "unprotected"])
 @pytest.mark.parametrize(
     "upstream_credential",
     ["password: !secret ota_password", "encryption:", "encryption:\n      key: !secret api_key"],
@@ -239,13 +240,15 @@ async def test_install_refreshes_template_config(
     assert new == render(BUILDER_TEXT, EVEREST_C3, values)
     assert config_values(new) == values  # keeps name, secrets, channel
     assert_compiled(builder, "bedroom-purifier.yaml")
+    assert_uploaded(builder, "bedroom-purifier.yaml")
 
 
 @pytest.mark.usefixtures("esphome_devices")
-async def test_install_refuses_new_ota_transport(
-    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+@pytest.mark.parametrize("mixed_config", ["current", "downloaded"])
+async def test_install_refuses_mixed_ota_transports(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder, mixed_config: str
 ) -> None:
-    """Keep the original file and stop if the refreshed builder adds an OTA transport."""
+    """Keep the original file and stop when more than one OTA transport is present."""
     name = "bedroom-purifier.yaml"
     values = ConfigValues(
         name="bedroom-purifier",
@@ -254,11 +257,14 @@ async def test_install_refuses_new_ota_transport(
         channel="stable",
     )
     old = render(BUILDER_TEXT, EVEREST_C3, values)
+    new_source = BUILDER_TEXT
+    if mixed_config == "current":
+        old = old.replace("ota:\n", "ota:\n  - platform: web_server\n", 1)
+    else:
+        new_source = new_source.replace("ota:\n", "ota:\n  - platform: web_server\n", 1)
     builder.files.configs[name] = old
     await _setup(hass)
 
-    new_source = BUILDER_TEXT.replace("ota:\n", "ota:\n  - platform: web_server\n", 1)
-    assert new_source != BUILDER_TEXT
     with (
         patch(
             "custom_components.levoit_esphome.templates.async_fetch_template_text",
@@ -272,6 +278,7 @@ async def test_install_refuses_new_ota_transport(
     assert builder.files.configs[name] == old
     assert builder.files.writes == []
     builder.api.compile.assert_not_awaited()
+    builder.api.upload.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("esphome_devices")

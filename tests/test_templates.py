@@ -285,6 +285,12 @@ def test_inline_encrypted_ota_and_yaml_comments() -> None:
         "ota: []",
         "ota: [{platform: esphome, encryption: {}}]",
         "ota:\n  - platform: esphome\n    encryption: !include private-ota.yaml",
+        "ota: [{platform: esphome, encryption: {key: !secret ota_key, "
+        "old_key: !secret old_ota_key}}]",
+        "ota: [{platform: esphome, encryption: {key: !secret ota_key, "
+        "allow_plaintext_upload: true}}]",
+        "ota: [{platform: esphome, password: !secret ota_password, "
+        "encryption: {key: !secret ota_key}}]",
         "ota: [{platform: esphome, encryption: {key: !secret ota_key, key: other}}]",
         'ota: [{platform: esphome, encryption: {key: "${private_key}"}}]',
         "ota: [{platform: esphome}]\npackages: !include private.yaml",
@@ -307,3 +313,15 @@ def test_refuses_ota_that_cannot_be_preserved(ota: str) -> None:
 def test_refresh_refuses_to_rewrite_pinned_or_forked_source(before: str, after: str) -> None:
     with pytest.raises(TemplateError, match="custom config"):
         config_values(BUILDER.replace(before, after))
+
+
+def test_refresh_does_not_enable_a_native_api_that_was_removed() -> None:
+    text = render(
+        BUILDER,
+        EVEREST_C3,
+        ConfigValues(name="secure-air", ota_encryption_key=Value(secret="ota_key")),
+    )
+    without_api = text.replace("\napi:\n", "\n", 1)
+    assert without_api != text
+    with pytest.raises(TemplateError, match="without the native API"):
+        config_values(without_api)

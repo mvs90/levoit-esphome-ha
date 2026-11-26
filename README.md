@@ -497,11 +497,12 @@ Template refreshes preserve the native ESPHome OTA encryption key and API
 key, whether inline or referenced by `!secret`. If `ota.encryption` is left
 empty, OTA continues to use the API encryption key. An explicit OTA key must
 resolve to the same value as a configured API key. The integration inspects the
-YAML without loading packages or looking up secret values. It supports a single
-native OTA transport on a standalone template tracking upstream Main or Stable.
-If a marked template uses packages, an unsupported transport or a pinned/forked
-source, the refresh stops before writing or building. Remove the template marker
-to maintain that file as a custom config. Use a Device Builder version that
+YAML without loading packages or looking up secret values. Refresh supports a
+standalone template with the native API, one native OTA transport, and an
+upstream Main or Stable source. Other layouts stop before writing or building.
+Key rotation (`old_key`) and migration that permits a plaintext upload
+(`allow_plaintext_upload`) also require a custom config. Remove the template
+marker to manage that file manually. Use a Device Builder version that
 supports native OTA encryption for an encrypted device.
 
 ### How it works
