@@ -554,7 +554,10 @@ right. On narrow cards, the mode selector is hidden until the warm mist choice
 is made or the picker is closed. Choosing a mist preset starts the unit if
 needed and waits for Manual before sending the level. A mode selected in
 standby starts the device and the card follows its confirmed power, mode and
-mist states. The detail header shows mist and warm mist to the
+mist states. Power, mode and mist selections appear immediately, with a
+single update for the warm mist value and its icon. The panel falls back
+to the device's reported values after four seconds without confirmation.
+The detail header shows mist and warm mist to the
 right of the operating mode when space allows. Below the 24-hour or 7-day
 history, the timer uses the purifier's presets and shows the remaining time
 with a progress bar when the start is known. Configuration contains the
@@ -570,7 +573,9 @@ auf. Auf schmalen Karten erscheint die Moduswahl wieder, sobald die Stufe
 gewählt oder die Auswahl geschlossen wurde. Bei Wahl einer Nebelstufe startet
 das Gerät bei Bedarf und bestätigt zuerst **Manuell**. Bei einer Moduswahl aus
 dem Standby aktualisiert die Karte Einschaltzustand, Modus und Nebelstufe anhand
-der bestätigten Gerätewerte.
+der bestätigten Gerätewerte. Die Auswahl erscheint sofort. Warmnebelstufe
+und Symbol wechseln zusammen. Ohne Bestätigung zeigt das Panel nach vier
+Sekunden wieder die gemeldeten Gerätewerte.
 **Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
 **Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
 Bei genügend Platz stehen Nebel- und Warmnebelstufen rechts neben der

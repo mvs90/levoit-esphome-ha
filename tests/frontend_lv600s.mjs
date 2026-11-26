@@ -259,6 +259,8 @@ assert(!panel._deviceCard(card).includes('value="Humidity" selected'));
 const wakePanel = Object.create(Panel.prototype);
 wakePanel._data = { devices: [card] };
 wakePanel._lv600sSelecting = new Set();
+// The service-order checks below drive acknowledgement explicitly.
+wakePanel._lv600sStartPreview = () => ({ sent: false, cancelled: false });
 const wakeCalls = [];
 const wakeErrors = [];
 wakePanel._hass = { states, callService: async (...args) => wakeCalls.push(args) };
@@ -344,6 +346,59 @@ await wakePanel._callService('number', 'set_value', 'number.warm_level', { value
 assert.deepEqual(wakeCalls, [['number', 'set_value', { entity_id: 'number.warm_level', value: 0 }]]);
 states['switch.power'].state = 'on';
 console.log('LV600S mist selection waits for power and Manual, enforces safety, and keeps heat-off non-waking');
+
+
+// A level and its activity icon must stay on the same requested value while
+// Home Assistant delivers the two independent confirmations.
+const previewPanel = Object.create(Panel.prototype);
+const previewStates = structuredClone(states);
+const previewService = [];
+previewPanel._hass = {states: previewStates, callService: async (...args) => previewService.push(args)};
+previewPanel._data = {devices: [card]};
+previewPanel._lv600sSelecting = new Set();
+previewPanel._render = () => {};
+const setPreviewState = (key, value) => { previewStates[card.controls[key]].state = value; };
+setPreviewState('switch.power', 'on');
+setPreviewState('number.warm_level', '1.0');
+setPreviewState('binary_sensor.heating_enabled', 'on');
+setPreviewState('text_sensor.humidifier_mode_status', 'Manual');
+const warmVisual = (label, icon) => {
+  const cardHtml = previewPanel._deviceCard(card);
+  assert.match(cardHtml, new RegExp(`aria-label="Warm mist: ${label}"`));
+  assert(cardHtml.includes(`icon="${icon}"`));
+};
+await previewPanel._callService('number', 'set_value', 'number.warm_level', {value: 0});
+warmVisual('Off', 'mdi:thermometer-off');
+assert.equal(previewStates['number.warm_level'].state, '1.0');
+assert.equal(previewStates['binary_sensor.heating_enabled'].state, 'on');
+setPreviewState('binary_sensor.heating_enabled', 'off');
+assert.equal(previewPanel._lv600sConfirmPreviews(), false);
+warmVisual('Off', 'mdi:thermometer-off');
+setPreviewState('number.warm_level', '0.0');
+assert.equal(previewPanel._lv600sConfirmPreviews(), true);
+warmVisual('Off', 'mdi:thermometer-off');
+
+const schedule = globalThis.setTimeout;
+let deadline, delay;
+try {
+  globalThis.setTimeout = (callback, ms) => { deadline = callback; delay = ms; return 0; };
+  await previewPanel._callService('number', 'set_value', 'number.warm_level', {value: 1});
+} finally {
+  globalThis.setTimeout = schedule;
+}
+warmVisual('1', 'mdi:heat-wave');
+assert.equal(delay, 4000);
+assert.equal(previewPanel._lv600sConfirmPreviews(), false);
+deadline();
+warmVisual('Off', 'mdi:thermometer-off');
+
+await previewPanel._callService('switch', 'turn_off', 'switch.power', {});
+assert.match(previewPanel._deviceCard(card), /class="power small"[^>]*Turn on/);
+assert.equal(previewStates['switch.power'].state, 'on');
+setPreviewState('switch.power', 'off');
+assert.equal(previewPanel._lv600sConfirmPreviews(), true);
+assert.equal(previewPanel._lv600sPreviews.size, 0);
+console.log('LV600S previews warm level and icon together, keeps physical state separate, and restores it on timeout');
 
 const requests = [];
 panel._render = () => {};
