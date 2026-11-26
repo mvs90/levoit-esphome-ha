@@ -19,7 +19,12 @@ from .const import CONF_SHOW_PANEL, DOMAIN, SIGNAL_COORDINATOR
 from .coordinator import LevoitEsphomeCoordinator
 from .entity import subentry_for
 from .groups import GroupManager
-from .panel import async_register_panel, async_remove_panel
+from .panel import (
+    async_register_cards,
+    async_register_panel,
+    async_remove_cards,
+    async_remove_panel,
+)
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -101,6 +106,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LevoitEsphomeConfigEntry
     entry.async_on_unload(coordinator.groups.async_stop_with_hass())
     entry.async_on_unload(async_at_started(hass, coordinator.groups.async_start))
     entry.async_on_unload(entry.add_update_listener(_async_reload))
+    await async_register_cards(hass)
+    entry.async_on_unload(lambda: async_remove_cards(hass))
     if entry.options.get(CONF_SHOW_PANEL):
         await async_register_panel(hass)
         entry.async_on_unload(lambda: async_remove_panel(hass))

@@ -1,9 +1,10 @@
 """Purifier groups in Home Assistant: stored groups and the loop that runs them.
 
 The rules (levels, speed mapping, hold, rising fast) are in groups_logic.py.
-Here each enabled group follows its sensors and members and puts the members in
-Manual at their speed for the group level. When the air is clean again (or the
-group is turned off) it lets go: the purifiers keep running as they are.
+Here each enabled group follows its sensors and members and puts each member at
+its step for the group level: Off, Sleep, or Manual at a speed (Turbo for the
+Everest Air's top one). Without any sensor value (or with the group turned
+off) it lets go: the purifiers keep running as they are.
 Changes the group made carry its own Context; any other change to a member it
 controls is a person's, and pauses the group for that member.
 """
@@ -31,7 +32,9 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_UNIT_OF_MEASUREMENT,
     EVENT_HOMEASSISTANT_STOP,
+    SERVICE_TURN_OFF,
     SERVICE_TURN_ON,
+    STATE_OFF,
     STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
@@ -57,11 +60,18 @@ from .const import DOMAIN
 from .controls import match_controls
 from .groups_logic import (
     AQI,
-    AQI_INDEX,
+    COMBINE_AVG,
+    COMBINE_MEDIAN,
+    COMBINE_MIN,
     ERR_MEMBERS,
     MODE_AUTO,
     MODE_MANUAL,
+    PM1,
+    PM10,
     PM25,
+    SENSOR_TYPES,
+    STEP_OFF,
+    STEP_SLEEP,
     Evaluation,
     GroupConfig,
     GroupError,
@@ -69,10 +79,10 @@ from .groups_logic import (
     History,
     LevelKeeper,
     Reading,
+    Step,
     air_quality,
-    allowed_speeds,
     evaluate,
-    member_speed,
+    member_step,
     merge_sensors,
     parse_config,
     speed_count,
@@ -93,13 +103,24 @@ SIGNAL_GROUPS = f"{DOMAIN}_groups"
 ERR_NOT_FOUND = "not_found"
 
 PRESET_MANUAL = "Manual"
+PRESET_SLEEP = "Sleep"
 # the Everest Air's top speed is a preset, above its 3 fan speeds
 PRESET_TURBO = "Turbo"
 
+# a group's total CADR, next to its combined sensor types
+CADR = "cadr"
+CADR_KEY = "sensor.current_cadr"
+
 # controls.py keys of a purifier's air sensors
-SENSOR_KEYS = {"sensor.pm25": PM25, "sensor.aqi": AQI, "sensor.aqi_index": AQI_INDEX}
-TYPE_LABELS = {PM25: "PM2.5", AQI: "Air quality", AQI_INDEX: "AQI"}
+SENSOR_KEYS = {
+    "sensor.pm1_0": PM1,
+    "sensor.pm25": PM25,
+    "sensor.pm10": PM10,
+    "sensor.aqi": AQI,
+}
+TYPE_LABELS = {PM1: "PM1", PM25: "PM2.5", PM10: "PM10", AQI: "AQI index"}
 AQI_WORDS = {1: "Very good", 2: "Good", 3: "Moderate", 4: "Poor"}
+COMBINE_WORDS = {COMBINE_AVG: "average", COMBINE_MEDIAN: "median", COMBINE_MIN: "lowest"}
 
 STATUS_PAUSED = "paused"  # control switch off
 STATUS_MANUAL = "manual"  # the user's level for all members
@@ -139,6 +160,7 @@ class LevoitFan:
     device_id: str
     area_id: str | None
     sensors: tuple[GroupSensor, ...]
+    cadr: str | None = None  # its CADR sensor
 
 
 def _number(state: State | None) -> float | None:
@@ -163,6 +185,11 @@ def _fan_view(state: State) -> tuple[Any, ...]:
 def _has_turbo(state: State) -> bool:
     """A Turbo preset (Everest Air): one speed above the fan's own."""
     return PRESET_TURBO in (state.attributes.get(ATTR_PRESET_MODES) or [])
+
+
+def has_sleep(state: State) -> bool:
+    """A Sleep preset: the group can use it as a member's lowest step."""
+    return PRESET_SLEEP in (state.attributes.get(ATTR_PRESET_MODES) or [])
 
 
 def _fan_speeds(state: State) -> int:
@@ -195,6 +222,23 @@ def _at_speed(state: State, speed: int) -> bool:
     if _has_turbo(state) and speed == _fan_speeds(state):
         return state.attributes.get(ATTR_PRESET_MODE) == PRESET_TURBO
     return _in_manual(state)
+
+
+def _at_step(state: State, step: Step) -> bool:
+    """At that step as a group sets it: off, in Sleep, or on at the speed."""
+    if step == STEP_OFF:
+        return state.state == STATE_OFF
+    if step == STEP_SLEEP:
+        return state.state == STATE_ON and state.attributes.get(ATTR_PRESET_MODE) == PRESET_SLEEP
+    return isinstance(step, int) and _at_speed(state, step)
+
+
+def step_of(hass: HomeAssistant, config: GroupConfig, member: str, level: int) -> Step | None:
+    """A member's step for a group level, from its fan's speeds and presets now."""
+    state = hass.states.get(member)
+    speeds = _fan_speeds(state) if state else speed_count(None)
+    sleep = has_sleep(state) if state else False
+    return member_step(level, speeds, sleep, config.speeds_of(member))
 
 
 class GroupManager:
@@ -322,8 +366,30 @@ class GroupManager:
                     for key, kind in SENSOR_KEYS.items()
                     if key in controls
                 ),
+                cadr=controls.get(CADR_KEY),
             )
         return fans
+
+    @callback
+    def cadr_sensors(self, config: GroupConfig) -> tuple[str, ...]:
+        """The CADR sensors of a group's purifiers."""
+        fans = self.levoit_fans()
+        return tuple(c for m in config.members if m in fans and (c := fans[m].cadr))
+
+    @callback
+    def value_types(self, group_id: str) -> list[str]:
+        """What a group has a combined value of: its sensor types, and CADR.
+
+        A sensor type counts once the group has a sensor of it (with a value or
+        not); CADR once one of its purifiers has a CADR sensor.
+        """
+        if (config := self.groups.get(group_id)) is None:
+            return []
+        kinds = [t for t in SENSOR_TYPES if any(s.type == t for s in config.sensors)]
+        runner = self._runners.get(group_id)
+        if runner is not None and runner.cadr_sensors:
+            kinds.append(CADR)
+        return kinds
 
     @callback
     def _with_sensors(self, config: GroupConfig, fans: dict[str, LevoitFan]) -> GroupConfig:
@@ -361,10 +427,7 @@ class GroupManager:
         await self.async_change(group_id, enabled=enabled)
 
     async def async_change(self, group_id: str, **changes: Any) -> None:
-        """Change some settings of a group (its switch and fan); raises GroupError.
-
-        manual_level is clamped to max_speed, as in the editor.
-        """
+        """Change some settings of a group (its switch and fan); raises GroupError."""
         if (config := self.groups.get(group_id)) is None:
             raise GroupError(ERR_NOT_FOUND, "Unknown group")
         changed = parse_config({**config.as_dict(), **changes}, check_members=False)
@@ -388,6 +451,17 @@ class GroupManager:
             ):
                 dev_reg.async_update_device(device.id, name=config.name)
         self.async_notify(config.id)
+
+    async def async_apply_now(self, group_id: str) -> None:
+        """The editor's apply button: run the saved settings now.
+
+        The sensors' level is taken at once (no hold time) and purifiers paused
+        after a change by hand are set again.
+        """
+        if group_id not in self.groups:
+            raise GroupError(ERR_NOT_FOUND, "Unknown group")
+        if (runner := self._runners.get(group_id)) is not None:
+            await runner.async_apply_now()
 
     async def async_delete_group(self, group_id: str) -> None:
         """Delete a group; its purifiers stay as they are."""
@@ -421,8 +495,16 @@ class GroupManager:
         state = runner.state() if runner is not None else self._idle_state(config)
         quality = air_quality(config, readings_of(self.hass, config))
         state["air_quality"] = quality.level
-        state["air_quality_sensor"] = quality.worst.entity_id if quality.worst else None
+        state["air_quality_sensor"] = quality.worst.top if quality.worst else None
         state["air_quality_levels"] = quality.levels
+        # the combined value per sensor type, and the purifiers' total CADR
+        state["values"] = {
+            t.type: {"value": t.value, "level": t.level, "how": t.how, "sensors": list(t.sensors)}
+            for t in quality.types
+        }
+        cadr = runner.cadr_sensors if runner is not None else ()
+        numbers = [v for e in cadr if (v := _number(self.hass.states.get(e))) is not None]
+        state["cadr"] = {"value": sum(numbers) if numbers else None, "sensors": list(cadr)}
         return state
 
     @staticmethod
@@ -433,6 +515,7 @@ class GroupManager:
             "level": 0,
             "reason": None,
             "worst": None,
+            "worst_type": None,
             "rising": None,
             "sensor_levels": {},
             "members": [
@@ -449,17 +532,18 @@ class GroupManager:
         runner = self._runners.get(config.id)
         history = runner.keeper.history if runner else History()
         result = evaluate(config, readings := readings_of(self.hass, config), history)
-        level = (
-            min(config.manual_level, config.max_speed)
-            if config.mode == MODE_MANUAL
-            else result.target
-        )
+        level = config.manual_level if config.mode == MODE_MANUAL else result.target
         values = {r.entity_id: r.value for r in readings}
         return {
             "level": level,
             "reason": describe(self.hass, config, result),
-            "worst": result.worst.entity_id if result.worst else None,
+            "worst": result.worst.top if result.worst else None,
+            "worst_type": result.worst.type if result.worst else None,
             "rising": result.rising.entity_id if result.rising else None,
+            "types": [
+                {"type": t.type, "value": t.value, "level": t.level, "sensors": list(t.sensors)}
+                for t in result.types
+            ],
             "sensors": [
                 {
                     "entity_id": s.entity_id,
@@ -473,10 +557,8 @@ class GroupManager:
             "members": [
                 {
                     "entity_id": m,
-                    "speeds": (speeds := speeds_of(self.hass, m)),
-                    "speed": member_speed(
-                        level, config.max_speed, allowed_speeds(config, m, speeds)
-                    ),
+                    "speeds": speeds_of(self.hass, m),
+                    "speed": step_of(self.hass, config, m, level),
                 }
                 for m in config.members
             ],
@@ -495,28 +577,40 @@ def readings_of(hass: HomeAssistant, config: GroupConfig) -> list[Reading]:
     ]
 
 
+def _value_text(hass: HomeAssistant, kind: str, value: float, entity_id: str) -> str:
+    if kind == AQI:
+        return AQI_WORDS.get(round(value), f"{value:g}")
+    state = hass.states.get(entity_id)
+    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
+    return f"{round(value, 1):g}{f' {unit}' if unit else ''}"
+
+
+def _name(hass: HomeAssistant, entity_id: str) -> str:
+    state = hass.states.get(entity_id)
+    return state.name if state else entity_id
+
+
 def describe(hass: HomeAssistant, config: GroupConfig, result: Evaluation | None) -> str | None:
-    """Why the group runs at its level: the worst (or fast rising) sensor."""
+    """Why the group runs at its level: the worst sensor type (or one rising fast)."""
     if config.mode == MODE_MANUAL:
-        return f"Manual level {min(config.manual_level, config.max_speed)}"
+        return f"Manual level {config.manual_level}"
     if result is None:
         return None
     if not config.sensors:
         return "No air sensors"
     if result.usable == 0:
         return "No air sensor reports a value"
-    reading = result.rising or result.worst
-    if reading is None or reading.value is None:
+    if (rising := result.rising) is not None and rising.value is not None:
+        value = _value_text(hass, rising.type, rising.value, rising.entity_id)
+        return f"{TYPE_LABELS[rising.type]} {value} ({_name(hass, rising.entity_id)}), rising fast"
+    if (worst := result.worst) is None:
         return None
-    state = hass.states.get(reading.entity_id)
-    name = state.name if state else reading.entity_id
-    if reading.type == AQI:
-        value = AQI_WORDS.get(round(reading.value), f"{reading.value:g}")
+    value = _value_text(hass, worst.type, worst.value, worst.top)
+    if len(worst.sensors) == 1:
+        source = _name(hass, worst.top)
     else:
-        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
-        value = f"{reading.value:g}{f' {unit}' if unit else ''}"
-    text = f"{TYPE_LABELS[reading.type]} {value} ({name})"
-    return f"{text}, rising fast" if result.rising else text
+        source = f"{COMBINE_WORDS.get(worst.how, 'highest')} of {len(worst.sensors)}"
+    return f"{TYPE_LABELS[worst.type]} {value} ({source})"
 
 
 class GroupRunner:
@@ -530,7 +624,8 @@ class GroupRunner:
         self.keeper = LevelKeeper()
         self.evaluation: Evaluation | None = None
         self.paused_until: dict[str, float] = {}
-        self._targets: dict[str, int] = {}  # speed set per member the group runs
+        self._targets: dict[str, Step] = {}  # step set per member the group runs
+        self.cadr_sensors: tuple[str, ...] = ()  # its purifiers' CADR, for the total
         self._own: deque[str] = deque(maxlen=64)  # context ids of our calls
         self._lock = asyncio.Lock()
         self._unsubs: list[CALLBACK_TYPE] = []
@@ -549,7 +644,12 @@ class GroupRunner:
     def _track(self) -> None:
         if self._unsubs:
             self._unsubs.pop(0)()
-        entities = [*self.config.members, *(s.entity_id for s in self.config.sensors)]
+        self.cadr_sensors = self.manager.cadr_sensors(self.config)
+        entities = [
+            *self.config.members,
+            *(s.entity_id for s in self.config.sensors),
+            *self.cadr_sensors,
+        ]
         self._unsubs.insert(
             0, async_track_state_change_event(self.hass, entities, self._state_changed)
         )
@@ -605,7 +705,7 @@ class GroupRunner:
             or _fan_view(old) == _fan_view(new)
         ):
             return
-        if _at_speed(new, self._targets[member]):
+        if _at_step(new, self._targets[member]):
             return  # what we set, reported late
         self.paused_until[member] = _now() + self.config.manual_pause_min * 60
         self._targets.pop(member, None)
@@ -622,10 +722,15 @@ class GroupRunner:
             self.config = config
             if old.mode == MODE_MANUAL and config.mode == MODE_AUTO:
                 self.keeper.since = None  # step down without waiting
-            self.keeper.level = min(self.keeper.level, config.max_speed)
             if set(old.members) != set(config.members) or old.sensors != config.sensors:
                 self._track()
         self._schedule()
+
+    async def async_apply_now(self) -> None:
+        """Set every member for the sensors' level now, also ones changed by hand."""
+        async with self._lock:
+            self.paused_until.clear()
+        await self.async_evaluate(now_level=True)
 
     async def async_release(self) -> None:
         """Stop and let go of every member (delete); they stay as they are."""
@@ -639,8 +744,11 @@ class GroupRunner:
         for member in members:
             self._targets.pop(member, None)
 
-    async def async_evaluate(self) -> None:
-        """Move the level and apply it, or let go at level 0."""
+    async def async_evaluate(self, *, now_level: bool = False) -> None:
+        """Move the level and apply it, or let go at level 0.
+
+        `now_level` takes the sensors' level at once, without the hold time.
+        """
         async with self._lock:
             if self._stopped:
                 return
@@ -656,7 +764,9 @@ class GroupRunner:
                 self.keeper.manual(config)
                 self.evaluation = None
             else:
-                self.evaluation = self.keeper.step(config, readings_of(self.hass, config), now)
+                self.evaluation = self.keeper.step(
+                    config, readings_of(self.hass, config), now, now_level=now_level
+                )
             level = self.keeper.level
             if level == 0:
                 self._release(list(self._targets))
@@ -666,7 +776,7 @@ class GroupRunner:
         self.manager.async_notify(config.id)
 
     async def _async_set(self, member: str, level: int) -> None:
-        """Put a member in Manual at its speed for the level (or Turbo at the top)."""
+        """Put a member at its step for the level: Off, Sleep, or Manual at a speed."""
         if member in self.paused_until:
             return
         state = self.hass.states.get(member)
@@ -676,13 +786,21 @@ class GroupRunner:
         if not is_on and not self.config.turn_on and member not in self._targets:
             return
         speeds = _fan_speeds(state)
-        # a member with a limit spreads the levels over its allowed speeds
-        speed = member_speed(
-            level, self.config.max_speed, allowed_speeds(self.config, member, speeds)
-        )
-        self._targets[member] = speed
-        if _at_speed(state, speed):
+        step = member_step(level, speeds, has_sleep(state), self.config.speeds_of(member))
+        if step is None:
             return
+        self._targets[member] = step
+        if _at_step(state, step):
+            return
+        if step == STEP_OFF:
+            await self._async_call(SERVICE_TURN_OFF, {ATTR_ENTITY_ID: member})
+            return
+        if step == STEP_SLEEP:
+            await self._async_call(
+                SERVICE_TURN_ON, {ATTR_ENTITY_ID: member, ATTR_PRESET_MODE: PRESET_SLEEP}
+            )
+            return
+        speed = int(step)
         if _has_turbo(state) and speed == speeds:
             await self._async_call(
                 SERVICE_TURN_ON, {ATTR_ENTITY_ID: member, ATTR_PRESET_MODE: PRESET_TURBO}
@@ -735,7 +853,8 @@ class GroupRunner:
             "status": status,
             "level": level,
             "reason": describe(self.hass, config, result) if config.enabled else None,
-            "worst": result.worst.entity_id if result and result.worst else None,
+            "worst": result.worst.top if result and result.worst else None,
+            "worst_type": result.worst.type if result and result.worst else None,
             "rising": result.rising.entity_id if result and result.rising else None,
             "sensor_levels": dict(result.levels) if result else {},
             "members": [

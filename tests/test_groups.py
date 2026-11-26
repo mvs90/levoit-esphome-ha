@@ -166,13 +166,13 @@ def _pm(hass: HomeAssistant, value: float, sensor: str = "sensor.living_pm25") -
 
 
 @pytest.mark.usefixtures("patch_sources")
-async def test_group_takes_over_and_lets_go(
+async def test_group_takes_over_and_steps_down(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     hass_storage: dict[str, Any],
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Bad air: all members in Manual at their speed; clean air: one level per hold, then let go."""
+    """Members at their speed for the level; up at once, down one level per hold."""
     calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
@@ -185,11 +185,16 @@ async def test_group_takes_over_and_lets_go(
     ]
     assert hass_storage[STORAGE_KEY]["data"]["groups"][0]["name"] == "Living room"
     await _settle(hass)
-    assert calls == []
+    # very good air is level 1: speed 1, the bedroom out of Auto, the living room on
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 25}),
+        ("turn_on", "fan.living", {"percentage": 33}),
+    ]
     assert hass.states.get(CONTROL).state == "on"
-    assert hass.states.get(LEVEL).state == "0"
-    assert hass.states.get(LEVEL).attributes["status"] == "watching"
-    assert hass.states.get(ACTIVE).state == "off"
+    assert hass.states.get(LEVEL).state == "1"
+    assert hass.states.get(LEVEL).attributes["status"] == "in_control"
+    assert hass.states.get(ACTIVE).state == "on"
+    calls.clear()
 
     _pm(hass, 783)
     await _settle(hass)
@@ -222,12 +227,38 @@ async def test_group_takes_over_and_lets_go(
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "2"
     assert calls == [("turn_on", "fan.bedroom", {"percentage": 50})]  # living stays on 2
+    calls.clear()
     await _later(hass, freezer, 10)
+    assert hass.states.get(LEVEL).state == "1"
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 25}),
+        ("turn_on", "fan.living", {"percentage": 33}),
+    ]
+    await _later(hass, freezer, 10)
+    assert hass.states.get(LEVEL).state == "1"  # never below level 1 with a value
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_no_sensor_value_lets_go(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, freezer: FrozenDateTimeFactory
+) -> None:
+    """No sensor with a value: the level holds for hold_min, then the group lets go."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await _save(client, members=MEMBERS)
+    await _settle(hass)
     assert hass.states.get(LEVEL).state == "1"
     calls.clear()
 
+    hass.states.async_set("sensor.bedroom_pm25", "unavailable")
+    hass.states.async_set("sensor.living_pm25", "unavailable")
+    await _settle(hass)
+    assert hass.states.get(LEVEL).state == "1"  # holds for hold_min
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "0"
+    assert hass.states.get(LEVEL).attributes["status"] == "no_sensors"
     # let go: nothing is sent, both keep running on speed 1
     assert calls == []
     assert hass.states.get("fan.bedroom").attributes["percentage"] == 25
@@ -259,7 +290,7 @@ async def test_manual_change_pauses_that_member(
     assert calls == []  # not set back
     assert hass.states.get(LEVEL).attributes["members_in_control"] == ["fan.living"]
 
-    _pm(hass, 60)  # level 3, after the hold
+    _pm(hass, 40)  # level 3, after the hold
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "3"
     assert calls == [("turn_on", "fan.living", {"percentage": 66})]
@@ -324,6 +355,7 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     assert event["purifiers"][0]["sensors"] == [
         {"entity_id": "sensor.bedroom_pm25", "type": "pm25"}
     ]
+    assert event["purifiers"][0]["sleep"] is True
 
     msg = await _call(
         client,
@@ -349,19 +381,23 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     )
     assert msg["success"], msg
     preview = msg["result"]
-    assert preview["level"] == 2
+    assert preview["level"] == 3
     assert preview["worst"] == "sensor.living_pm25"
+    assert preview["worst_type"] == "pm25"
     assert preview["sensors"] == [
         {
             "entity_id": "sensor.living_pm25",
             "type": "pm25",
             "source": "auto",
             "value": 40.0,
-            "level": 2,
+            "level": 3,
         }
     ]
+    assert preview["types"] == [
+        {"type": "pm25", "value": 40.0, "level": 3, "sensors": ["sensor.living_pm25"]}
+    ]
     assert preview["members"] == [
-        {"entity_id": "fan.bedroom", "speeds": 4, "speed": 2},
+        {"entity_id": "fan.bedroom", "speeds": 4, "speed": 3},
         {"entity_id": "fan.living", "speeds": 3, "speed": 2},
     ]
     assert calls == []  # a preview changes nothing
@@ -381,12 +417,12 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     msg = await _call(client, {"type": "levoit_esphome/groups/list"})
     assert msg["result"]["dismissed_areas"] == ["hall"]
     (listed,) = msg["result"]["groups"]
-    assert listed["state"]["level"] == 2
+    assert listed["state"]["level"] == 3
     assert {p["entity_id"]: p["group_id"] for p in msg["result"]["purifiers"]} == {
         "fan.bedroom": group["id"],
         "fan.living": group["id"],
     }
-    assert hass.states.get(LEVEL).state == "2"
+    assert hass.states.get(LEVEL).state == "3"
     calls.clear()
 
     msg = await _call(client, {"type": "levoit_esphome/groups/delete", "group_id": group["id"]})
@@ -455,10 +491,10 @@ async def test_group_fan(hass: HomeAssistant, hass_ws_client: WebSocketGenerator
     assert fan.state == "on"
     assert fan.attributes["preset_modes"] == ["Auto", "Manual"]
     assert fan.attributes["preset_mode"] == "Auto"
-    assert fan.attributes["percentage"] == 0  # clean air
+    assert fan.attributes["percentage"] == 25  # very good air: level 1
     assert fan.attributes["percentage_step"] == 25
 
-    _pm(hass, 60)  # level 3 in Auto
+    _pm(hass, 40)  # level 3 in Auto
     await _settle(hass)
     assert hass.states.get(GROUP_FAN).attributes["percentage"] == 75
 
@@ -499,27 +535,27 @@ async def test_group_fan(hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 
 @pytest.mark.usefixtures("patch_sources")
 async def test_group_air_quality(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
-    """0-4 from the worst sensor, in Manual and with the group off too."""
+    """1-4 from the worst sensor type, in Manual and with the group off too."""
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
-    group = await _save(client, members=MEMBERS, max_speed=2)
+    group = await _save(client, members=MEMBERS, mode="manual", manual_level=2)
     await _settle(hass)
     quality = hass.states.get(AIR_QUALITY)
-    assert quality.state == "0"
+    assert quality.state == "1"
     assert quality.attributes["sensor_levels"] == {
-        "sensor.bedroom_pm25": 0,
-        "sensor.living_pm25": 0,
+        "sensor.bedroom_pm25": 1,
+        "sensor.living_pm25": 1,
     }
 
-    _pm(hass, 60)  # level 3, above max speed 2
+    _pm(hass, 40)  # level 3
     await _settle(hass)
     quality = hass.states.get(AIR_QUALITY)
     assert quality.state == "3"
     assert quality.attributes["worst_sensor"] == "sensor.living_pm25"
-    assert hass.states.get(LEVEL).state == "2"  # the group runs at its max
+    assert hass.states.get(LEVEL).state == "2"  # Manual: the group runs at its level
 
-    await _save(client, id=group["id"], members=MEMBERS, max_speed=2, enabled=False)
+    await _save(client, id=group["id"], members=MEMBERS, enabled=False)
     _pm(hass, 160)
     await _settle(hass)
     assert hass.states.get(AIR_QUALITY).state == "4"
@@ -532,14 +568,18 @@ async def test_group_air_quality(hass: HomeAssistant, hass_ws_client: WebSocketG
 
 
 @pytest.mark.usefixtures("patch_sources")
-async def test_member_max_speed(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+async def test_member_highest_speed(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
     """A purifier limited to speed 2 never goes above it."""
     calls = await _fake_fans(hass)
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
-    group = await _save(client, members=MEMBERS, member_max_speed={"fan.bedroom": 2})
-    assert group["member_max_speed"] == {"fan.bedroom": 2}
+    group = await _save(client, members=MEMBERS, member_speeds={"fan.bedroom": {"highest": 2}})
+    assert group["member_speeds"] == {"fan.bedroom": {"lowest": 1, "highest": 2}}
+    await _settle(hass)
+    calls.clear()
     _pm(hass, 783)
     await _settle(hass)
     assert calls == [
@@ -576,6 +616,8 @@ async def test_everest_turbo_is_the_top_speed(
     msg = await _call(client, {"type": "levoit_esphome/groups/list"})
     speeds = {p["entity_id"]: p["speeds"] for p in msg["result"]["purifiers"]}
     assert speeds == {"fan.bedroom": 4, "fan.living": 4}
+    await _settle(hass)
+    calls.clear()
     _pm(hass, 783)
     await _settle(hass)
     assert calls == [
@@ -608,8 +650,242 @@ async def test_everest_limited_below_turbo(
     _everest(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
-    await _save(client, members=MEMBERS, member_max_speed={"fan.living": 3})
+    await _save(client, members=MEMBERS, member_speeds={"fan.living": {"highest": 3}})
     _pm(hass, 783)
     await _settle(hass)
     assert ("turn_on", "fan.living", {"percentage": 100}) in calls
     assert all(c[2].get("preset_mode") != "Turbo" for c in calls)
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_off_and_sleep_as_lowest(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, freezer: FrozenDateTimeFactory
+) -> None:
+    """Level 1 can put a purifier in Sleep or turn it off; that is not a change by hand."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await _save(
+        client,
+        members=MEMBERS,
+        member_speeds={"fan.bedroom": {"lowest": "sleep"}, "fan.living": {"lowest": "off"}},
+    )
+    await _settle(hass)
+    # the living room purifier is off already: nothing to send
+    assert calls == [("turn_on", "fan.bedroom", {"preset_mode": "Sleep"})]
+    state = (await _call(client, {"type": "levoit_esphome/groups/list"}))["result"]["groups"][0]
+    assert [(m["entity_id"], m["speed"], m["in_control"]) for m in state["state"]["members"]] == [
+        ("fan.bedroom", "sleep", True),
+        ("fan.living", "off", True),
+    ]
+    calls.clear()
+
+    _pm(hass, 783)
+    await _settle(hass)
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 100}),
+        ("turn_on", "fan.living", {"percentage": 100}),
+    ]
+    calls.clear()
+    _pm(hass, 3)
+    for _ in range(3):
+        await _later(hass, freezer, 10)
+    assert hass.states.get(LEVEL).state == "1"
+    assert calls[-2:] == [
+        ("turn_on", "fan.bedroom", {"preset_mode": "Sleep"}),
+        ("turn_off", "fan.living", {}),
+    ]
+    # what the group set: nobody is paused
+    members = hass.states.get(LEVEL).attributes["members_in_control"]
+    assert members == MEMBERS
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_combined_sensors(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """Two PM2.5 sensors: the highest by default, or their average."""
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    group = await _save(client, members=MEMBERS, rise={"enabled": False})
+    _pm(hass, 10, "sensor.bedroom_pm25")
+    _pm(hass, 60)
+    await _settle(hass)
+    assert hass.states.get(LEVEL).state == "4"  # the highest: 60
+
+    await _save(
+        client, id=group["id"], members=MEMBERS, rise={"enabled": False}, combine={"pm25": "avg"}
+    )
+    await _settle(hass)
+    level = hass.states.get(LEVEL)
+    assert level.state == "4"  # holds: down one level per hold time
+    quality = hass.states.get(AIR_QUALITY)
+    assert quality.state == "3"  # the average: 35
+    assert level.attributes["reason"] == "PM2.5 35 µg/m³ (average of 2)"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_apply_now(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, freezer: FrozenDateTimeFactory
+) -> None:
+    """The editor's apply button: the sensors' level at once, and paused purifiers again."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    group = await _save(client, members=MEMBERS, hold_min=30)
+    _pm(hass, 783)
+    await _settle(hass)
+    bedroom = hass.states.get("fan.bedroom")
+    hass.states.async_set(
+        "fan.bedroom", "on", {**bedroom.attributes, "percentage": 25}, context=Context()
+    )
+    _pm(hass, 20)  # level 2, but the hold keeps level 4
+    await _later(hass, freezer, 1)
+    assert hass.states.get(LEVEL).state == "4"
+    calls.clear()
+
+    msg = await _call(client, {"type": "levoit_esphome/groups/apply", "group_id": group["id"]})
+    assert msg["success"], msg
+    assert msg["result"]["level"] == 2
+    await _settle(hass)
+    assert hass.states.get(LEVEL).state == "2"
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 50}),
+        ("turn_on", "fan.living", {"percentage": 66}),
+    ]
+    assert hass.states.get(LEVEL).attributes["members_in_control"] == MEMBERS
+
+    msg = await _call(client, {"type": "levoit_esphome/groups/apply", "group_id": "nope"})
+    assert msg["error"]["code"] == "not_found"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_group_saved_by_0_6(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, hass_storage: dict[str, Any]
+) -> None:
+    """A group from 0.6 loads: AQI index dropped, its max speeds become highest speeds."""
+    _purifiers(hass)
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "key": STORAGE_KEY,
+        "data": {
+            "groups": [
+                {
+                    "id": "g1",
+                    "name": "Living room",
+                    "members": MEMBERS,
+                    "sensors": [
+                        {"entity_id": "sensor.bedroom_pm25", "type": "pm25", "source": "auto"},
+                        {"entity_id": "sensor.eleva_aqi", "type": "aqi_index", "source": "manual"},
+                    ],
+                    "max_speed": 3,
+                    "member_max_speed": {"fan.bedroom": 2},
+                    "thresholds": {
+                        "pm25": [12, 35, 55, 150],
+                        "aqi": [2, 3, 4, 4],
+                        "aqi_index": [50, 100, 150, 200],
+                    },
+                    "rise": {"enabled": True, "pm25": 20, "aqi_index": 25, "window_min": 5},
+                }
+            ]
+        },
+    }
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    (group,) = (await _call(client, {"type": "levoit_esphome/groups/list"}))["result"]["groups"]
+    assert [s["entity_id"] for s in group["sensors"]] == ["sensor.bedroom_pm25"]
+    assert group["thresholds"]["pm25"] == [35, 55, 150]
+    assert group["member_speeds"] == {
+        "fan.bedroom": {"lowest": 1, "highest": 2},
+        "fan.living": {"lowest": 1, "highest": 3},
+    }
+    assert "max_speed" not in group
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_group_value_sensors(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """One sensor per type the group has, combined as set, and the total CADR."""
+    _purifiers(hass)
+    _add_entities(hass, MAC, {"sensor.bedroom_cadr": "Current CADR"})
+    hass.states.async_set("sensor.bedroom_cadr", "120", {"unit_of_measurement": "m³/h"})
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    group = await _save(client, members=MEMBERS, rise={"enabled": False})
+    await _settle(hass)
+
+    pm25 = hass.states.get("sensor.living_room_pm2_5")
+    assert pm25.state == "5.0"
+    assert pm25.attributes["combine"] == "max"
+    assert pm25.attributes["sensors"] == ["sensor.bedroom_pm25", "sensor.living_pm25"]
+    assert pm25.attributes["level"] == 1
+    assert hass.states.get("sensor.living_room_cadr").state == "120.0"
+    assert hass.states.get("sensor.living_room_pm1") is None  # no PM1 sensor
+    assert hass.states.get("sensor.living_room_pm10") is None
+
+    _pm(hass, 10, "sensor.bedroom_pm25")
+    _pm(hass, 60)
+    await _save(
+        client,
+        id=group["id"],
+        members=MEMBERS,
+        rise={"enabled": False},
+        combine={"pm25": "avg"},
+        sensors=[{"entity_id": "sensor.wall_pm10", "type": "pm10", "source": "manual"}],
+    )
+    hass.states.async_set("sensor.wall_pm10", "63", UNIT)
+    await _settle(hass)
+    assert hass.states.get("sensor.living_room_pm2_5").state == "35.0"
+    assert hass.states.get("sensor.living_room_pm10").state == "63.0"
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    (listed,) = msg["result"]["groups"]
+    assert listed["entities"]["pm10"] == "sensor.living_room_pm10"
+    assert listed["state"]["values"]["pm25"]["how"] == "avg"
+    assert listed["state"]["cadr"] == {"value": 120.0, "sensors": ["sensor.bedroom_cadr"]}
+
+    # the PM10 sensor removed: its group sensor goes too
+    await _save(
+        client, id=group["id"], members=MEMBERS, rise={"enabled": False}, combine={"pm25": "avg"}
+    )
+    await _settle(hass)
+    assert hass.states.get("sensor.living_room_pm10") is None
+    assert (
+        er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"group_{group['id']}_pm10")
+        is None
+    )
+
+    hass.states.async_set("sensor.wall_pm10", "unavailable")
+    hass.states.async_set("sensor.bedroom_pm25", "unavailable")
+    hass.states.async_set("sensor.living_pm25", "unavailable")
+    await _settle(hass)
+    assert hass.states.get("sensor.living_room_pm2_5").state == "unavailable"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_cards_for_any_user(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """The dashboard cards' purifiers and groups, for a user who is not an admin."""
+    _purifiers(hass)
+    await _setup(hass)
+    admin = await hass_ws_client(hass)
+    group = await _save(admin, members=MEMBERS)
+    await _settle(hass)
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    msg = await _call(client, {"type": "levoit_esphome/cards"})
+    assert msg["success"], msg
+    bedroom = msg["result"]["purifiers"][0]
+    assert bedroom["entity_id"] == "fan.bedroom"
+    assert bedroom["pm25"] == "sensor.bedroom_pm25"
+    assert bedroom["group_id"] == group["id"]
+    (listed,) = msg["result"]["groups"]
+    assert listed["members"] == MEMBERS
+    assert listed["entities"]["fan"] == GROUP_FAN
+    assert "thresholds" not in listed  # names and entities only
+
+    # the panel's group commands stay admins only
+    msg = await _call(client, {"type": "levoit_esphome/groups/list"})
+    assert msg["error"]["code"] == "unauthorized"

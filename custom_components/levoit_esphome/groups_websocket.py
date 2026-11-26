@@ -6,7 +6,13 @@
 * levoit_esphome/groups/save: create (no id) or change a group
 * levoit_esphome/groups/delete: delete a group (its purifiers stay as they are)
 * levoit_esphome/groups/preview: the editor's "Right now" for an unsaved config
+* levoit_esphome/groups/apply: run a group's saved settings now (the editor's
+  apply button): the sensors' level at once, purifiers changed by hand too
 * levoit_esphome/groups/dismiss: hide the group suggestion for an area
+
+And for the dashboard cards, any user (read only):
+
+* levoit_esphome/cards: every purifier and group with the entities a card shows
 """
 
 from __future__ import annotations
@@ -17,10 +23,11 @@ import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DOMAIN, SIGNAL_COORDINATOR
-from .groups import GroupManager, speeds_of
+from .groups import GroupManager, has_sleep, speeds_of
 from .groups_logic import GroupError
 
 if TYPE_CHECKING:
@@ -37,7 +44,9 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_save)
     websocket_api.async_register_command(hass, ws_delete)
     websocket_api.async_register_command(hass, ws_preview)
+    websocket_api.async_register_command(hass, ws_apply)
     websocket_api.async_register_command(hass, ws_dismiss)
+    websocket_api.async_register_command(hass, ws_cards)
 
 
 def _manager(hass: HomeAssistant) -> GroupManager | None:
@@ -56,13 +65,43 @@ def _manager_or_error(
     return manager
 
 
+# a group's entities: unique id key -> domain
+GROUP_ENTITIES = {
+    "fan": "fan",
+    "control": "switch",
+    "active": "binary_sensor",
+    "level": "sensor",
+    "air_quality": "sensor",
+    "pm1": "sensor",
+    "pm25": "sensor",
+    "pm10": "sensor",
+    "aqi": "sensor",
+    "cadr": "sensor",
+}
+
+
+@callback
+def group_entities(hass: HomeAssistant, group_id: str) -> dict[str, str]:
+    """A group's entity ids by key (the panel's history and links)."""
+    ent_reg = er.async_get(hass)
+    found = {
+        key: ent_reg.async_get_entity_id(domain, DOMAIN, f"group_{group_id}_{key}")
+        for key, domain in GROUP_ENTITIES.items()
+    }
+    return {key: entity_id for key, entity_id in found.items() if entity_id}
+
+
 @callback
 def groups_snapshot(manager: GroupManager) -> dict[str, Any]:
     """Groups with their state, and every purifier that can be in a group."""
     hass = manager.hass
     return {
         "groups": [
-            {**config.as_dict(), "state": manager.state(group_id)}
+            {
+                **config.as_dict(),
+                "state": manager.state(group_id),
+                "entities": group_entities(hass, group_id),
+            }
             for group_id, config in sorted(
                 manager.groups.items(), key=lambda item: item[1].name.lower()
             )
@@ -76,7 +115,9 @@ def groups_snapshot(manager: GroupManager) -> dict[str, Any]:
                 "device_id": fan.device_id,
                 "area_id": fan.area_id,
                 "speeds": speeds_of(hass, fan.entity_id),
+                "sleep": bool((st := hass.states.get(fan.entity_id)) and has_sleep(st)),
                 "sensors": [{"entity_id": s.entity_id, "type": s.type} for s in fan.sensors],
+                "cadr": fan.cadr,
                 "group_id": group.id if (group := manager.group_of(fan.entity_id)) else None,
             }
             for fan in sorted(manager.levoit_fans().values(), key=lambda f: f.title.lower())
@@ -126,6 +167,56 @@ def ws_subscribe(
     connection.subscriptions[msg_id] = unsubscribe
     connection.send_result(msg_id)
     attach()
+
+
+@callback
+def cards_snapshot(manager: GroupManager) -> dict[str, Any]:
+    """What the dashboard cards show: purifiers and groups with their entity ids.
+
+    Names and entity ids only: no configs, sensors' values come from the states.
+    """
+    data = manager.coordinator.data
+    devices = data.devices if data else {}
+    purifiers = []
+    for fan in sorted(manager.levoit_fans().values(), key=lambda f: f.title.lower()):
+        sensors = {s.type: s.entity_id for s in fan.sensors}
+        device = devices.get(fan.name)
+        group = manager.group_of(fan.entity_id)
+        purifiers.append(
+            {
+                "entity_id": fan.entity_id,
+                "name": fan.name,
+                "title": fan.title,
+                "model": fan.model,
+                "area_id": fan.area_id,
+                "pm25": sensors.get("pm25"),
+                "aqi": sensors.get("aqi"),
+                "cadr": fan.cadr,
+                "filter": device.filter_entity_id if device else None,
+                "group_id": group.id if group else None,
+            }
+        )
+    groups = [
+        {
+            "id": group_id,
+            "name": config.name,
+            "area_id": config.area_id,
+            "members": list(config.members),
+            "entities": group_entities(manager.hass, group_id),
+        }
+        for group_id, config in sorted(manager.groups.items(), key=lambda i: i[1].name.lower())
+    ]
+    return {"purifiers": purifiers, "groups": groups}
+
+
+@websocket_api.websocket_command({probatio.Required("type"): "levoit_esphome/cards"})
+@callback
+def ws_cards(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The purifiers and groups for the dashboard cards (any user)."""
+    if (manager := _manager_or_error(hass, connection, msg)) is not None:
+        connection.send_result(msg["id"], cards_snapshot(manager))
 
 
 @websocket_api.require_admin
@@ -203,6 +294,28 @@ def ws_preview(
         connection.send_error(msg["id"], err.code, str(err))
         return
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "levoit_esphome/groups/apply",
+        probatio.Required("group_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_apply(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Run a group's saved settings now; answers with its state after."""
+    if (manager := _manager_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        await manager.async_apply_now(msg["group_id"])
+    except GroupError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"], manager.state(msg["group_id"]))
 
 
 @websocket_api.require_admin

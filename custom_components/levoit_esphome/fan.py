@@ -1,8 +1,8 @@
 """Fans: each purifier group as one fan, to run a whole room like one purifier.
 
 On / off is the group's control. Preset Auto lets the sensors pick the level;
-Manual runs all members at one level, set with the fan's 4 speeds (clamped to
-the group's max speed). Setting a speed switches the group to Manual.
+Manual runs all members at one level, set with the fan's 4 speeds. Setting a
+speed switches the group to Manual.
 """
 
 from __future__ import annotations
