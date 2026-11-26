@@ -130,6 +130,7 @@ panel._hass.callWS = async (request) => {
 };
 await panel._loadHistory();
 assert.equal(requests[0].type, 'history/history_during_period');
+assert.equal(Date.parse(requests[0].end_time) - Date.parse(requests[0].start_time), 86400000);
 assert.deepEqual(requests[0].entity_ids, ['sensor.humidity', 'sensor.temperature', 'number.mist_level', 'number.warm_level']);
 assert.deepEqual(panel._history.data['number.mist_level'].map(([, value]) => value), [1, 5, null, null]);
 assert.deepEqual(panel._history.data['number.warm_level'].map(([, value]) => value), [3, 3]);
@@ -155,6 +156,9 @@ panel._historyRange = 'month';
 await panel._loadHistory();
 assert.equal(Date.parse(requests[2].end_time) - Date.parse(requests[2].start_time), 30 * 86400000);
 assert(panel._historyCard().includes('aria-label="Verlauf des Luftbefeuchters, 30 Tage.'));
+panel._historyRange = 'half';
+await panel._loadHistory();
+assert.equal(Date.parse(requests[3].end_time) - Date.parse(requests[3].start_time), 12 * 3600000);
 delete panel._hass.locale;
 
 add('text_sensor.error_message', 'No reported MCU fault');
