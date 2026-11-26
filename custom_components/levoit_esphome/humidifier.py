@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -221,10 +222,10 @@ class LV600SHumidifier(LevoitEsphomeEntity, HumidifierEntity):
             context=self._context,
         )
 
-    async def _wait_for(self, key: str, value: str) -> None:
+    async def _wait_for(self, confirmed: Callable[[], bool]) -> None:
         try:
             async with asyncio.timeout(8):
-                while self._value(key) != value:
+                while not confirmed():
                     self._require_safe()
                     await asyncio.sleep(0.15)
         except TimeoutError as err:
@@ -237,16 +238,16 @@ class LV600SHumidifier(LevoitEsphomeEntity, HumidifierEntity):
         self._require_safe()
         if not self.is_on:
             await self._call(_POWER, "turn_on")
-            await self._wait_for(_POWER, STATE_ON)
+            await self._wait_for(lambda: self._value(_POWER) == STATE_ON)
 
     async def _set_mode(self, mode: str) -> None:
         option = self._mode_options().get(mode)
         if option is None:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="lv600s_unready")
         await self._ensure_power()
-        if self._value(self._mode_source) != option:
+        if self.mode != mode:
             await self._call(_MODE, "select_option", option=option)
-            await self._wait_for(self._mode_source, option)
+            await self._wait_for(lambda: self.mode == mode)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         async with self._commands:

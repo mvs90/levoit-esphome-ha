@@ -232,7 +232,10 @@ async def test_native_lv600s_forwards_presets_without_changing_mode(hass: HomeAs
 
 @pytest.mark.usefixtures("patch_sources")
 @pytest.mark.parametrize("power_name", ["Ein", "Luftbefeuchter", "Humidifier"])
-async def test_native_lv600s_mode_status(hass: HomeAssistant, power_name: str) -> None:
+@pytest.mark.parametrize("reported_auto", ["Auto", "Humidity"])
+async def test_native_lv600s_mode_status(
+    hass: HomeAssistant, power_name: str, reported_auto: str
+) -> None:
     """Confirm writes from the MCU status when the selector retains an old option."""
     hass.config.components.add("esphome")
     add_esphome_device(hass, "living-humidifier", MAC, "Humidifier", None, model="LV600S")
@@ -243,24 +246,42 @@ async def test_native_lv600s_mode_status(hass: HomeAssistant, power_name: str) -
             "switch.power": power_name,
             "select.mode": "Betriebsmodus",
             "sensor.mode_status": "Betriebsmodus Status",
+            "number.target": "Zielfeuchte",
         },
     )
     hass.states.async_set(ids["switch.power"], "on")
     hass.states.async_set(ids["select.mode"], "Auto", {"options": ["Manuell", "Auto", "Schlaf"]})
     hass.states.async_set(ids["sensor.mode_status"], "Auto (Original)")
+    hass.states.async_set(ids["number.target"], "50")
+
+    calls = []
 
     async def mode(call):
         assert call.data["option"] == "Auto"
-        hass.states.async_set(ids["sensor.mode_status"], "Auto")
+        calls.append(call.data["option"])
+        hass.states.async_set(ids["sensor.mode_status"], reported_auto)
+
+    async def target(call):
+        assert hass.states.get(ids["sensor.mode_status"]).state == reported_auto
+        calls.append(call.data["value"])
+        hass.states.async_set(ids["number.target"], str(call.data["value"]))
 
     await _setup(hass)
     hass.services.async_register("select", "select_option", mode)
+    hass.services.async_register("number", "set_value", target)
     (entity,) = hass.states.async_all("humidifier")
     assert entity.attributes["available_modes"] == ["manual", "auto", "sleep"]
     assert entity.attributes["reported_mode"] == "original_auto"
     assert entity.attributes.get("mode") is None
     await hass.services.async_call(
+        "humidifier",
+        "set_humidity",
+        {"entity_id": entity.entity_id, "humidity": 55},
+        blocking=True,
+    )
+    await hass.services.async_call(
         "humidifier", "set_mode", {"entity_id": entity.entity_id, "mode": "auto"}, blocking=True
     )
     await hass.async_block_till_done()
+    assert calls == ["Auto", 55]
     assert hass.states.get(entity.entity_id).attributes["mode"] == "auto"

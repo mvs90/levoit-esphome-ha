@@ -258,9 +258,9 @@ assert.match(panel._deviceCard(card), /<option value="" disabled selected>Off<\/
 assert(!panel._deviceCard(card).includes('value="Humidity" selected'));
 const wakePanel = Object.create(Panel.prototype);
 wakePanel._data = { devices: [card] };
-wakePanel._lv600sSelecting = new Set();
+wakePanel._lv600sCommands = new Map();
 // The service-order checks below drive acknowledgement explicitly.
-wakePanel._lv600sStartPreview = () => ({ sent: false, cancelled: false });
+wakePanel._lv600sStartPreview = () => ({ sent: false });
 const wakeCalls = [];
 const wakeErrors = [];
 wakePanel._hass = { states, callService: async (...args) => wakeCalls.push(args) };
@@ -355,7 +355,7 @@ const previewStates = structuredClone(states);
 const previewService = [];
 previewPanel._hass = {states: previewStates, callService: async (...args) => previewService.push(args)};
 previewPanel._data = {devices: [card]};
-previewPanel._lv600sSelecting = new Set();
+previewPanel._lv600sCommands = new Map();
 previewPanel._render = () => {};
 const setPreviewState = (key, value) => { previewStates[card.controls[key]].state = value; };
 setPreviewState('switch.power', 'on');
@@ -399,6 +399,87 @@ setPreviewState('switch.power', 'off');
 assert.equal(previewPanel._lv600sConfirmPreviews(), true);
 assert.equal(previewPanel._lv600sPreviews.size, 0);
 console.log('LV600S previews warm level and icon together, keeps physical state separate, and restores it on timeout');
+
+const previewErrors = [];
+previewPanel._toast = (message) => previewErrors.push(message);
+setPreviewState('switch.power', 'on');
+previewPanel._hass.callService = async () => { throw new Error('test service failure'); };
+await previewPanel._callService('switch', 'turn_off', 'switch.power', {});
+assert.deepEqual(previewErrors, ['test service failure']);
+assert.match(previewPanel._deviceCard(card), /class="power small on"[^>]*Turn off/);
+assert.equal(previewPanel._lv600sPreviews.size, 0);
+assert.equal(previewPanel._lv600sCommands.size, 0);
+
+let rejectOld;
+previewPanel._hass.callService = async (_domain, service) => {
+  if (service === 'turn_off') await new Promise((_resolve, reject) => { rejectOld = reject; });
+};
+const failedOldPower = previewPanel._callService('switch', 'turn_off', 'switch.power', {});
+setPreviewState('switch.power', 'off');
+await previewPanel._callService('switch', 'turn_on', 'switch.power', {});
+const latestPowerPreview = previewPanel._lv600sPreviews.get('switch.power');
+assert.equal(latestPowerPreview.values['switch.power'], 'on');
+rejectOld(new Error('superseded service failed'));
+await failedOldPower;
+assert.equal(previewPanel._lv600sPreviews.get('switch.power'), latestPowerPreview);
+setPreviewState('switch.power', 'on');
+assert(previewPanel._lv600sConfirmPreviews());
+
+// Expire just the visual preview between power and Manual confirmation.
+previewService.length = 0;
+previewPanel._hass.callService = async (...args) => previewService.push(args);
+setPreviewState('switch.power', 'off');
+setPreviewState('text_sensor.humidifier_mode_status', 'Humidity');
+let expireVisual;
+let slowMist;
+try {
+  globalThis.setTimeout = (callback, ms) => {
+    if (ms !== 4000) return schedule(callback, ms);
+    expireVisual = callback;
+    return 0;
+  };
+  slowMist = previewPanel._callService('number', 'set_value', 'number.mist_level', {value: 5});
+  assert.deepEqual(previewService, [powerOn]);
+  setPreviewState('switch.power', 'on');
+  await settle();
+  assert.deepEqual(previewService, [powerOn, chooseManual]);
+  expireVisual();
+  assert.equal(previewPanel._lv600sPreviews.size, 0);
+  assert(previewPanel._lv600sCommands.has('switch.power'));
+  setPreviewState('text_sensor.humidifier_mode_status', 'Manual');
+  await slowMist;
+} finally {
+  globalThis.setTimeout = schedule;
+}
+assert.deepEqual(previewService, [powerOn, chooseManual,
+  ['number', 'set_value', {entity_id: 'number.mist_level', value: 5}]]);
+assert.deepEqual(previewErrors, ['test service failure']);
+
+// Optimistic mode and power can be displayed before dependent controls are ready.
+previewPanel._page = {...panel._page, target_humidity_preset: false};
+previewPanel._historyRange = 'day';
+previewPanel._histHidden = new Set();
+setPreviewState('switch.power', 'off');
+const configDisabled = () => {
+  const markup = previewPanel._devicePage();
+  return [
+    /<input[^>]*data-number="number.humidity_target"[^>]*>/.exec(markup)[0].includes('disabled'),
+    /<button[^>]*data-entity="switch.display"[^>]*>/.exec(markup)[0].includes('disabled'),
+  ];
+};
+const transition = previewPanel._callService('select', 'select_option', 'select.humidifier_mode', {option: 'Humidity'});
+assert.deepEqual(configDisabled(), [true, true]);
+previewPanel._page.target_humidity_preset = true;
+assert.deepEqual(configDisabled(), [false, true]);
+previewPanel._page.target_humidity_preset = false;
+setPreviewState('switch.power', 'on');
+await settle();
+assert.deepEqual(configDisabled(), [true, true]);
+setPreviewState('text_sensor.humidifier_mode_status', 'Humidity');
+await transition;
+assert.deepEqual(configDisabled(), [false, false]);
+assert.equal(previewPanel._lv600sPreviews.size, 0);
+console.log('LV600S rollbacks, delayed confirmation and dependent controls passed');
 
 const requests = [];
 panel._render = () => {};

@@ -345,7 +345,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._hoverT = null; // time under the crosshair
     this._histHidden = new Set(); // history series switched off in the legend
     this._updatingAll = false;
-    this._lv600sSelecting = new Set();
+    this._lv600sCommands = new Map();
     this._lv600sPreviews = new Map();
     this._lv600sWarmPicker = null;
     this._lv600sWarmFocus = null;
@@ -793,20 +793,39 @@ class LevoitEsphomePanel extends HTMLElement {
     const id = device.controls["switch.power"];
     const previews = (this._lv600sPreviews ??= new Map());
     const preceding = previews.get(id);
-    if (preceding) {
-      preceding.cancelled = true;
-      clearTimeout(preceding.timeout);
-    }
-    const preview = { device, values, sent: false, cancelled: false };
+    if (preceding) this._lv600sClearPreview(id, preceding);
+    const preview = { device, values, sent: false };
     preview.timeout = setTimeout(() => {
-      if (previews.get(id) !== preview) return;
-      preview.cancelled = true;
-      previews.delete(id);
-      this._render();
+      if (this._lv600sClearPreview(id, preview)) this._render();
     }, LV600S_PREVIEW_MS);
     previews.set(id, preview);
-    this._render();
     return preview;
+  }
+
+  _lv600sClearPreview(id, preview) {
+    if (this._lv600sPreviews?.get(id) !== preview) return false;
+    clearTimeout(preview.timeout);
+    this._lv600sPreviews.delete(id);
+    return true;
+  }
+
+  async _lv600sRunCommand(device, values, run) {
+    const id = device.controls["switch.power"];
+    const operation = Symbol();
+    this._lv600sCommands.set(id, operation);
+    // The preview can expire before the command's own confirmation wait.
+    const current = () => this._lv600sCommands.get(id) === operation;
+    const preview = this._lv600sStartPreview(device, values);
+    this._render();
+    try {
+      await run(preview, current);
+    } catch (error) {
+      this._lv600sClearPreview(id, preview);
+      if (current()) throw error;
+    } finally {
+      if (current()) this._lv600sCommands.delete(id);
+      this._render();
+    }
   }
 
   _lv600sConfirmPreviews() {
@@ -821,11 +840,7 @@ class LevoitEsphomePanel extends HTMLElement {
         const current = state(key)?.state;
         return key.startsWith("number.") ? Number(current) === Number(expected) : current === expected;
       });
-      if (confirmed) {
-        clearTimeout(preview.timeout);
-        this._lv600sPreviews.delete(id);
-        changed = true;
-      }
+      if (confirmed && this._lv600sClearPreview(id, preview)) changed = true;
     }
     return changed;
   }
@@ -845,10 +860,11 @@ class LevoitEsphomePanel extends HTMLElement {
     const on = service === "turn_on";
     if (on && (device.online === false || !this._usable(state("switch.power"))
       || this._lv600sUnsafe(state, device.controls))) return;
-    const preview = this._lv600sStartPreview(device, { "switch.power": on ? "on" : "off" });
-    preview.sent = true;
-    await this._hass.callService("switch", service, { entity_id: entityId });
-    if (this._lv600sConfirmPreviews()) this._render();
+    await this._lv600sRunCommand(device, { "switch.power": on ? "on" : "off" }, async (preview) => {
+      preview.sent = true;
+      await this._hass.callService("switch", service, { entity_id: entityId });
+      this._lv600sConfirmPreviews();
+    });
   }
 
   async _lv600sSelect(device, domain, service, entityId, args) {
@@ -858,13 +874,12 @@ class LevoitEsphomePanel extends HTMLElement {
     const warm = entityId === device.controls["number.warm_level"];
     const mode = entityId === device.controls["select.humidifier_mode"];
     const reported = () => this._lv600sModeStatus(state)?.state;
-    let preview;
-    const safe = () => !preview?.cancelled && device.online !== false && !this._lv600sUnsafe(state, device.controls)
+    const canSend = () => device.online !== false && !this._lv600sUnsafe(state, device.controls)
       && (!warm || !LV600S_SLEEP_MODES.has(reported()));
     const on = () => state("switch.power")?.state === "on";
     const manual = () => LV600S_MANUAL_MODES.has(reported());
-    if (!safe() || !["on", "off"].includes(power?.state) || (mist && !this._lv600sManualOption(state))) return;
-    if (this._lv600sSelecting.has(power.entity_id) || this._lv600sPreviews?.has(power.entity_id)) return;
+    if (!canSend() || !["on", "off"].includes(power?.state) || (mist && !this._lv600sManualOption(state))) return;
+    if (this._lv600sCommands.has(power.entity_id) || this._lv600sPreviews?.has(power.entity_id)) return;
 
     const wake = !on() && !(warm && args.value === 0);
     const values = {};
@@ -879,9 +894,8 @@ class LevoitEsphomePanel extends HTMLElement {
       if (state("binary_sensor.heating_enabled"))
         values["binary_sensor.heating_enabled"] = args.value === 0 ? "off" : "on";
     }
-    this._lv600sSelecting.add(power.entity_id);
-    preview = this._lv600sStartPreview(device, values);
-    try {
+    await this._lv600sRunCommand(device, values, async (preview, current) => {
+      const safe = () => current() && canSend();
       if (wake) {
         await this._hass.callService("switch", "turn_on", { entity_id: power.entity_id });
         await this._lv600sWaitFor(safe, on, this._lvText(
@@ -905,7 +919,6 @@ class LevoitEsphomePanel extends HTMLElement {
       if (safe() && (!mist || (on() && manual()))) {
         preview.sent = true;
         await this._hass.callService(domain, service, { entity_id: entityId, ...args });
-        this._lv600sConfirmPreviews();
         if (mode) {
           const modes = [LV600S_MANUAL_MODES, LV600S_AUTO_MODES, LV600S_SLEEP_MODES]
             .find((modes) => modes.has(args.option));
@@ -914,13 +927,9 @@ class LevoitEsphomePanel extends HTMLElement {
             "Der Luftbefeuchter hat den gewählten Modus nicht bestätigt.",
           ));
         }
+        this._lv600sConfirmPreviews();
       }
-    } catch (error) {
-      if (!preview.cancelled) throw error;
-    } finally {
-      this._lv600sSelecting.delete(power.entity_id);
-      this._render();
-    }
+    });
   }
 
   async _lv600sWaitFor(safe, confirmed, message) {
@@ -1635,7 +1644,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const reported = this._lv600sModeStatus(state);
     const modeLabel = this._lvText("Mode", "Modus");
     const powerId = state("switch.power")?.entity_id;
-    const busy = this._lv600sSelecting?.has(powerId) || this._lv600sPreviews?.has(powerId);
+    const busy = this._lv600sCommands?.has(powerId) || this._lv600sPreviews?.has(powerId);
     const levels = this._lv600sLevels(state, { disabled, on, compact, busy });
     const options = (mode?.attributes.options || []).filter((option) => LV600S_WRITABLE_MODES.has(option));
     if (!options.length) return levels;
@@ -3177,8 +3186,6 @@ class LevoitEsphomePanel extends HTMLElement {
     const unsafe = offline || this._lv600sUnsafe(raw, this._page.controls);
     const modeStatus = this._lv600sModeStatus(state);
     const mode = modeStatus?.state;
-    const sleep = LV600S_SLEEP_MODES.has(mode);
-    const humidity = LV600S_AUTO_MODES.has(mode);
     const storedTarget = this._page.target_humidity_preset === true;
     const powerLabel = on
       ? t("Humidifier: Turn off", "Luftbefeuchter: Ausschalten")
@@ -3187,6 +3194,11 @@ class LevoitEsphomePanel extends HTMLElement {
     const binary = { format: (value) => value === "on" ? t("Yes", "Ja") : t("No", "Nein") };
     const modeLabel = on && LV600S_WRITABLE_MODES.has(mode) ? this._lvModeLabel(mode) : "";
     const reported = this._lv600sModeStatus(raw);
+    const confirmedOn = raw("switch.power")?.state === "on";
+    const pending = this._lv600sPreviews?.get(power?.entity_id)?.values;
+    const transitioning = this._lv600sCommands?.has(power?.entity_id)
+      || pending?.["switch.power"] !== undefined || pending?.["select.humidifier_mode"] !== undefined;
+    const ready = confirmedOn && !unsafe && !transitioning;
     const reportedMode = this._usable(reported) ? this._lvModeLabel(reported.state) : t("Unknown", "Unbekannt");
     const error = state("text_sensor.error_message");
     const fault = this._usable(error) && !/^(?:ok|no reported mcu fault)$/i.test(error.state.trim());
@@ -3212,8 +3224,8 @@ class LevoitEsphomePanel extends HTMLElement {
       ${this._section(t("Configuration", "Konfiguration"), [
         this._slider("number.humidity_target", t("Target humidity", "Zielfeuchte"),
           t("40–80 % in Auto mode", "40–80 % im Automatikmodus"),
-          { dim: offline || (!storedTarget && (unsafe || !on || !humidity)), unit: "%" }),
-        this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep }),
+          { dim: offline || (!storedTarget && (!ready || !LV600S_AUTO_MODES.has(reported?.state))), unit: "%" }),
+        this._toggle("switch.display", "Display", "", { dim: !ready || LV600S_SLEEP_MODES.has(reported?.state) }),
       ])}
       ${this._section(t("Appliance status", "Gerätestatus"), [
         this._setting(t("Reported mode", "Gemeldeter Modus"), "", `<span class="readout">${esc(reportedMode)}</span>`),
