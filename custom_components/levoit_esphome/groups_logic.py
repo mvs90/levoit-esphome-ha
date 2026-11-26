@@ -382,14 +382,25 @@ def member_ladder(speeds: int, has_sleep: bool) -> list[Step]:
     return [STEP_OFF, *([STEP_SLEEP] if has_sleep else []), *range(1, max(1, speeds) + 1)]
 
 
+def _step_value(step: Step) -> int:
+    """A step's speed, doubled to stay whole: Off 0, Sleep 1 (speed 0.5), speed n 2n."""
+    if step == STEP_OFF:
+        return 0
+    if step == STEP_SLEEP:
+        return 1
+    return 2 * int(step)
+
+
 def member_step(level: int, speeds: int, has_sleep: bool, rng: MemberSpeeds) -> Step | None:
     """The member's step for a group level; None at level 0 (let go).
 
-    Level 1 runs at the lowest step and level 4 at the highest; levels 2 and 3
-    are spread between them: lowest + round((L - 1)(highest - lowest) / 3) on
-    the member's steps, half up. A range the purifier cannot do is narrowed:
-    Sleep without a Sleep preset is speed 1, speeds above its fastest are its
-    fastest.
+    Level 1 runs at the lowest step and level 4 at the highest. With as many
+    steps in the range as levels or fewer, each level takes the next step and
+    the rest stay at the highest (s..3: Sleep, 1, 2, 3; 1..2: 1, 2, 2, 2). With
+    more, levels 2 and 3 are spread evenly by speed, Sleep counting as 0.5, and
+    rounded up to a step, so the bigger jumps are on the left (0..4: Off, 2, 3,
+    4). A range the purifier cannot do is narrowed: Sleep without a Sleep preset
+    is speed 1, speeds above its fastest are its fastest.
     """
     if level <= 0:
         return None
@@ -401,10 +412,14 @@ def member_step(level: int, speeds: int, has_sleep: bool, rng: MemberSpeeds) -> 
         low = 1
     if isinstance(low, int):
         low = min(low, high)
-    lo, hi = ladder.index(low), ladder.index(high)
-    numerator = (min(level, MAX_LEVEL) - 1) * (hi - lo)
-    denominator = MAX_LEVEL - 1
-    return ladder[lo + (2 * numerator + denominator) // (2 * denominator)]
+    steps = ladder[ladder.index(low) : ladder.index(high) + 1]
+    index = min(level, MAX_LEVEL) - 1
+    if len(steps) <= MAX_LEVEL:
+        return steps[min(index, len(steps) - 1)]
+    # the step at or above lowest + index * (highest - lowest) / (MAX_LEVEL - 1)
+    v0, v1, gaps = _step_value(steps[0]), _step_value(steps[-1]), MAX_LEVEL - 1
+    target = v0 * gaps + index * (v1 - v0)
+    return next(step for step in steps if _step_value(step) * gaps >= target)
 
 
 def type_level(config: GroupConfig, kind: str, value: float) -> int:

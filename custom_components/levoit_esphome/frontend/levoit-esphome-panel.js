@@ -204,14 +204,20 @@ const memberRange = (p, rng) => {
   if (typeof low === "number") low = Math.min(low, high);
   return { ladder, low, high };
 };
-// a member's step for a group level, lowest at 1 and highest at 4, the levels
-// between spread over its steps, half up (as groups_logic.member_step)
+// a step's speed, doubled: Off 0, Sleep 1 (speed 0.5), speed n 2n
+const stepValue = (s) => (s === "off" ? 0 : s === "sleep" ? 1 : 2 * s);
+// a member's step for a group level, lowest at 1 and highest at 4 (as
+// groups_logic.member_step): up to 4 steps one per level, the rest at the
+// highest; more spread evenly by speed and rounded up, bigger jumps on the left
 const memberStep = (level, p, rng) => {
   if (level <= 0) return null;
   const { ladder, low, high } = memberRange(p, rng);
-  const lo = ladder.indexOf(low);
-  const n = (Math.min(level, 4) - 1) * (ladder.indexOf(high) - lo);
-  return ladder[lo + Math.floor((2 * n + 3) / 6)];
+  const steps = ladder.slice(ladder.indexOf(low), ladder.indexOf(high) + 1);
+  const i = Math.min(level, 4) - 1;
+  if (steps.length <= 4) return steps[Math.min(i, steps.length - 1)];
+  const v0 = stepValue(steps[0]);
+  const target = v0 * 3 + i * (stepValue(steps[steps.length - 1]) - v0);
+  return steps.find((s) => stepValue(s) * 3 >= target);
 };
 // a data-value attribute: true / false, a number, or text
 const parseValue = (text) =>
