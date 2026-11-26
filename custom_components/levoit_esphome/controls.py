@@ -34,6 +34,7 @@ SUPPORTED_MODELS = frozenset(
         "CORE300S",
         "CORE400S",
         "CORE600S",
+        "LV600S",
         "VITAL100S",
         "VITAL200S",
         "EVERESTAIR",
@@ -117,6 +118,24 @@ DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
 
 # Where a model names an entity differently; tried before DEFAULT_NAMES.
 MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
+    "LV600S": {
+        "switch.power": ("Power", "Ein"),
+        "select.humidifier_mode": ("Operating Mode", "Betriebsmodus"),
+        "number.humidity_target": ("Target Humidity", "Zielfeuchte"),
+        "number.mist_level": ("Mist Level", "Nebelstufe"),
+        "number.timer": ("Timer (min)", "Timer Minuten"),
+        "number.warm_level": ("Warm Level", "Warmnebelstufe"),
+        "sensor.humidity": ("Humidity", "Luftfeuchtigkeit"),
+        "sensor.temperature": ("Temperature", "Temperatur"),
+        "sensor.timer_remaining_seconds": ("Timer Remaining Seconds", "Timer Restzeit"),
+        "binary_sensor.water_tank_empty": ("Water Tank Empty", "Wassermangel"),
+        "binary_sensor.tank_removed": ("Tank Removed", "Tank entfernt"),
+        "binary_sensor.humidifying": ("Humidifying", "Befeuchtet"),
+        "binary_sensor.heating_enabled": ("Heating Enabled", "Waerme aktiv"),
+        "binary_sensor.mcu_connection": ("MCU Connection", "MCU Verbindung"),
+        "binary_sensor.mcu_fault": ("MCU Fault", "Geraetefehler"),
+        "text_sensor.error_message": ("Error", "Fehlermeldung"),
+    },
     # The Eleva's "AQI" is the 0-500 index; its 1-4 level is "Air Quality Level".
     "ELEVA300X": {
         "sensor.aqi_index": ("AQI",),
@@ -139,7 +158,7 @@ def page_supported(
 
 
 def config_names(config: Mapping[str, Any]) -> dict[str, str]:
-    """Entity names per key, from a resolved device config (levoit platform only).
+    """Entity names per key, from the resolved purifier or LV600S config.
 
     Only the names are kept: the config itself has secrets.
     """
@@ -155,6 +174,47 @@ def config_names(config: Mapping[str, Any]) -> dict[str, str]:
             name = entry.get("name")
             if isinstance(kind, str) and isinstance(name, str) and name:
                 names[f"{platform}.{kind}"] = name
+    # The LV600S component declares sensors within its parent block; controls
+    # are template entities. Read only explicit names/IDs, never execute lambdas.
+    lv = config.get("lv600s_humidifier")
+    if isinstance(lv, dict):
+        nested = {
+            "current_humidity": "sensor.humidity",
+            "current_temperature": "sensor.temperature",
+            "timer_remaining": "sensor.timer_remaining_seconds",
+            "water_lacks": "binary_sensor.water_tank_empty",
+            "tank_removed": "binary_sensor.tank_removed",
+            "humidifying": "binary_sensor.humidifying",
+            "warm_enabled": "binary_sensor.heating_enabled",
+            "online": "binary_sensor.mcu_connection",
+            "fault": "binary_sensor.mcu_fault",
+            "fault_message": "text_sensor.error_message",
+            "mcu_version": "text_sensor.mcu_version",
+            "esp_version": "text_sensor.esp_version",
+            "model_sensor": "text_sensor.model",
+        }
+        for key, kind in nested.items():
+            entry = lv.get(key)
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                names[kind] = entry["name"]
+        ids = {
+            "humidifier_power": "switch.power",
+            "humidifier_display": "switch.display",
+            "humidifier_mode": "select.humidifier_mode",
+            "humidifier_target": "number.humidity_target",
+            "humidifier_mist": "number.mist_level",
+            "humidifier_warm": "number.warm_level",
+            "humidifier_timer": "number.timer",
+        }
+        for platform in ("switch", "select", "number"):
+            for entry in config.get(platform) or []:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("platform") == "template"
+                    and entry.get("id") in ids
+                    and isinstance(entry.get("name"), str)
+                ):
+                    names[ids[entry["id"]]] = entry["name"]
     return names
 
 
@@ -191,9 +251,14 @@ def match_controls(
             entities.append((entry.domain, _norm(entry.original_name), entry.entity_id))
 
     # keys with a specific source first: config names, then model exceptions
+    model_names = MODEL_NAMES.get(model or "", {})
+    available_keys = dict.fromkeys((*DEFAULT_NAMES, *model_names))
+    if model == "LV600S":
+        # An auxiliary fan on this ESPHome node is not a purifier group member.
+        del available_keys["fan.fan"]
     keys = sorted(
-        DEFAULT_NAMES,
-        key=lambda k: (k not in configured, k not in MODEL_NAMES.get(model or "", {})),
+        available_keys,
+        key=lambda k: (k not in configured, k not in model_names),
     )
     found: dict[str, str] = {}
     used: set[str] = set()

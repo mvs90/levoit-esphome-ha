@@ -28,6 +28,12 @@ const CHANNEL_LABELS = {
   pinned: "Pinned",
   local: "Local",
 };
+const LV600S_READ_ONLY_MODES = new Set(["Auto (read only)", "Auto (Original)", "Unknown", "Unbekannt"]);
+const LV600S_SLEEP_MODES = new Set(["Humidity Sleep", "Schlaf"]);
+const LV600S_MODE_LABELS = [
+  ["Manual", "Manuell"], ["Humidity", "Feuchte"], ["Humidity Sleep", "Schlaf"],
+  ["Auto (read only)", "Auto (Original)"], ["Unknown", "Unbekannt"],
+];
 
 const ICONS = {
   menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
@@ -56,6 +62,10 @@ const ICONS = {
   delete: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
   fan: "M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C17,2 17.11,5.57 14.75,6.75C13.76,7.24 13.32,8.29 13.13,9.22C13.61,9.42 14.03,9.73 14.35,10.13C18.05,8.13 22.03,8.92 22.03,12.5C22.03,17 18.46,17.1 17.28,14.73C16.78,13.74 15.72,13.3 14.79,13.11C14.59,13.59 14.28,14 13.88,14.34C15.87,18.03 15.08,22 11.5,22C7,22 6.91,18.42 9.27,17.24C10.25,16.75 10.69,15.71 10.89,14.79C10.4,14.59 9.97,14.27 9.65,13.87C5.96,15.85 2,15.07 2,11.5C2,7 5.56,6.89 6.74,9.26C7.24,10.25 8.29,10.68 9.22,10.87C9.41,10.39 9.73,9.97 10.14,9.65C8.15,5.96 8.94,2 12.5,2Z",
   filter: "M14,12V19.88C14.04,20.18 13.94,20.5 13.71,20.71C13.32,21.1 12.69,21.1 12.3,20.71L10.29,18.7C10.06,18.47 9.96,18.16 10,17.87V12H9.97L4.21,4.62C3.87,4.19 3.95,3.56 4.38,3.22C4.57,3.08 4.78,3 5,3H19C19.22,3 19.43,3.08 19.62,3.22C20.05,3.56 20.13,4.19 19.79,4.62L14.03,12H14Z",
+  water: "M12 2C9 6 5 10 5 15a7 7 0 0 0 14 0c0-5-4-9-7-13Z",
+  waterEmpty: "M12 2C9 6 5 10 5 15a7 7 0 0 0 14 0c0-5-4-9-7-13Zm0 3.5c2.7 3.5 5 6.3 5 9.5a5 5 0 0 1-10 0c0-3.2 2.3-6 5-9.5ZM9 14h6v2H9Z",
+  tankOut: "M12 1l4 4-1.4 1.4L13 4.8V10h-2V4.8L9.4 6.4 8 5ZM5 11h2v9h10v-9h2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2Z",
+  tank: "M5 4h14v2h-1v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6H5Zm3 2v14h8V6Z",
 };
 
 // Small outline drawings per purifier family for the overview (48 x 48, drawn
@@ -80,7 +90,7 @@ const deviceShape = (model) => {
   if (m === "ELEVA300X") return "eleva";
   if (m.startsWith("VITAL") || m === "EVERESTAIR") return "tower";
   if (m === "SPROUT") return "sprout";
-  if (m === "SUPERIOR6000S") return "humidifier";
+  if (m === "SUPERIOR6000S" || m === "LV600S") return "humidifier";
   if (m.startsWith("AC0")) return "philips";
   return "core";
 };
@@ -137,6 +147,28 @@ const GROUP_HISTORY_SERIES = [
   { key: "pm10", title: "PM10", color: "pm10", axis: "left" },
   { key: "cadr", title: "CADR", color: "cadr", axis: "right" },
 ];
+const LV600S_HISTORY = [
+  { key: "sensor.humidity", title: "Humidity", de: "Luftfeuchtigkeit", color: "pm", axis: "left", bounds: [0, 100], area: true },
+  { key: "sensor.temperature", title: "Temperature", de: "Temperatur", color: "cadr", axis: "right" },
+  { key: "number.mist_level", title: "Mist level", de: "Nebelstufe", color: "mist", axis: "left", bounds: [0, 9], level: true },
+  { key: "number.warm_level", title: "Warm mist", de: "Warmnebelstufe", color: "warm", axis: "left", bounds: [0, 9], level: true, dashed: true },
+];
+
+// Recorder history uses Unix seconds and includes the state at the start of the range.
+// Keep unavailable states to break the line, and extend the last known value to the end.
+const stateHistory = (rows, start, end) => {
+  const points = [];
+  for (const row of rows) {
+    const time = (row.lc ?? row.lu) * 1000;
+    if (!Number.isFinite(time) || time > end) continue;
+    const value = Number(row.s);
+    const point = [Math.max(start, time), row.s && Number.isFinite(value) ? value : null];
+    if (points.at(-1)?.[0] === point[0]) points[points.length - 1] = point;
+    else points.push(point);
+  }
+  if (points.length && points.at(-1)[0] < end) points.push([end, points.at(-1)[1]]);
+  return points;
+};
 
 // the purifiers' air quality level, 1 (very good) to 4 (poor)
 const AQI_WORDS = { 1: "Very good", 2: "Good", 3: "Moderate", 4: "Poor" };
@@ -394,6 +426,8 @@ class LevoitEsphomePanel extends HTMLElement {
     if (detailId !== this._detailId) {
       this._detailId = detailId;
       this._history = null;
+      this._historyRequest = null;
+      this._historyLoading = false;
       this._historyError = null;
       this._hoverT = null;
     }
@@ -403,6 +437,8 @@ class LevoitEsphomePanel extends HTMLElement {
       this._pageError = null;
       this._seen = {};
       this._history = null;
+      this._historyRequest = null;
+      this._historyLoading = false;
       this._historyError = null;
       this._hoverT = null;
       if (name && this._hass) this._loadPage();
@@ -795,6 +831,14 @@ class LevoitEsphomePanel extends HTMLElement {
       // overview card: the mode dropdown
       preset.blur();
       await this._callService("fan", "set_preset_mode", preset.dataset.preset, { preset_mode: preset.value });
+      return;
+    }
+    const humidifierMode = ev.target.closest("select[data-humidifier-mode]");
+    if (humidifierMode) {
+      const { value, disabled, dataset } = humidifierMode;
+      if (disabled || !value || LV600S_READ_ONLY_MODES.has(value)) return;
+      humidifierMode.blur();
+      await this._callService("select", "select_option", dataset.humidifierMode, { option: value });
       return;
     }
     const input = ev.target.closest("input[data-number]");
@@ -1267,6 +1311,83 @@ class LevoitEsphomePanel extends HTMLElement {
     return d.online === false || (fan && !this._usable(fan) && fan.state !== "off");
   }
 
+  _lvText(english, german) {
+    return /^de(?:[-_]|$)/i.test(this._hass?.locale?.language || this._hass?.language || "") ? german : english;
+  }
+
+  _lvModeLabel(value) {
+    const labels = LV600S_MODE_LABELS.find((pair) => pair.includes(value));
+    return labels ? this._lvText(...labels) : value;
+  }
+
+  _lv600sUnsafe(state, controls) {
+    if (controls?.["binary_sensor.mcu_connection"] && state("binary_sensor.mcu_connection")?.state !== "on") {
+      return true;
+    }
+    return ["binary_sensor.water_tank_empty", "binary_sensor.tank_removed", "binary_sensor.mcu_fault"]
+      .some((key) => controls?.[key] && state(key)?.state !== "off");
+  }
+
+  _lv600sTankStatus(state) {
+    if (state("binary_sensor.tank_removed")?.state === "on") return this._lvText("Tank removed", "Tank herausgenommen");
+    if (state("binary_sensor.water_tank_empty")?.state === "on") return this._lvText("Water tank empty", "Wassertank leer");
+    return "";
+  }
+
+  _tankBadge(state, offline) {
+    const connection = state("binary_sensor.mcu_connection");
+    const stale = offline || (connection && connection.state !== "on");
+    const removed = stale ? null : state("binary_sensor.tank_removed")?.state;
+    const empty = stale ? null : state("binary_sensor.water_tank_empty")?.state;
+    const installed = removed === "off" ? this._lvText("Tank in", "Tank eingesetzt") : "";
+    const water = empty === "on" ? this._lvText("empty", "leer") : this._lvText("water available", "Wasser vorhanden");
+    let glyph = "tank";
+    let label = this._lvText("Tank status unknown", "Tankstatus unbekannt");
+    if (removed === "on") {
+      glyph = "tankOut";
+      label = this._lvText("Tank removed", "Tank herausgenommen");
+    } else if (empty === "on" || empty === "off") {
+      glyph = empty === "on" ? "waterEmpty" : "water";
+      label = installed ? `${installed} · ${water}`
+        : empty === "on" ? this._lvText("Water tank empty", "Wassertank leer") : this._lvText("Water available", "Wasser vorhanden");
+    } else if (installed) {
+      label = `${installed} · ${this._lvText("water level unknown", "Wasserstand unbekannt")}`;
+    }
+    const tone = glyph === "tankOut" || glyph === "waterEmpty" ? " warning" : glyph === "water" ? " water" : "";
+    return `<span class="dc-tank${tone}" title="${esc(label)}">${icon(glyph)}${esc(label)}</span>`;
+  }
+
+  _lv600sQuickControls(state, { disabled, compact, on }) {
+    const mode = state("select.humidifier_mode");
+    const mist = state("number.mist_level");
+    const mistLabel = this._lvText("Mist level", "Nebelstufe");
+    const modeLabel = this._lvText("Mode", "Modus");
+    const raw = Number(mist?.state);
+    // The three VeSync-equivalent presets write internal levels 1, 5 and 9.
+    const current = on && raw >= 1 && raw <= 9 ? Math.ceil(raw / 3) : null;
+    const mistDisabled = disabled || !this._usable(mist) || LV600S_SLEEP_MODES.has(mode?.state);
+    const shortcuts = mist ? `<div class="segs" role="group" aria-label="${mistLabel}">${[1, 5, 9].map((value, i) => {
+      const level = i + 1;
+      return `<button class="seg${compact ? " sm" : ""}${current === level ? " on" : ""}" aria-label="${mistLabel} ${level}"
+        aria-pressed="${current === level}" ${mistDisabled ? "disabled" : ""} ${this._svc(
+          "number", "set_value", mist.entity_id, { value },
+        )}>${level}</button>`;
+    }).join("")}</div>` : "";
+    const options = (mode?.attributes.options || []).filter((option) => !LV600S_READ_ONLY_MODES.has(option));
+    if (!options.length) return shortcuts;
+    const modeDisabled = disabled || !this._usable(mode);
+    const currentMode = options.includes(mode.state) ? mode.state : "";
+    if (compact) {
+      return `${shortcuts}<select class="mode-select" data-action="none" data-humidifier-mode="${esc(mode.entity_id)}" aria-label="${modeLabel}" ${modeDisabled ? "disabled" : ""}>
+        ${currentMode ? "" : `<option value="" disabled selected>${esc(this._usable(mode) ? this._lvModeLabel(mode.state) : modeLabel)}</option>`}
+        ${options.map((option) => `<option value="${esc(option)}" ${option === currentMode ? "selected" : ""}>${esc(this._lvModeLabel(option))}</option>`).join("")}
+      </select>`;
+    }
+    const modes = options.map((option) => `<button class="seg${option === currentMode ? " on" : ""}" aria-pressed="${option === currentMode}"
+      ${modeDisabled ? "disabled" : ""} ${this._svc("select", "select_option", mode.entity_id, { option })}>${esc(this._lvModeLabel(option))}</button>`).join("");
+    return `<div class="segs" role="group" aria-label="${modeLabel}">${modes}</div>${shortcuts}`;
+  }
+
   // a device's state for a controls key, from the subscription's mapping
   _dstate(d, key) {
     const entityId = d.controls?.[key];
@@ -1274,13 +1395,17 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _deviceCard(d) {
-    const fan = this._dstate(d, "fan.fan");
-    const on = fan?.state === "on";
+    const humidifier = d.model === "LV600S";
+    const fan = humidifier ? null : this._dstate(d, "fan.fan");
+    const powerState = fan || this._dstate(d, "switch.power");
+    const on = powerState?.state === "on";
     const a = fan?.attributes || {};
     const step = Number(a.percentage_step) || 25;
     const count = Math.max(1, Math.round(100 / step));
     const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
-    const offline = this._isOffline(d, fan);
+    const offline = this._isOffline(d, powerState);
+    const state = (key) => this._dstate(d, key);
+    const humidifierUnsafe = humidifier && this._lv600sUnsafe(state, d.controls);
     // speed buttons and the mode dropdown; picking either turns it on too
     const dis = offline ? "disabled" : "";
     const presets = a.preset_modes || [];
@@ -1308,12 +1433,13 @@ class LevoitEsphomePanel extends HTMLElement {
           )
           .join("")
       : "";
-    const controls =
-      fan && (modeSelect || speedButtons)
-        ? `<div class="dc-controls">${speedButtons ? `<div class="segs" role="group" aria-label="Speed">${speedButtons}</div>` : ""}${modeSelect}</div>`
-        : "";
+    const quickControls = humidifier ? this._lv600sQuickControls(state, {
+      disabled: offline || !this._usable(powerState) || humidifierUnsafe, compact: true, on,
+    }) : `${speedButtons ? `<div class="segs" role="group" aria-label="Speed">${speedButtons}</div>` : ""}${modeSelect}`;
+    const controls = quickControls ? `<div class="dc-controls">${quickControls}</div>` : "";
     const timerLeft =
-      parseDuration(this._dstate(d, "text_sensor.timer_duration_remaining")?.state) / 60;
+      (humidifier ? Number(state("sensor.timer_remaining_seconds")?.state)
+        : parseDuration(state("text_sensor.timer_duration_remaining")?.state)) / 60;
     // the AQI dot: from the 1-4 level, else from the Eleva's index
     const levelSt = this._dstate(d, "sensor.aqi");
     const indexSt = this._dstate(d, "sensor.aqi_index");
@@ -1334,15 +1460,20 @@ class LevoitEsphomePanel extends HTMLElement {
       }</div><div class="dc-label">${esc(label)}${unit ? ` ${esc(unit)}` : ""}</div></div>`;
     };
     const aqiKey = levelSt || d.controls?.["sensor.aqi"] ? "sensor.aqi" : "sensor.aqi_index";
-    const stats = [
+    const stats = humidifier ? [
+      stat("sensor.humidity", this._lvText("Humidity", "Luftfeuchtigkeit")),
+      stat("sensor.temperature", this._lvText("Temperature", "Temperatur")),
+    ].join("") : [
       stat("sensor.pm25", "PM2.5"),
       stat(aqiKey, "AQI", dotLevel),
       stat("sensor.current_cadr", "CADR"),
     ].join("");
-    const power = fan
-      ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? `Turn ${esc(d.title)} off` : `Turn ${esc(d.title)} on`}" title="${
-          on ? "Turn off" : "Turn on"
-        }" ${dis} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
+    const powerDisabled = offline || (humidifierUnsafe && !on);
+    const powerLabel = on ? (humidifier ? this._lvText("Turn off", "Ausschalten") : "Turn off")
+      : (humidifier ? this._lvText("Turn on", "Einschalten") : "Turn on");
+    const power = powerState
+      ? `<button class="power small${on ? " on" : ""}" aria-label="${esc(d.title)}: ${powerLabel}" title="${powerLabel}"
+        ${powerDisabled ? "disabled" : ""} ${this._svc(fan ? "fan" : "switch", on ? "turn_off" : "turn_on", powerState.entity_id)}>${icon("power")}</button>`
       : "";
     // under the name: model and filter; a line below: timer, update, offline and group
     const filter =
@@ -1355,6 +1486,7 @@ class LevoitEsphomePanel extends HTMLElement {
             )}<span class="bar"><span style="width:${value}%"></span></span>${Math.round(value)} %</span>`;
           })()
         : "";
+    const modelStatus = humidifier ? this._tankBadge(state, offline) : filter;
     const flags = [
       timerLeft > 0 && on && !offline ? `<span class="chip info">Off in ${esc(formatMinutes(timerLeft))}</span>` : "",
       d.update_available && !offline
@@ -1371,7 +1503,7 @@ class LevoitEsphomePanel extends HTMLElement {
         <span class="dev-tile">${deviceImage(d.model)}</span>
         <div class="dc-name">
           <div class="name">${esc(d.title)}</div>
-          <div class="dc-sub"><span>${esc(d.model || "Levoit")}</span>${filter ? `<span aria-hidden="true">·</span>${filter}` : ""}</div>${
+          <div class="dc-sub"><span>${esc(d.model || "Levoit")}</span>${modelStatus ? `<span aria-hidden="true">·</span>${modelStatus}` : ""}</div>${
             flags || groupChip ? `<div class="dc-flags">${flags}${groupChip}</div>` : ""
           }
         </div>
@@ -2511,14 +2643,14 @@ class LevoitEsphomePanel extends HTMLElement {
     );
   }
 
-  _choices(key, label, hint, { dim = false, labels = {} } = {}) {
+  _choices(key, label, hint, { dim = false, labels = {}, disabledOptions = [] } = {}) {
     const st = this._state(key);
     if (!st) return "";
     const off = !this._usable(st) || dim;
     const buttons = (st.attributes.options || [])
       .map(
         (option) =>
-          `<button class="seg${option === st.state ? " on" : ""}" ${off ? "disabled" : ""} ${this._svc(
+          `<button class="seg${option === st.state ? " on" : ""}" ${off || disabledOptions.includes(option) ? "disabled" : ""} ${this._svc(
             "select",
             "select_option",
             st.entity_id,
@@ -2553,7 +2685,7 @@ class LevoitEsphomePanel extends HTMLElement {
     );
   }
 
-  _stepper(key, label, hint, { dim = false, format } = {}) {
+  _stepper(key, label, hint, { dim = false, format, integer = false } = {}) {
     const st = this._state(key);
     if (!st) return "";
     const a = st.attributes;
@@ -2563,7 +2695,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const step = Number(a.step) || 1;
     const show = format || ((v) => `${formatNumber(v)}${a.unit_of_measurement ? ` ${a.unit_of_measurement}` : ""}`);
     const button = (delta, text) => {
-      const next = Math.min(Number(a.max), Math.max(Number(a.min), value + delta));
+      const next = Math.min(Number(a.max), Math.max(Number(a.min), (integer ? Math.ceil(value) : value) + delta));
       return `<button class="step" aria-label="${delta < 0 ? "Less" : "More"}" ${
         off || next === value ? "disabled" : ""
       } ${this._svc("number", "set_value", st.entity_id, { value: next })}>${text}</button>`;
@@ -2637,6 +2769,7 @@ class LevoitEsphomePanel extends HTMLElement {
         <p class="muted">Its settings are on the Home Assistant device page.</p>
         ${haLink}
       </div>`;
+    if (page.model === "LV600S") return this._humidifierPage();
     const settings = Object.keys(page.controls).filter((key) => !key.startsWith("text_sensor."));
     if (!settings.length)
       return `<div class="card empty">
@@ -2761,6 +2894,79 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       ${vent}
     </div>`;
+  }
+
+  _humidifierPage() {
+    const state = (key) => this._state(key);
+    const t = (english, german) => this._lvText(english, german);
+    const power = state("switch.power");
+    const on = power?.state === "on";
+    const offline = !this._usable(power);
+    const unsafe = offline || this._lv600sUnsafe(state, this._page.controls);
+    const mode = state("select.humidifier_mode")?.state;
+    const sleep = LV600S_SLEEP_MODES.has(mode);
+    const humidity = ["Humidity", "Feuchte"].includes(mode);
+    const tankStatus = offline ? "" : this._lv600sTankStatus(state);
+    const powerLabel = on ? t("Turn off", "Ausschalten") : t("Turn on", "Einschalten");
+    const status = offline ? "Offline" : on ? t("Running", "In Betrieb") : t("Off", "Aus");
+    const binary = { format: (value) => value === "on" ? t("Yes", "Ja") : t("No", "Nein") };
+    const modeLabel = mode && (on || LV600S_READ_ONLY_MODES.has(mode)) ? this._lvModeLabel(mode) : "";
+    const error = state("text_sensor.error_message");
+    const fault = this._usable(error) && !/^(?:ok|no reported mcu fault)$/i.test(error.state.trim());
+    return `${fault ? `<div class="notice warn">${t("Error", "Fehler")}: ${esc(error.state)}</div>` : ""}
+      <div class="card hero" aria-label="${esc(this._page.title || "LV600S")}">
+        <div class="hero-main">
+          <div class="hero-controls">
+            ${power ? `<button class="power${on ? " on" : ""}" aria-label="${powerLabel}" title="${powerLabel}"
+              ${offline || (unsafe && !on) ? "disabled" : ""} ${this._svc("switch", on ? "turn_off" : "turn_on", power.entity_id)}>${icon("power")}</button>` : ""}
+            <div class="hero-rows">
+              <div class="hero-status"><span class="hs-title">${status}</span>
+                ${tankStatus || modeLabel ? `<span class="hs-sub">${esc(tankStatus || modeLabel)}</span>` : ""}
+              </div>
+              <div class="hero-segs">${this._lv600sQuickControls(state, { disabled: unsafe, compact: false, on })}</div>
+            </div>
+          </div>
+          <div class="tiles">${this._tile("sensor.humidity", t("Humidity", "Luftfeuchtigkeit"))}${this._tile("sensor.temperature", t("Temperature", "Temperatur"))}</div>
+        </div>
+      </div>
+      ${this._historyCard()}
+      <div class="sections">${this._section(t("Humidifier", "Luftbefeuchter"), [
+        this._slider("number.humidity_target", t("Target humidity", "Zielfeuchte"),
+          t("40–80 % in Humidity mode", "40–80 % im Feuchtemodus"), { dim: unsafe || !on || !humidity, unit: "%" }),
+        this._stepper("number.mist_level", t("Mist level", "Nebelstufe"),
+          t("1–9 internal levels", "1–9 interne Stufen"), { dim: unsafe || sleep }),
+        this._stepper("number.warm_level", t("Warm mist", "Warmnebelstufe"),
+          t("Stored heat setting", "Gespeicherte Heizstufe"), { dim: unsafe || sleep }),
+      ])}${this._lv600sTimer(unsafe)}
+      ${this._section("Display", [this._toggle("switch.display", "Display", "", { dim: unsafe || !on || sleep })])}
+      ${this._section(t("Appliance status", "Gerätestatus"), [
+        this._readout("binary_sensor.water_tank_empty", t("Water tank empty", "Wassertank leer"), binary),
+        this._readout("binary_sensor.tank_removed", t("Tank removed", "Tank herausgenommen"), binary),
+        this._readout("binary_sensor.humidifying", t("Humidifying", "Befeuchtet"), binary),
+        this._readout("binary_sensor.heating_enabled", t("Heating enabled", "Heizung aktiv"), binary),
+        this._readout("binary_sensor.mcu_connection", t("MCU connected", "MCU verbunden"), binary),
+      ])}${this._infoSection()}</div>`;
+  }
+
+  _lv600sTimer(unsafe) {
+    const t = (english, german) => this._lvText(english, german);
+    const timer = this._state("number.timer");
+    const seconds = this._number("sensor.timer_remaining_seconds");
+    const status = this._readout("sensor.timer_remaining_seconds", t("Remaining", "Restzeit"));
+    if (!timer) return this._section("Timer", [status]);
+    const disabled = unsafe || timer.state === "unavailable";
+    const setTimer = (value, label, buttonClass = "opt") =>
+      `<button class="${buttonClass}" ${disabled ? "disabled" : ""} ${this._svc(
+        "number", "set_value", timer.entity_id, { value },
+      )}>${esc(label)}</button>`;
+    const durations = [1, 30, 60, 120, 240, 480, 720]
+      .filter((value) => value >= Number(timer.attributes.min) && value <= Number(timer.attributes.max))
+      .map((value) => setTimer(value, formatMinutes(value)));
+    return this._section("Timer", [
+      status,
+      durations.length ? `<div class="opts" role="group" aria-label="${t("Turn off in", "Ausschalten in")}">${durations.join("")}</div>` : "",
+      this._stepper("number.timer", t("Adjust minutes", "Minuten einstellen"), "", { dim: disabled, integer: true }),
+    ], "", seconds === 0 ? "" : setTimer(0, t("Cancel", "Abbrechen"), "btn text"));
   }
 
   _autoSection() {
@@ -2940,7 +3146,7 @@ class LevoitEsphomePanel extends HTMLElement {
     return this._pageName ? `device:${this._pageName}` : null;
   }
 
-  // the air quality sensors this device has, one chart each (and the level band)
+  // The recorder can supply either purifier statistics or recorded humidifier states.
   _historySeries() {
     if (this._view === "groupdetail") {
       const entities = this._detailGroup()?.entities || {};
@@ -2952,6 +3158,10 @@ class LevoitEsphomePanel extends HTMLElement {
       return series;
     }
     const controls = this._page?.controls || {};
+    if (this._page?.model === "LV600S") {
+      return LV600S_HISTORY.filter((s) => controls[s.key])
+        .map((s) => ({ ...s, title: this._lvText(s.title, s.de), entity: controls[s.key] }));
+    }
     const series = HISTORY_SERIES.filter((s) => controls[s.key]).map((s) => ({ ...s, entity: controls[s.key] }));
     const level = controls["sensor.aqi"];
     const index = controls["sensor.aqi_index"];
@@ -2981,14 +3191,15 @@ class LevoitEsphomePanel extends HTMLElement {
       now = `${shownValue} ${AQI_WORDS[this._bandLevel(s, st.state)] || ""}`.trim();
     } else if (ok) {
       const unit = st.attributes.unit_of_measurement || "";
-      now = `${formatNumber(Math.round(parseFloat(st.state)))}${unit ? ` ${unit}` : ""}`;
+      const value = parseFloat(st.state);
+      now = `${formatNumber(s.de ? value : Math.round(value))}${unit ? ` ${unit}` : ""}`;
     }
     const shown = !this._histHidden.has(s.key);
     const swatch = s.band
       ? `<span class="sw band"></span>`
       : `<span class="sw c-${s.color}${s.axis === "right" ? " line" : ""}"></span>`;
     return `<button class="lg${shown ? "" : " off"}" data-action="toggle-series" data-key="${esc(s.key)}" aria-pressed="${shown}" title="${
-      shown ? "Hide" : "Show"
+      s.de ? (shown ? this._lvText("Hide", "Ausblenden") : this._lvText("Show", "Einblenden")) : shown ? "Hide" : "Show"
     } ${esc(s.title)}">${swatch}<span>${esc(s.title)}</span><b>${esc(now)}</b></button>`;
   }
 
@@ -3000,29 +3211,39 @@ class LevoitEsphomePanel extends HTMLElement {
     const range = HISTORY_RANGES[rangeKey];
     const end = Date.now();
     const start = end - range.ms;
+    const raw = this._page?.model === "LV600S";
+    const ids = [...new Set(series.flatMap((s) => [s.entity, s.index].filter(Boolean)))];
+    const request = {};
+    this._historyRequest = request;
     this._historyLoading = true;
     try {
       const result = await this._hass.callWS({
-        type: "recorder/statistics_during_period",
         start_time: new Date(start).toISOString(),
         end_time: new Date(end).toISOString(),
-        statistic_ids: [...new Set(series.flatMap((s) => [s.entity, s.index].filter(Boolean)))],
-        period: range.period,
-        types: ["mean"],
+        ...(raw ? {
+          type: "history/history_during_period", entity_ids: ids, include_start_time_state: true,
+          minimal_response: true, no_attributes: true,
+        } : {
+          type: "recorder/statistics_during_period", statistic_ids: ids, period: range.period, types: ["mean"],
+        }),
       });
-      if (name !== this._historyKey() || rangeKey !== this._historyRange) return;
+      if (this._historyRequest !== request) return;
       const data = {};
-      for (const id of new Set(series.flatMap((s) => [s.entity, s.index].filter(Boolean))))
-        data[id] = (result?.[id] || [])
+      for (const id of ids) {
+        const records = result?.[id] || [];
+        data[id] = raw ? stateHistory(records, start, end) : records
           .map((p) => [typeof p.start === "number" ? p.start : Date.parse(p.start), p.mean])
           .filter(([t, v]) => Number.isFinite(t) && v !== null && v !== undefined);
-      this._history = { name, range: rangeKey, start, end, at: Date.now(), data };
+      }
+      this._history = { name, range: rangeKey, start, end, at: Date.now(), data, raw };
       this._historyError = null;
     } catch (err) {
-      if (name === this._historyKey()) this._historyError = err?.message || String(err);
+      if (this._historyRequest === request) this._historyError = err?.message || String(err);
     } finally {
-      this._historyLoading = false;
-      this._render();
+      if (this._historyRequest === request) {
+        this._historyLoading = false;
+        this._render();
+      }
     }
   }
 
@@ -3030,37 +3251,44 @@ class LevoitEsphomePanel extends HTMLElement {
     const series = this._historySeries();
     if (!series.length) return "";
     const h = this._history;
+    const humidifier = this._page?.model === "LV600S";
+    const t = (english, german) => humidifier ? this._lvText(english, german) : english;
     const ranges = Object.entries(HISTORY_RANGES)
       .map(
         ([key, r]) =>
           `<button class="seg${key === this._historyRange ? " on" : ""}" data-action="history-range" data-range="${key}">${esc(
-            r.label,
+            key === "week" ? t(r.label, "7 Tage") : r.label,
           )}</button>`,
       )
       .join("");
     const shown = this._shownSeries();
     let body;
     if (this._historyError && !h)
-      body = `<div class="muted pad">History not available: ${esc(this._historyError)}</div>`;
-    else if (!h) body = `<div class="muted pad"><span class="spinner"></span> Loading…</div>`;
-    else if (!shown.length) body = `<div class="muted pad">Pick a reading above to see its history.</div>`;
+      body = `<div class="muted pad">${t("History unavailable", "Verlauf nicht verfügbar")}: ${esc(this._historyError)}</div>`;
+    else if (!h) body = `<div class="muted pad"><span class="spinner"></span> ${t("Loading…", "Lädt…")}</div>`;
+    else if (!shown.length) body = `<div class="muted pad">${t("Select a reading to see its history.", "Wähle einen Wert aus, um seinen Verlauf zu sehen.")}</div>`;
     else {
       const stale = this._historyLoading || h.range !== this._historyRange;
       const band = shown.find((s) => s.band);
-      body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="Air quality history, ${esc(
-        HISTORY_RANGES[h.range].label,
-      )}; arrow keys move through the readings">
-        ${this._plot(shown.filter((s) => !s.band), h)}
+      const readings = shown.filter((s) => !s.band && !s.level);
+      const levels = shown.filter((s) => s.level);
+      const historyLabel = humidifier ? t("Humidifier history", "Verlauf des Luftbefeuchters") : "Air quality history";
+      const range = h.range === "week" ? t("7 days", "7 Tage") : HISTORY_RANGES[h.range].label;
+      body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="${historyLabel}, ${range}. ${t(
+        "Use the arrow keys to move through the readings.", "Mit den Pfeiltasten durch die Werte navigieren.",
+      )}">
+        ${readings.length ? this._plot(readings, h) : ""}
         ${band ? `<div class="hist-row band-row"><div></div>${this._bandStrip(band, h)}<div></div></div>` : ""}
+        ${levels.length ? `<div class="hist-levels">${this._plot(levels, h)}</div>` : ""}
         ${this._timeAxis(h)}
         <div class="hist-tip" hidden></div>
       </div>`;
     }
     return `<div class="card history">
       <div class="hist-head">
-        <h2>History</h2>
+        <h2>${t("History", "Verlauf")}</h2>
         <div class="legend">${series.map((s) => this._legendChip(s)).join("")}</div>
-        <div class="segs" role="group" aria-label="Range">${ranges}</div>
+        <div class="segs" role="group" aria-label="${t("Range", "Zeitraum")}">${ranges}</div>
       </div>
       ${body}
     </div>`;
@@ -3096,18 +3324,25 @@ class LevoitEsphomePanel extends HTMLElement {
     return ((t - h.start) / (h.end - h.start)) * CHART.width;
   }
 
-  // PM2.5 (area, left axis) and CADR (dashed line, right axis) in one chart
+  // Up to two axes per row. Recorded settings are steps; averaged purifier readings are lines.
   _plot(series, h) {
     const { width, height, top, bottom } = CHART;
-    const y = (max) => (v) => top + (1 - v / max) * (height - top - bottom);
+    const y = (min, max) => (v) => top + ((max - v) / (max - min)) * (height - top - bottom);
     // a gap of more than two periods (device offline) breaks a line
     const gap = HISTORY_RANGES[h.range].step * 2.5;
     const runsOf = (points) => {
       const runs = [];
+      let run;
       for (const pt of points) {
-        const run = runs[runs.length - 1];
-        if (run && pt[0] - run[run.length - 1][0] <= gap) run.push(pt);
-        else runs.push([pt]);
+        if (pt[1] === null) {
+          if (run) run.push([pt[0], run.at(-1)[1]]);
+          run = null;
+        } else if (run && (h.raw || pt[0] - run.at(-1)[0] <= gap)) {
+          run.push(pt);
+        } else {
+          run = [pt];
+          runs.push(run);
+        }
       }
       return runs;
     };
@@ -3120,14 +3355,27 @@ class LevoitEsphomePanel extends HTMLElement {
       for (const [, v] of h.data[s.entity] || []) peak[s.axis] = Math.max(peak[s.axis], v);
     for (const s of series) {
       const points = h.data[s.entity] || [];
-      if (!points.length) continue;
-      any = true;
-      const max = niceMax(peak[s.axis]);
-      const yOf = y(max);
-      const base = yOf(0);
-      const line = (run) =>
-        run.map(([t, v], i) => `${i ? "L" : "M"}${this._x(t, h).toFixed(1)},${yOf(v).toFixed(1)}`).join("");
       const runs = runsOf(points);
+      if (!runs.length) continue;
+      any = true;
+      let [min, max] = s.bounds || [0, null];
+      if (max === null) {
+        if (h.raw) {
+          const limits = points.reduce(([low, high], [, v]) => v === null
+            ? [low, high] : [Math.min(low, v), Math.max(high, v)], [Infinity, -Infinity]);
+          min = Math.floor(limits[0] / 5) * 5;
+          max = Math.max(min + 5, Math.ceil(limits[1] / 5) * 5);
+        } else {
+          max = niceMax(peak[s.axis]);
+        }
+      }
+      const yOf = y(min, max);
+      const base = yOf(0);
+      const line = (run) => run.map(([t, v], i) => {
+        const x = this._x(t, h).toFixed(1);
+        const value = yOf(v).toFixed(1);
+        return i && h.raw ? `H${x}V${value}` : `${i ? "L" : "M"}${x},${value}`;
+      }).join("");
       if (s.area)
         paths.push(
           ...runs.map(
@@ -3139,22 +3387,26 @@ class LevoitEsphomePanel extends HTMLElement {
       paths.push(
         ...runs.map((run) =>
           run.length > 1
-            ? `<path class="line c-${s.color}${s.axis === "right" ? " dashed" : ""}" d="${line(run)}"></path>`
+            ? `<path class="line c-${s.color}${s.axis === "right" || s.dashed ? " dashed" : ""}" d="${line(run)}"></path>`
             : `<path class="line dot c-${s.color}" d="${line(run)}h0.01"></path>`,
         ),
       );
-      axes[s.axis] = [max, max / 2, 0]
+      if (axes[s.axis]) continue;
+      const ticks = s.level ? [9, 6, 3, 0] : [max, (min + max) / 2, min];
+      const unit = h.raw ? this._hass?.states?.[s.entity]?.attributes?.unit_of_measurement || "" : "";
+      axes[s.axis] = ticks
         .map(
           (v) =>
-            `<span class="ytick c-${s.color}" style="top:${((yOf(v) / height) * 100).toFixed(1)}%">${esc(formatNumber(v))}</span>`,
+            `<span class="ytick${s.level ? "" : ` c-${s.color}`}" style="top:${((yOf(v) / height) * 100).toFixed(1)}%">${esc(formatNumber(v) + unit)}</span>`,
         )
         .join("");
     }
-    if (!any) return `<div class="hist-empty muted">No history yet</div>`;
-    const grid = [top, (top + height - bottom) / 2, height - bottom]
+    if (!any) return `<div class="hist-empty muted">${h.raw ? this._lvText("No history yet", "Noch kein Verlauf") : "No history yet"}</div>`;
+    const intervals = series[0]?.level ? [0, 1/3, 2/3, 1] : [0, 1/2, 1];
+    const grid = intervals.map((ratio) => top + ratio * (height - top - bottom))
       .map((v) => `<line class="grid" x1="0" x2="${width}" y1="${v}" y2="${v}"></line>`)
       .join("");
-    const label = series.map((s) => `${s.title}${s.axis === "right" ? " (right axis)" : ""}`).join(" and ");
+    const label = series.map((s) => s.title).join(", ");
     // PM2.5 underneath: its area must not cover the CADR line
     const order = (path) => (path.includes("c-pm") ? 0 : 1);
     paths.sort((a, b) => order(a) - order(b));
@@ -3237,10 +3489,12 @@ class LevoitEsphomePanel extends HTMLElement {
       hairs.forEach((line) => line.setAttribute("visibility", "hidden"));
       return;
     }
-    // snap to the nearest reading of any series
-    let snapped = null;
-    for (const points of Object.values(h.data))
-      for (const [pt] of points) if (snapped === null || Math.abs(pt - t) < Math.abs(snapped - t)) snapped = pt;
+    // Statistics are individual buckets; recorded states hold until the next change.
+    let snapped = h.raw ? t : null;
+    if (!h.raw) {
+      for (const points of Object.values(h.data))
+        for (const [pt] of points) if (snapped === null || Math.abs(pt - t) < Math.abs(snapped - t)) snapped = pt;
+    }
     if (snapped === null) return;
     this._hoverT = snapped;
     const x = this._x(snapped, h);
@@ -3265,7 +3519,9 @@ class LevoitEsphomePanel extends HTMLElement {
     tip.appendChild(time);
     const tolerance = HISTORY_RANGES[h.range].step / 2;
     for (const s of this._shownSeries()) {
-      const hit = (h.data[s.entity] || []).find(([pt]) => Math.abs(pt - snapped) <= tolerance);
+      const points = h.data[s.entity] || [];
+      const hit = h.raw ? points.findLast(([pt]) => pt <= snapped)
+        : points.find(([pt]) => Math.abs(pt - snapped) <= tolerance);
       const unit = this._hass?.states?.[s.entity]?.attributes?.unit_of_measurement || "";
       const row = document.createElement("div");
       row.className = "tip-row";
@@ -3274,7 +3530,7 @@ class LevoitEsphomePanel extends HTMLElement {
         const index = s.index ? (h.data[s.index] || []).find(([pt]) => Math.abs(pt - snapped) <= tolerance) : null;
         const word = hit ? AQI_WORDS[this._bandLevel(s, hit[1])] || "—" : "—";
         value.textContent = index ? `${formatNumber(Math.round(index[1]))} · ${word}` : word;
-      } else value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
+      } else value.textContent = hit && hit[1] !== null ? `${formatNumber(hit[1])}${unit ? ` ${unit}` : ""}` : "—";
       const label = document.createElement("span");
       label.textContent = s.title;
       row.append(value, label);
@@ -3289,10 +3545,11 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _infoSection() {
+    const t = (english, german) => this._page.model === "LV600S" ? this._lvText(english, german) : english;
     const rows = [
-      this._readout("text_sensor.model", "Model"),
-      this._readout("text_sensor.esp_version", "Component"),
-      this._readout("text_sensor.mcu_version", "MCU firmware"),
+      this._readout("text_sensor.model", t("Model", "Modell")),
+      this._readout("text_sensor.esp_version", t("Component", "Komponente")),
+      this._readout("text_sensor.mcu_version", t("MCU firmware", "MCU-Firmware")),
       this._readout("text_sensor.error_message", "Status"),
       this._readout("sensor.ambient_light", "Ambient light"),
     ].filter(Boolean);
@@ -3303,9 +3560,9 @@ class LevoitEsphomePanel extends HTMLElement {
         <h2>Info</h2>${icon("chevron")}
       </summary>
       ${rows.join("")}
-      <div class="hint pad">Settings found by entity name${
-        this._page.from_config ? ", as named in the device's config" : ", as the tuct/levoit configs name them"
-      }.</div>
+      <div class="hint pad">${this._page.from_config
+        ? t("Settings matched to entity names in the device configuration.", "Einstellungen anhand der Entitätsnamen in der Gerätekonfiguration zugeordnet.")
+        : t("Settings matched to entity names in the tuct/levoit configuration.", "Einstellungen anhand der Entitätsnamen in der tuct/levoit-Konfiguration zugeordnet.")}</div>
     </details>`;
   }
 
@@ -3547,6 +3804,10 @@ select:disabled { opacity: 0.6; }
 .dc-filter.low .bar span { background: var(--warning-color, #ffa600); }
 .dc-filter.bad .bar span { background: var(--error-color, #db4437); }
 .dc-filter.low, .dc-filter.bad { color: var(--lv-q3-fg); }
+.dc-tank { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.dc-tank svg { width: 14px; height: 14px; flex: none; }
+.dc-tank.warning { color: var(--lv-q3-fg); }
+.dc-tank.water svg { color: var(--lv-accent-text); }
 .chip.bad-chip { background: var(--lv-q4-bg); color: var(--lv-q4-fg); padding: 1px 8px 1px 6px; }
 .dot-i { width: 7px; height: 7px; border-radius: 50%; background: var(--error-color, #db4437); }
 .dc-flags .chip { font-size: 11px; padding: 1px 8px; }
@@ -3694,6 +3955,8 @@ details.section[open] > summary { padding-bottom: 8px; }
 .lg.off .sw { background: none !important; box-shadow: inset 0 0 0 1.5px var(--secondary-text-color); }
 .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
 .sw.c-pm { background: var(--lv-pm); } .sw.c-cadr { background: var(--lv-cadr); }
+.sw.c-mist { background: var(--lv-q1); }
+.sw.c-warm { height: 0; width: 14px; border-top: 2px dashed var(--lv-q4); border-radius: 0; }
 .sw.band { width: 16px; height: 8px; border-radius: 2px;
   background: linear-gradient(90deg, var(--lv-q1) 25%, var(--lv-q2) 25% 50%, var(--lv-q3) 50% 75%, var(--lv-q4) 75%); }
 .hist-band { display: block; width: 100%; height: 8px; border-radius: 4px; overflow: hidden; background: var(--lv-track); }
@@ -3712,6 +3975,10 @@ details.section[open] > summary { padding-bottom: 8px; }
 .hist-plot .area.c-pm { fill: var(--lv-pm); fill-opacity: 0.14; }
 .hist-plot .line.c-pm { stroke: var(--lv-pm); }
 .hist-plot .line.c-cadr { stroke: var(--lv-cadr); }
+.hist-plot .line.c-mist { stroke: var(--lv-q1); }
+.hist-plot .line.c-warm { stroke: var(--lv-q4); }
+.hist-levels { margin-top: 14px; }
+.hist-levels .hist-plot { height: 76px; }
 .hist-plot .line.dashed { stroke-dasharray: 5 3; }
 .hist-y.left .ytick { right: 0; }
 .hist-y.right .ytick { left: 0; right: auto; }

@@ -614,3 +614,43 @@ Home Assistant has to run the version in the manifest. `--device` and `--group`
 pick which device and group, `--only overview groups` takes some, `--dark` uses the dark theme,
 `--sidebar` keeps Home Assistant's sidebar and `--scale 2` makes them
 sharper.
+
+### LV600S support
+
+The LV600S (`lv600s_humidifier`, model `LV600S`) uses its existing ESPHome device
+entry. Humidity, temperature, tank status, power, modes, mist, warm level and
+timer map to ESPHome entities. The dedicated page shows Original Auto and Unknown
+as read-only choices. Auxiliary LV600S fans are excluded from purifier group
+discovery.
+
+**English.** The LV600S card shows the tank state next to the model, in the
+same position as the filter indicator on purifiers. The tank icon and text show
+whether the tank is installed or removed and whether water is available. The card
+offers three mist presets and an operating mode selector. The detail page adds
+precise mist and warm mist settings and a 24-hour or 7-day history for humidity,
+temperature and both mist settings. The chart shows device-reported settings and
+leaves gaps when readings are unavailable. The timer pairs compact presets with
+its remaining-seconds reading.
+
+**Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
+an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
+zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
+ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
+den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 24 Stunden
+oder 7 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
+Messwerte erscheinen als Lücken. Der Timer zeigt kompakte Zeitvorgaben und
+die verbleibende Laufzeit in Sekunden.
+
+Use an existing LV600S ESPHome configuration to add the device. Preserve its
+ESPHome identity, keys and partition table. The panel discovers the device
+through its ESPHome entry; a stable Add Device template requires a firmware release.
+
+Live verification on the EU unit used HA integration 0.6.7 and the secure owner
+profile. This contribution branch is based on upstream 0.6.8. The HA and
+frontend tests cover the contribution on that base.
+An isolated HA Core 2026.10.4 instance also connected to the real LV600S on
+`1.2.03-queue-review`. It matched 20 native ESPHome entities, read live water
+and MCU status, and verified blocked ON and confirmed OFF with an empty tank.
+The Device Builder listing was simulated for this check.
+[Device and dependency review](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/RELEASE-REVIEW.md)
