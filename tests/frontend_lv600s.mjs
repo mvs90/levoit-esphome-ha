@@ -82,6 +82,15 @@ const action = (markup, label) =>
 html = panel._devicePage();
 assert(action(html, '30 min') && !action(html, '30 min').includes('disabled'));
 assert(action(html, 'Cancel').includes('&quot;value&quot;:0'));
+states['sensor.timer_remaining_seconds'].state = '125';
+const timer = panel._lv600sTimer(false);
+assert(timer.includes('Remaining') && timer.includes('125 s'));
+assert.match(timer, /<div class="opts" role="group" aria-label="Turn off in"><button class="opt"/);
+assert(!timer.includes('class="s-label">Turn off in'));
+assert(timer.includes('Adjust minutes'));
+assert(action(timer, 'Cancel').includes('class="btn text"'));
+states['sensor.timer_remaining_seconds'].state = '0';
+assert(!action(panel._lv600sTimer(false), 'Cancel'));
 states['binary_sensor.water_tank_empty'].state = 'on';
 html = panel._devicePage();
 assert(action(html, '30 min').includes('disabled'));
