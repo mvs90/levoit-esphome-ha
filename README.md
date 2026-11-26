@@ -610,19 +610,19 @@ pick which device and group, `--only overview groups` takes some, `--dark` uses 
 `--sidebar` keeps Home Assistant's sidebar and `--scale 2` makes them
 sharper.
 
-### LV600S development support
+### LV600S support
 
-The matching firmware fork adds the LV600S (`lv600s_humidifier`, model `LV600S`),
-separate from the Superior 6000S. This integration recognises it by its component
-or Model/ESP Version sensor, maps its nested diagnostics and template controls,
-and displays humidity, temperature, power, modes, mist, warmth and timer settings.
-It does not treat the humidifier as a fan or include it in purifier groups.
-Original Auto and Unknown are read-only choices. Local/pinned owner configs keep
-their existing update restrictions and are never rewritten as an upstream template.
+The LV600S (`lv600s_humidifier`, model `LV600S`) uses its existing ESPHome device
+entry. Humidity, temperature, tank status, power, modes, mist, warm level and
+timer map to ESPHome entities. The dedicated page shows Original Auto and Unknown
+as read-only choices. Auxiliary LV600S fans are excluded from purifier group
+discovery.
 
-Development only: the firmware contribution must land before its template is
-available in tuct/levoit. Use Main while it is unreleased; select Stable only once
-that release includes the component. Both new firmware and this device UI need
-hardware validation before the contribution is submitted upstream. Existing
-ESPHome device identities, keys, custom partition tables and automations must be
-preserved during an owner's migration.
+The Add Device catalogue reads tuct/levoit. Before upstream includes the LV600S
+template, add the device using its custom ESPHome configuration. Preserve its
+ESPHome identity, keys and partition table.
+
+Live verification on the EU unit used HA integration 0.6.7 and the secure owner
+profile. This contribution branch is based on upstream 0.6.8. The HA and
+frontend tests cover the contribution on that base.
+[Device and dependency review](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/RELEASE-REVIEW.md)
