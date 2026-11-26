@@ -229,6 +229,13 @@ const memberStep = (level, p, rng) => {
 const parseValue = (text) =>
   text === "true" ? true : text === "false" ? false : /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : text;
 
+const NORMAL_PURIFIER_STATUS = new Set([
+  "ok",
+  "kein gemeldeter sensorfehler",
+  "keine mcu-stoerung",
+  "keine mcu-störung",
+]);
+
 const CHART = { width: 1000, height: 150, top: 6, bottom: 2 };
 
 // a round axis maximum at or above value: 1, 2, 2.5, 5 x 10^n
@@ -2666,7 +2673,10 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._state("binary_sensor.cover_open")?.state === "on")
       alerts.push("The cover is open: the purifier stays off until it is closed.");
     const error = this._state("text_sensor.error_message");
-    if (this._usable(error) && !/^ok$/i.test(error.state)) alerts.push(`Error: ${error.state}`);
+    if (this._usable(error)) {
+      const status = error.state.trim();
+      if (status && !NORMAL_PURIFIER_STATUS.has(status.toLowerCase())) alerts.push(`Error: ${status}`);
+    }
     if (this._state("binary_sensor.filter_low")?.state === "on")
       alerts.push("The filter is nearly used up: time for a new one.");
     return alerts.map((text) => `<div class="notice warn">${esc(text)}</div>`).join("");
