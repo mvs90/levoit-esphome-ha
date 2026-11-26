@@ -219,14 +219,15 @@ async def test_group_takes_over_and_steps_down(
 
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "3"
-    assert calls == [
-        ("turn_on", "fan.bedroom", {"percentage": 75}),
-        ("turn_on", "fan.living", {"percentage": 66}),
-    ]
+    # 3 speeds for 4 levels: one each, level 4 stays at the top
+    assert calls == [("turn_on", "fan.bedroom", {"percentage": 75})]  # living stays on 3
     calls.clear()
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "2"
-    assert calls == [("turn_on", "fan.bedroom", {"percentage": 50})]  # living stays on 2
+    assert calls == [
+        ("turn_on", "fan.bedroom", {"percentage": 50}),
+        ("turn_on", "fan.living", {"percentage": 66}),
+    ]
     calls.clear()
     await _later(hass, freezer, 10)
     assert hass.states.get(LEVEL).state == "1"
@@ -290,14 +291,15 @@ async def test_manual_change_pauses_that_member(
     assert calls == []  # not set back
     assert hass.states.get(LEVEL).attributes["members_in_control"] == ["fan.living"]
 
-    _pm(hass, 40)  # level 3, after the hold
+    _pm(hass, 20)  # level 2, a level down per hold (level 3 keeps living on 3)
     await _later(hass, freezer, 10)
-    assert hass.states.get(LEVEL).state == "3"
+    await _later(hass, freezer, 10)
+    assert hass.states.get(LEVEL).state == "2"
     assert calls == [("turn_on", "fan.living", {"percentage": 66})]
     calls.clear()
 
-    await _later(hass, freezer, 25)  # 35 minutes after the change: pause over
-    assert calls == [("turn_on", "fan.bedroom", {"percentage": 75})]
+    await _later(hass, freezer, 15)  # 35 minutes after the change: pause over
+    assert calls == [("turn_on", "fan.bedroom", {"percentage": 50})]
     assert hass.states.get(LEVEL).attributes["members_in_control"] == MEMBERS
 
 
@@ -398,7 +400,7 @@ async def test_panel_commands(hass: HomeAssistant, hass_ws_client: WebSocketGene
     ]
     assert preview["members"] == [
         {"entity_id": "fan.bedroom", "speeds": 4, "speed": 3},
-        {"entity_id": "fan.living", "speeds": 3, "speed": 2},
+        {"entity_id": "fan.living", "speeds": 3, "speed": 3},
     ]
     assert calls == []  # a preview changes nothing
 

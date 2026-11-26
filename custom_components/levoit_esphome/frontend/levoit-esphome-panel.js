@@ -116,11 +116,17 @@ const formatMinutes = (minutes) => {
 const formatNumber = (value) =>
   Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
 
-// Device page history: Home Assistant's statistics (the sensors have a
-// state_class), 5-minute means for a day, hourly means for a week.
+// Device and group page history: Home Assistant's statistics (the sensors
+// have a state_class), 5-minute means up to a day, hourly means beyond.
+// tick: the time axis, every so many hours (a time) or days at midnight
+// (7 days: on Mondays, as a date)
+const HOUR_MS = 3600e3;
+const DAY_MS = 24 * HOUR_MS;
 const HISTORY_RANGES = {
-  day: { label: "24 h", ms: 24 * 3600e3, period: "5minute", step: 5 * 60e3 },
-  week: { label: "7 days", ms: 7 * 24 * 3600e3, period: "hour", step: 3600e3 },
+  half: { label: "12 h", ms: 12 * HOUR_MS, period: "5minute", step: 5 * 60e3, tick: 2 * HOUR_MS },
+  day: { label: "24 h", ms: DAY_MS, period: "5minute", step: 5 * 60e3, tick: 6 * HOUR_MS },
+  week: { label: "7 days", ms: 7 * DAY_MS, period: "hour", step: HOUR_MS, tick: DAY_MS },
+  month: { label: "30 days", ms: 30 * DAY_MS, period: "hour", step: HOUR_MS, tick: 7 * DAY_MS },
 };
 const HISTORY_REFRESH_MS = 5 * 60e3;
 // one small chart each, on a shared time axis: different units, never one axis.
@@ -236,14 +242,20 @@ const memberRange = (p, rng) => {
   if (typeof low === "number") low = Math.min(low, high);
   return { ladder, low, high };
 };
-// a member's step for a group level, lowest at 1 and highest at 4, the levels
-// between spread over its steps, half up (as groups_logic.member_step)
+// a step's speed, doubled: Off 0, Sleep 1 (speed 0.5), speed n 2n
+const stepValue = (s) => (s === "off" ? 0 : s === "sleep" ? 1 : 2 * s);
+// a member's step for a group level, lowest at 1 and highest at 4 (as
+// groups_logic.member_step): up to 4 steps one per level, the rest at the
+// highest; more spread evenly by speed and rounded up, bigger jumps on the left
 const memberStep = (level, p, rng) => {
   if (level <= 0) return null;
   const { ladder, low, high } = memberRange(p, rng);
-  const lo = ladder.indexOf(low);
-  const n = (Math.min(level, 4) - 1) * (ladder.indexOf(high) - lo);
-  return ladder[lo + Math.floor((2 * n + 3) / 6)];
+  const steps = ladder.slice(ladder.indexOf(low), ladder.indexOf(high) + 1);
+  const i = Math.min(level, 4) - 1;
+  if (steps.length <= 4) return steps[Math.min(i, steps.length - 1)];
+  const v0 = stepValue(steps[0]);
+  const target = v0 * 3 + i * (stepValue(steps[steps.length - 1]) - v0);
+  return steps.find((s) => stepValue(s) * 3 >= target);
 };
 // a data-value attribute: true / false, a number, or text
 const parseValue = (text) =>
@@ -3408,20 +3420,31 @@ class LevoitEsphomePanel extends HTMLElement {
       </svg><div class="hist-y right" aria-hidden="true">${axes.right}</div></div>`;
   }
 
-  // shared time axis under the charts: every 6 hours, or every day at midnight
+  // shared time axis under the charts: every few hours, every day at midnight,
+  // or every Monday for 30 days
   _timeAxis(h) {
     const lang = this._hass?.locale?.language;
+    const { tick } = HISTORY_RANGES[h.range];
     const ticks = [];
-    const first = new Date(h.start);
-    if (h.range === "day") {
-      first.setMinutes(0, 0, 0);
-      first.setHours(Math.ceil((first.getHours() + 1) / 6) * 6);
-      for (let t = first.getTime(); t <= h.end; t += 6 * 3600e3)
+    const at = new Date(h.start);
+    if (tick < DAY_MS) {
+      const hours = tick / HOUR_MS;
+      at.setMinutes(0, 0, 0);
+      at.setHours(Math.ceil((at.getHours() + 1) / hours) * hours);
+      for (let t = at.getTime(); t <= h.end; t += tick)
         ticks.push([t, new Date(t).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" })]);
     } else {
-      first.setHours(24, 0, 0, 0);
-      for (let t = first.getTime(); t <= h.end; t += 24 * 3600e3)
-        ticks.push([t, new Date(t).toLocaleDateString(lang, { weekday: "short" })]);
+      const days = tick / DAY_MS;
+      at.setHours(24, 0, 0, 0);
+      if (days === 7) at.setDate(at.getDate() + ((8 - at.getDay()) % 7));
+      // by the calendar, so a tick stays at midnight across a clock change
+      for (; at.getTime() <= h.end; at.setDate(at.getDate() + days))
+        ticks.push([
+          at.getTime(),
+          days === 1
+            ? at.toLocaleDateString(lang, { weekday: "short" })
+            : at.toLocaleDateString(lang, { day: "numeric", month: "short" }),
+        ]);
     }
     return `<div class="hist-row"><div></div><div class="hist-axis" aria-hidden="true">${ticks
       .map(
@@ -3486,10 +3509,13 @@ class LevoitEsphomePanel extends HTMLElement {
     tip.textContent = "";
     const time = document.createElement("div");
     time.className = "tip-time";
+    const span = HISTORY_RANGES[h.range].ms;
     time.textContent =
-      h.range === "day"
+      span <= DAY_MS
         ? when.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" })
-        : when.toLocaleString(lang, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+        : span <= 7 * DAY_MS
+          ? when.toLocaleString(lang, { weekday: "short", hour: "2-digit", minute: "2-digit" })
+          : when.toLocaleString(lang, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
     tip.appendChild(time);
     const tolerance = HISTORY_RANGES[h.range].step / 2;
     for (const s of this._shownSeries()) {
