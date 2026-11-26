@@ -540,6 +540,23 @@ start when an available tank, water, fault or MCU diagnostic rules it out.
 The off control remains available while power is reported on. Original Auto
 and Unknown appear as read-only choices.
 
+**English.** The LV600S card shows the tank state next to the model, in the
+same position as the filter indicator on purifiers. The tank icon and text show
+whether the tank is installed or removed and whether water is available. The card
+offers three mist presets and an operating mode selector. The detail page adds
+precise mist and warm mist settings and a 24-hour or 7-day history for humidity,
+temperature and both mist settings. These settings show the levels reported by
+the device. The chart leaves gaps when readings are unavailable.
+
+**Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
+an derselben Stelle wie die Filteranzeige der Luftreiniger. Symbol und Text
+zeigen, ob der Tank eingesetzt oder herausgenommen ist und ob Wasser vorhanden
+ist. Auf der Karte lassen sich drei Nebelstufen und der Betriebsmodus wählen.
+In der Detailansicht gibt es die Feineinstellung für Nebel und Warmnebel sowie
+den Verlauf für Luftfeuchtigkeit, Temperatur und beide Stufen über 24 Stunden
+oder 7 Tage. Der Verlauf zeigt die vom Gerät gemeldeten Stufen. Fehlende
+Messwerte erscheinen als Lücken.
+
 The test branch recognises the LV600S through its existing ESPHome entry. The
 Add Device catalogue reads upstream. To reproduce the tested configuration, use
 the existing custom Device Builder profile from the
