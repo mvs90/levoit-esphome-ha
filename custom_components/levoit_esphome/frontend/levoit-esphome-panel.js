@@ -1,3 +1,5 @@
+import { interpolate, language, translate } from "./localize.js";
+
 // Levoit ESPHome sidebar panel: every device with versions, channel, filter,
 // compile and upload. Plain web component, no build step; data comes from the
 // integration's WebSocket commands (levoit_esphome/*), admins only.
@@ -125,9 +127,6 @@ const formatMinutes = (minutes) => {
   if (m < 60) return `${m} min`;
   return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
 };
-
-const formatNumber = (value) =>
-  Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
 
 // Device and group page history: Home Assistant's statistics (the sensors
 // have a state_class), 5-minute means up to a day, hourly means beyond.
@@ -344,7 +343,7 @@ class LevoitEsphomePanel extends HTMLElement {
         const v = this._thAt(type, Number(i), Number(th.value) / 1000)[Number(i)];
         const label = th.parentElement?.querySelector(`[data-th-label="${i}"]`);
         if (label) {
-          label.textContent = formatNumber(v);
+          label.textContent = this._formatNumber(v);
           label.style.left = `calc(10px + (100% - 20px) * ${thFrac(v).toFixed(4)})`;
         }
       }
@@ -389,7 +388,25 @@ class LevoitEsphomePanel extends HTMLElement {
     this.shadowRoot.addEventListener("pointercancel", release, true);
   }
 
+  _t(message, params) {
+    return translate(this._hass, message, params);
+  }
+
+  _text(message, params) {
+    return esc(this._t(message, params));
+  }
+
+  // Only pass markup built here, with dynamic values escaped before insertion.
+  _markup(message, markup) {
+    return interpolate(this._text(message), markup);
+  }
+
+  _formatNumber(value) {
+    return value.toLocaleString(language(this._hass), { maximumFractionDigits: 1, useGrouping: false });
+  }
+
   set hass(hass) {
+    const languageChanged = language(this._hass) !== language(hass);
     const first = !this._hass;
     this._hass = hass;
     if (!this._unsub && !this._subscribing) this._subscribe();
@@ -405,7 +422,7 @@ class LevoitEsphomePanel extends HTMLElement {
     )
       this._loadHistory();
     // the device page shows live states: render when one of its entities changed
-    if (first || this._pageStatesChanged()) this._render();
+    if (first || languageChanged || this._pageStatesChanged()) this._render();
   }
 
   // Routes under the panel: "" the device overview, "/config" updates and
@@ -797,7 +814,7 @@ class LevoitEsphomePanel extends HTMLElement {
     try {
       await this._hass.callWS({ type: "levoit_esphome/check" });
     } catch (err) {
-      this._toast(`Check failed: ${err.message || err}`);
+      this._toast(this._t("Check failed: {reason}", { reason: err.message || err }));
     } finally {
       this._checking = false;
       this._render();
@@ -813,9 +830,12 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!due.length || this._updatingAll) return;
     if (
       !confirm(
-        `Compile and upload ${due.length} device${due.length === 1 ? "" : "s"} over the air, one after the other?\n\n` +
+        this._t(due.length === 1
+          ? "Compile and upload {count} device over the air, one after the other?"
+          : "Compile and upload {count} devices over the air, one after the other?",
+        { count: due.length }) + "\n\n" +
           due.map((d) => `• ${d.title}`).join("\n") +
-          "\n\nTemplate configs are refreshed from the newest builder file first.",
+          "\n\n" + this._t("Template configs are refreshed from the newest builder file first."),
       )
     )
       return;
@@ -836,9 +856,9 @@ class LevoitEsphomePanel extends HTMLElement {
       upload &&
       ask &&
       !confirm(
-        `Compile ${device.title} in the ESPHome Device Builder and upload it over the air?` +
+        this._t("Compile {device} in the ESPHome Device Builder and upload it over the air?", { device: device.title }) +
           (device.config_kind && device.config_kind !== "custom"
-            ? "\n\nIts template config is refreshed from the newest builder file first."
+            ? "\n\n" + this._t("Its template config is refreshed from the newest builder file first.")
             : ""),
       )
     )
@@ -847,7 +867,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._render();
     try {
       await this._hass.callWS({ type: "levoit_esphome/build", name, upload });
-      this._toast(upload ? `${device.title}: compiled and uploaded` : `${device.title}: compiled`);
+      this._toast(upload ? this._t("{device}: compiled and uploaded", { device: device.title }) : this._t("{device}: compiled", { device: device.title }));
     } catch (err) {
       this._toast(`${device.title}: ${err.message || err}`);
     } finally {
@@ -926,8 +946,8 @@ class LevoitEsphomePanel extends HTMLElement {
     if (
       device.configuration &&
       !confirm(
-        `Switch ${device.title} to ${CHANNEL_LABELS[channel]}?\n\n` +
-          `This sets ref: ${channel} in ${device.configuration}; the next update builds from it.`,
+        this._t("Switch {device} to {channel}?", { device: device.title, channel: this._t(CHANNEL_LABELS[channel]) }) + "\n\n" +
+          this._t("This sets ref: {channel} in {configuration}; the next update builds from it.", { channel, configuration: device.configuration }),
       )
     ) {
       select.value = device.channel;
@@ -954,7 +974,7 @@ class LevoitEsphomePanel extends HTMLElement {
   _time(iso) {
     if (!iso) return "";
     const date = new Date(iso);
-    const lang = this._hass?.locale?.language || this._hass?.language;
+    const lang = language(this._hass);
     const sameDay = date.toDateString() === new Date().toDateString();
     return sameDay
       ? date.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" })
@@ -968,16 +988,16 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _status(d) {
     if (d.building) return this._buildChip(d);
-    if (d.online === false) return `<span class="chip">Offline</span>`;
-    if (!d.configuration) return `<span class="chip">No config</span>`;
-    if (d.update_available) return `<span class="chip warning">Update available</span>`;
-    if (d.installed && d.latest) return `<span class="chip success">Up to date</span>`;
-    return `<span class="chip">Unknown</span>`;
+    if (d.online === false) return `<span class="chip">${this._text("Offline")}</span>`;
+    if (!d.configuration) return `<span class="chip">${this._text("No config")}</span>`;
+    if (d.update_available) return `<span class="chip warning">${this._text("Update available")}</span>`;
+    if (d.installed && d.latest) return `<span class="chip success">${this._text("Up to date")}</span>`;
+    return `<span class="chip">${this._text("Unknown")}</span>`;
   }
 
   _lastBuild(d) {
     const logLink = d.has_build_log
-      ? ` · <a href="#" data-action="log" data-name="${esc(d.name)}">Log</a>`
+      ? ` · <a href="#" data-action="log" data-name="${esc(d.name)}">${this._text("Log")}</a>`
       : "";
     const last = d.last_build;
     if (d.building) return logLink ? `<div class="sub">${logLink.slice(3)}</div>` : "";
@@ -989,13 +1009,11 @@ class LevoitEsphomePanel extends HTMLElement {
       const sizes = result?.detail ? ` · ${esc(result.detail)}` : "";
       // what the integration did after the build, e.g. the OTA migration
       const note = last.note ? ` · ${esc(last.note)}` : "";
-      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}${sizes}${note}${logLink}</div>`;
+      return `<div class="sub ok">${last.upload ? this._t("Uploaded") : this._t("Compiled")} ${when}${sizes}${note}${logLink}</div>`;
     }
-    const what = last.upload ? "Compile and upload" : "Compile";
+    const what = last.upload ? this._t("Compile and upload") : this._t("Compile");
     const note = last.note ? ` · ${esc(last.note)}` : "";
-    return `<div class="sub bad" title="${esc(last.error)}">${what} failed ${when}${logLink}: ${esc(
-      last.error,
-    )}${note}</div>`;
+    return `<div class="sub bad" title="${esc(last.error)}">${this._text("{action} failed {time}", { action: what, time: this._time(last.at) })}${logLink}: ${esc(last.error)}${note}</div>`;
   }
 
   // --- build steps ---------------------------------------------------------------
@@ -1028,12 +1046,12 @@ class LevoitEsphomePanel extends HTMLElement {
     const step = this._runningStep(d);
     if (!step)
       return `<span class="chip info"><span class="spinner"></span>${
-        BUILD_STEP_LABELS[d.build_step] || "Building…"
+        this._text(BUILD_STEP_LABELS[d.build_step] || "Building…")
       }</span>`;
     const count = this._stepCount(step);
     const bar = this._bar(this._stepFraction(step));
     const detail = step.detail ? `<div class="sub mono">${esc(step.detail)}</div>` : "";
-    return `<span class="chip info"><span class="spinner"></span>${esc(STEP_LABELS[step.key] || step.key)}${
+    return `<span class="chip info"><span class="spinner"></span>${this._text(STEP_LABELS[step.key] || step.key)}${
       count ? ` ${count}` : ""
     }</span>${bar}${detail}`;
   }
@@ -1054,9 +1072,7 @@ class LevoitEsphomePanel extends HTMLElement {
         const count = step.state === "running" ? this._stepCount(step) : "";
         const bar = step.state === "running" ? this._bar(this._stepFraction(step)) : "";
         const detail = [count, step.detail ? esc(step.detail) : ""].filter(Boolean).join(" · ");
-        return `<li class="${step.state}"><span class="st">${mark}</span><span class="sn">${esc(
-          STEP_LABELS[step.key] || step.key,
-        )}</span><span class="sd">${bar}${detail ? `<span class="sd-text">${detail}</span>` : ""}</span></li>`;
+        return `<li class="${step.state}"><span class="st">${mark}</span><span class="sn">${this._text(STEP_LABELS[step.key] || step.key)}</span><span class="sd">${bar}${detail ? `<span class="sd-text">${detail}</span>` : ""}</span></li>`;
       })
       .join("")}</ol>`;
   }
@@ -1064,19 +1080,19 @@ class LevoitEsphomePanel extends HTMLElement {
   _channel(d) {
     const busy = this._busy.has(d.name) || d.building;
     if (d.can_set_channel && (d.channel === "stable" || d.channel === "main" || !d.configuration)) {
-      return `<select data-channel="${esc(d.name)}" ${busy ? "disabled" : ""} aria-label="Channel of ${esc(d.title)}">
+      return `<select data-channel="${esc(d.name)}" ${busy ? "disabled" : ""} aria-label="${this._text("Channel of {device}", { device: d.title })}">
         ${["stable", "main"]
           .map(
             (c) =>
-              `<option value="${c}" ${d.channel === c ? "selected" : ""}>${CHANNEL_LABELS[c]}</option>`,
+              `<option value="${c}" ${d.channel === c ? "selected" : ""}>${this._text(CHANNEL_LABELS[c])}</option>`,
           )
           .join("")}
       </select>`;
     }
     if (!d.channel) return `<span class="muted">—</span>`;
-    const label = CHANNEL_LABELS[d.channel] || d.channel;
+    const label = this._t(CHANNEL_LABELS[d.channel] || d.channel);
     const ref = d.channel === "pinned" && d.ref ? ` <span class="muted">${esc(d.ref)}</span>` : "";
-    const why = d.config_kind === "custom" ? ` title="Set by ref: in your own config"` : "";
+    const why = d.config_kind === "custom" ? ` title="${this._text("Set by ref: in your own config")}"` : "";
     return `<span${why}>${esc(label)}</span>${ref}`;
   }
 
@@ -1092,20 +1108,18 @@ class LevoitEsphomePanel extends HTMLElement {
   _esphome(d) {
     if (!d.esphome_deployed && !d.esphome_current) return `<span class="muted">—</span>`;
     if (d.esphome_current && d.esphome_deployed && d.esphome_current !== d.esphome_deployed)
-      return `${esc(d.esphome_deployed)}<div class="sub" title="The Device Builder runs a newer ESPHome; the next compile and upload brings it">builder ${esc(
-        d.esphome_current,
-      )}</div>`;
+      return `${esc(d.esphome_deployed)}<div class="sub" title="${this._text("The Device Builder runs a newer ESPHome; the next compile and upload brings it")}">${this._text("builder {version}", { version: d.esphome_current })}</div>`;
     return esc(d.esphome_deployed || d.esphome_current);
   }
 
   _actions(d) {
     if (!d.configuration)
-      return `<button class="btn" data-action="navigate" data-path="${esc(this._addPath(d.name))}" title="Add device: a config for this device, updated over the air">Add config</button>`;
+      return `<button class="btn" data-action="navigate" data-path="${esc(this._addPath(d.name))}" title="${this._text("Add device: a config for this device, updated over the air")}">${this._text("Add config")}</button>`;
     const busy = this._busy.has(d.name) || d.building;
     const dis = busy ? "disabled" : "";
-    return `<button class="btn" data-action="compile" data-name="${esc(d.name)}" ${dis}>Compile</button>
+    return `<button class="btn" data-action="compile" data-name="${esc(d.name)}" ${dis}>${this._text("Compile")}</button>
       <button class="btn ${d.update_available ? "primary" : ""}" data-action="upload" data-name="${esc(d.name)}" ${dis}>${
-        d.update_available ? "Update" : "Compile &amp; upload"
+        d.update_available ? this._text("Update") : this._text("Compile & upload")
       }</button>`;
   }
 
@@ -1113,7 +1127,7 @@ class LevoitEsphomePanel extends HTMLElement {
     // the name opens the device page (settings); the HA device page is linked there
     const pagePath = this._devicePath(d.name);
     const deviceLink = d.device_id
-      ? `<a href="${esc(pagePath)}" data-action="navigate" data-path="${esc(pagePath)}" title="Settings of ${esc(d.title)}">${esc(d.title)}</a>`
+      ? `<a href="${esc(pagePath)}" data-action="navigate" data-path="${esc(pagePath)}" title="${this._text("Settings of {device}", { device: d.title })}">${esc(d.title)}</a>`
       : esc(d.title);
     const latest = d.latest
       ? d.latest_url
@@ -1123,21 +1137,21 @@ class LevoitEsphomePanel extends HTMLElement {
     // installed, and the version it goes to when there is an update
     const firmware = `<div class="fw"><span class="mono muted">${d.installed ? esc(d.installed) : "—"}</span>${
       d.update_available && latest
-        ? `<svg class="fw-arrow" viewBox="0 0 24 24" role="img" aria-label="to"><path d="M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z"></path></svg>${latest}`
+        ? `<svg class="fw-arrow" viewBox="0 0 24 24" role="img" aria-label="${this._text("to")}"><path d="M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z"></path></svg>${latest}`
         : ""
     }</div>`;
     return `<tr class="${d.update_available ? "has-update" : ""}">
-      <td class="device" data-label="Device">
+      <td class="device" data-label="${this._text("Device")}">
         <div class="name">${deviceLink}</div>
         <div class="sub mono">${esc(d.configuration || d.name)}</div>
       </td>
-      <td data-label="Hardware">${d.model ? esc(d.model) : `<span class="muted">—</span>`}<div class="sub">${
-        d.config_kind ? esc(KIND_LABELS[d.config_kind] || d.config_kind) : d.configuration ? "…" : "No config yet"
+      <td data-label="${this._text("Hardware")}">${d.model ? esc(d.model) : `<span class="muted">—</span>`}<div class="sub">${
+        d.config_kind ? this._text(KIND_LABELS[d.config_kind] || d.config_kind) : d.configuration ? "…" : this._t("No config yet")
       }</div></td>
-      <td data-label="Channel">${this._channel(d)}</td>
-      <td data-label="Firmware">${firmware}<div class="fw-status">${this._status(d)}</div>${this._lastBuild(d)}</td>
-      <td data-label="Filter">${this._filter(d)}</td>
-      <td data-label="ESPHome" class="mono">${this._esphome(d)}</td>
+      <td data-label="${this._text("Channel")}">${this._channel(d)}</td>
+      <td data-label="${this._text("Firmware")}">${firmware}<div class="fw-status">${this._status(d)}</div>${this._lastBuild(d)}</td>
+      <td data-label="${this._text("Filter")}">${this._filter(d)}</td>
+      <td data-label="${this._text("ESPHome")}" class="mono">${this._esphome(d)}</td>
       <td class="actions">${this._actions(d)}</td>
     </tr>`;
   }
@@ -1147,26 +1161,26 @@ class LevoitEsphomePanel extends HTMLElement {
     const heads = this._data?.heads || {};
     const head = (channel) =>
       heads[channel]
-        ? `<div class="rel"><span class="rel-label">${CHANNEL_LABELS[channel]}</span><a class="mono" href="${esc(
+        ? `<div class="rel"><span class="rel-label">${this._text(CHANNEL_LABELS[channel])}</span><a class="mono" href="${esc(
             heads[channel].url,
           )}" target="_blank" rel="noreferrer">${esc(heads[channel].version)}</a></div>`
         : "";
     const due = (this._data?.devices || []).filter((d) => d.update_available && d.configuration).length;
     const anyBusy = this._updatingAll || (this._data?.devices || []).some((d) => d.building);
-    const checked = this._data?.checked_at ? `Checked ${esc(this._time(this._data.checked_at))}` : "";
+    const checked = this._data?.checked_at ? this._text("Checked {time}", { time: this._time(this._data.checked_at) }) : "";
     const unreachable =
-      this._data && !this._data.last_update_success ? `<span class="bad">Device Builder not reachable</span>` : "";
+      this._data && !this._data.last_update_success ? `<span class="bad">${this._text("Device Builder not reachable")}</span>` : "";
     return `<div class="card releases">
       ${head("stable")}${head("main")}
       <div class="rel-when muted">${[checked, unreachable].filter(Boolean).join(" · ")}</div>
       <button class="btn text" data-action="check" ${this._checking ? "disabled" : ""}>${
-        this._checking ? `<span class="spinner"></span> Checking…` : "Check now"
+        this._checking ? `<span class="spinner"></span> ${this._text("Checking…")}` : this._t("Check now")
       }</button>
       ${
         due
           ? `<button class="btn primary icon-text" data-action="update-all" ${anyBusy ? "disabled" : ""}>${icon(
               "download",
-            )}<span>${this._updatingAll ? "Updating…" : `Update all (${due})`}</span></button>`
+            )}<span>${this._updatingAll ? this._t("Updating…") : this._t("Update all ({count})", { count: due })}</span></button>`
           : ""
       }
     </div>`;
@@ -1175,32 +1189,32 @@ class LevoitEsphomePanel extends HTMLElement {
   _body() {
     if (this._error)
       return `<div class="card empty"><p class="bad">${esc(this._error)}</p>
-        <p class="muted">Is Levoit ESPHome set up and loaded?</p>
-        <button class="btn" data-action="retry">Try again</button></div>`;
-    if (!this._data) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+        <p class="muted">${this._text("Is Levoit ESPHome set up and loaded?")}</p>
+        <button class="btn" data-action="retry">${this._text("Try again")}</button></div>`;
+    if (!this._data) return `<div class="card empty"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
     const devices = this._data.devices;
     const pending = this._data.pending || [];
     if (!devices.length && !pending.length)
       return `<div class="card empty">
         <div class="big-icon">${icon("purifier")}</div>
-        <p>No Levoit or Philips ESPHome device found yet.</p>
-        <p class="muted">A device shows up when its Device Builder config loads the levoit or philips component, or when it reports the esp_version or model text sensor.</p>
-        <button class="btn primary" data-action="navigate" data-path="${esc(this._addPath())}">Add device</button>
+        <p>${this._text("No Levoit or Philips ESPHome device found yet.")}</p>
+        <p class="muted">${this._text("A device shows up when its Device Builder config loads the levoit or philips component, or when it reports the esp_version or model text sensor.")}</p>
+        <button class="btn primary" data-action="navigate" data-path="${esc(this._addPath())}">${this._text("Add device")}</button>
       </div>`;
     const updates = devices.filter((d) => d.update_available).length;
     const noConfig = devices.filter((d) => !d.configuration).length;
     return `<div class="card">
       <div class="card-head">
-        <span><b>${devices.length} device${devices.length === 1 ? "" : "s"}</b>${
-          updates ? ` · ${updates} to update` : ""
-        }${noConfig ? ` · ${noConfig} without a config` : ""}${
-          pending.length ? ` · ${pending.length} not flashed yet` : ""
+        <span><b>${this._text(devices.length === 1 ? "{count} device" : "{count} devices", { count: devices.length })}</b>${
+          updates ? this._t(" · {count} to update", { count: updates }) : ""
+        }${noConfig ? this._t(" · {count} without a config", { count: noConfig }) : ""}${
+          pending.length ? this._t(" · {count} not flashed yet", { count: pending.length }) : ""
         }</span>
       </div>
       <table>
         <thead><tr>
-          <th>Device</th><th>Hardware</th><th>Channel</th><th>Firmware</th>
-          <th>Filter</th><th>ESPHome</th><th><span class="sr">Actions</span></th>
+          <th>${this._text("Device")}</th><th>${this._text("Hardware")}</th><th>${this._text("Channel")}</th><th>${this._text("Firmware")}</th>
+          <th>${this._text("Filter")}</th><th>${this._text("ESPHome")}</th><th><span class="sr">${this._text("Actions")}</span></th>
         </tr></thead>
         <tbody>${devices.map((d) => this._row(d)).join("")}${pending
           .map((p) => this._pendingRow(p))
@@ -1214,26 +1228,26 @@ class LevoitEsphomePanel extends HTMLElement {
   _pendingRow(p) {
     const busy = this._busy.has(p.name) || p.building;
     const builderUrl = this._data?.builder_url;
-    const status = p.building ? this._buildChip(p) : `<span class="chip info">Not flashed yet</span>`;
+    const status = p.building ? this._buildChip(p) : `<span class="chip info">${this._text("Not flashed yet")}</span>`;
     const none = `<span class="muted">—</span>`;
     return `<tr class="pending">
-      <td class="device" data-label="Device">
+      <td class="device" data-label="${this._text("Device")}">
         <div class="name">${esc(p.title)}</div>
         <div class="sub mono">${esc(p.configuration)}</div>
       </td>
-      <td data-label="Hardware">${p.model ? esc(p.model) : none}${
-        p.config_kind ? `<div class="sub">${esc(KIND_LABELS[p.config_kind] || p.config_kind)}</div>` : ""
+      <td data-label="${this._text("Hardware")}">${p.model ? esc(p.model) : none}${
+        p.config_kind ? `<div class="sub">${this._text(KIND_LABELS[p.config_kind] || p.config_kind)}</div>` : ""
       }</td>
-      <td data-label="Channel">${none}</td>
-      <td data-label="Firmware"><div class="fw"><span class="muted">not flashed</span></div><div class="fw-status">${status}</div>${this._lastBuild(p)}
-        <div class="sub hint">Device Builder: open ${esc(p.configuration)}, Install, Plug into this computer</div>
+      <td data-label="${this._text("Channel")}">${none}</td>
+      <td data-label="${this._text("Firmware")}"><div class="fw"><span class="muted">${this._text("not flashed")}</span></div><div class="fw-status">${status}</div>${this._lastBuild(p)}
+        <div class="sub hint">${this._text("Device Builder: open {configuration}, Install, Plug into this computer", { configuration: p.configuration })}</div>
       </td>
-      <td data-label="Filter">${none}</td>
-      <td data-label="ESPHome">${none}</td>
+      <td data-label="${this._text("Filter")}">${none}</td>
+      <td data-label="${this._text("ESPHome")}">${none}</td>
       <td class="actions">
-        <button class="btn" data-action="compile" data-name="${esc(p.name)}" ${busy ? "disabled" : ""} title="Check that the config builds, before flashing">Compile</button>${
+        <button class="btn" data-action="compile" data-name="${esc(p.name)}" ${busy ? "disabled" : ""} title="${this._text("Check that the config builds, before flashing")}">${this._text("Compile")}</button>${
           builderUrl
-            ? `<button class="btn primary" data-action="navigate" data-path="${esc(builderUrl)}" title="Flash it there over USB: Install, Plug into this computer">Open Device Builder</button>`
+            ? `<button class="btn primary" data-action="navigate" data-path="${esc(builderUrl)}" title="${this._text("Flash it there over USB: Install, Plug into this computer")}">${this._text("Open Device Builder")}</button>`
             : ""
         }
       </td>
@@ -1273,10 +1287,10 @@ class LevoitEsphomePanel extends HTMLElement {
       onPage || onEditor || onDetail || onAdd
         ? ""
         : `<div class="tabs" role="tablist">
-          <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
-          <button class="tab${onGroups ? " on" : ""}" role="tab" aria-selected="${onGroups}" data-action="navigate" data-path="${esc(this._groupsPath())}">Purifier groups</button>
-          <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config${
-            updates ? `<span class="tab-badge" title="${updates} with an update">${updates}</span>` : ""
+          <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">${this._text("Devices")}</button>
+          <button class="tab${onGroups ? " on" : ""}" role="tab" aria-selected="${onGroups}" data-action="navigate" data-path="${esc(this._groupsPath())}">${this._text("Purifier groups")}</button>
+          <button class="tab${onConfig ? " on" : ""}" role="tab" aria-selected="${onConfig}" data-action="navigate" data-path="${esc(this._base)}/config">${this._text("Updates & config")}${
+            updates ? `<span class="tab-badge" title="${this._text("{count} with an update", { count: updates })}">${updates}</span>` : ""
           }</button>
         </div>`;
     // the view first: the editor makes its draft, which the toolbar shows
@@ -1307,84 +1321,82 @@ class LevoitEsphomePanel extends HTMLElement {
       <div class="toolbar">
         ${
           showMenu
-            ? `<button class="icon-btn" data-action="menu" aria-label="Menu">${icon("menu")}</button>`
+            ? `<button class="icon-btn" data-action="menu" aria-label="${this._text("Menu")}">${icon("menu")}</button>`
             : ""
         }${
           onPage
-            ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="All devices" title="All devices">${icon("back")}</button>`
+            ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="${this._text("All devices")}" title="${this._text("All devices")}">${icon("back")}</button>`
             : onAdd
-              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}/config" aria-label="Updates and config" title="Updates &amp; config">${icon("back")}</button>`
+              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}/config" aria-label="${this._text("Updates & config")}" title="${this._text("Updates & config")}">${icon("back")}</button>`
               : onEditor && draft?.id
-              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath(encodeURIComponent(draft.id)))}" aria-label="Back to the group" title="Back to the group">${icon("back")}</button>`
+              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath(encodeURIComponent(draft.id)))}" aria-label="${this._text("Back to the group")}" title="${this._text("Back to the group")}">${icon("back")}</button>`
               : onEditor || onDetail
-                ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath())}" aria-label="All purifier groups" title="All purifier groups">${icon("back")}</button>`
+                ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath())}" aria-label="${this._text("All purifier groups")}" title="${this._text("All purifier groups")}">${icon("back")}</button>`
                 : ""
         }
         <div class="title">${
           onPage
             ? esc(pageTitle)
             : onAdd
-              ? `Add device${
+              ? `${this._text("Add device")}${
                   this._add?.model && this._wzModel() ? `<div class="subtitle">${esc(this._wzModel().title)}</div>` : ""
                 }`
               : onEditor
-              ? `${esc(draft?.name?.trim() || (draft?.id ? "Purifier group" : "New group"))}<div class="subtitle">Purifier group</div>`
+              ? `${esc(draft?.name?.trim() || (draft?.id ? this._text("Purifier group") : this._text("New group")))}<div class="subtitle">${this._text("Purifier group")}</div>`
               : detail
-                ? `${esc(detail.name)}<div class="subtitle">Purifier group · ${detail.members.length} purifiers</div>`
+                ? `${esc(detail.name)}<div class="subtitle">${this._text("Purifier group · {count} purifiers", { count: detail.members.length })}</div>`
                 : "Levoit ESPHome"
         }</div>
         ${
           detail
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(
                 this._groupsPath(`${encodeURIComponent(detail.id)}/edit`),
-              )}" title="Edit the group">${icon("pencil")}<span>Edit group</span></button>`
+              )}" title="${this._text("Edit the group")}">${icon("pencil")}<span>${this._text("Edit group")}</span></button>`
             : ""
         }
         ${
           draft?.id
-            ? `<button class="tb-btn" data-action="ed-delete" title="Delete this group">${icon("delete")}<span>Delete group</span></button>`
+            ? `<button class="tb-btn" data-action="ed-delete" title="${this._text("Delete this group")}">${icon("delete")}<span>${this._text("Delete group")}</span></button>`
             : ""
         }${
           draft
-            ? `<button class="tb-btn strong" data-action="ed-save" ${invalid ? "disabled" : ""} title="Save the group">${icon(
+            ? `<button class="tb-btn strong" data-action="ed-save" ${invalid ? "disabled" : ""} title="${this._text("Save the group")}">${icon(
                 "check",
-              )}<span>Save</span></button>`
+              )}<span>${this._text("Save")}</span></button>`
             : ""
         }
         ${
           haDevice
-            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(haDevice)}" title="The Home Assistant device page: every entity">${icon(
+            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(haDevice)}" title="${this._text("The Home Assistant device page: every entity")}">${icon(
                 "open",
-              )}<span>Device page</span></button>`
+              )}<span>${this._text("Device page")}</span></button>`
             : ""
         }
         ${
           builderUrl && !onPage && !onEditor && !onDetail && !onAdd
-            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="Open the ESPHome Device Builder">${icon(
+            ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="${this._text("Open the ESPHome Device Builder")}">${icon(
                 "builder",
-              )}<span>Device Builder</span></button>`
+              )}<span>${this._text("Device Builder")}</span></button>`
             : ""
         }
         ${
           onPage || onEditor || onDetail || onAdd
             ? ""
-            : `<button class="tb-btn" data-action="navigate" data-path="${esc(this._addPath())}" title="Add a device: a Device Builder config from a template">${icon(
+            : `<button class="tb-btn" data-action="navigate" data-path="${esc(this._addPath())}" title="${this._text("Add a device: a Device Builder config from a template")}">${icon(
                 "plus",
-              )}<span>Add device</span></button>`
+              )}<span>${this._text("Add device")}</span></button>`
         }
       </div>
       <div class="content">
         ${
           version && LOADED_VERSION && version !== LOADED_VERSION
-            ? `<div class="notice">Levoit ESPHome was updated to ${esc(version)}; this page still runs ${esc(
-                LOADED_VERSION,
-              )}. <button class="btn primary" data-action="reload">Reload this page</button></div>`
+            ? `<div class="notice">${this._text("Levoit ESPHome was updated to {current}; this page still runs {loaded}.", { current: version, loaded: LOADED_VERSION })} <button class="btn primary" data-action="reload">${this._text("Reload this page")}</button></div>`
             : ""
         }
         ${tabs}
         ${view}
         <div class="footer muted">Levoit ESPHome${version ? ` ${esc(version)}` : ""}${
-          onConfig ? " · builds run in the ESPHome Device Builder; the last build's output is under Log" : ""
+          onConfig ? this._t(" · builds run in the ESPHome Device Builder; the last build's output is under Log") : ""
         }</div>
       </div>
       ${this._logDialog()}`;
@@ -1457,7 +1469,7 @@ class LevoitEsphomePanel extends HTMLElement {
       if (!a.step) {
         if (a.forName) {
           const device = options.existing.find((d) => d.name === a.forName);
-          if (!device) a.error = `${a.forName} is not a device without a config`;
+          if (!device) a.error = this._t("{name} is not a device without a config", { name: a.forName });
           else {
             a.name = device.name;
             if (device.model && options.models.some((m) => m.model === device.model)) a.model = device.model;
@@ -1509,8 +1521,9 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _wzEspTitle() {
-    if (this._add.variant === "custom") return `Other ESP (${this._add.custom?.board || "own board"})`;
-    return this._wzVariant()?.title || "";
+    if (this._add.variant === "custom")
+      return this._t("Other ESP ({board})", { board: this._add.custom?.board || this._t("own board") });
+    return this._t(this._wzVariant()?.title);
   }
 
   // board and pins of the user's own ESP, as onboarding.validate_custom checks them
@@ -1520,12 +1533,12 @@ class LevoitEsphomePanel extends HTMLElement {
     const pin = (v) => /^(?:gpio)?0*\d{1,2}$/i.exec((v || "").trim());
     const number = (m) => Number(/\d+$/.exec(m[0])[0]);
     if (!/^[a-z0-9][a-z0-9_.-]*$/.test((c.board || "").trim().toLowerCase()))
-      errors.board = "Use an ESPHome board name: lowercase letters, digits, hyphens, underscores and dots.";
+      errors.board = this._t("Use an ESPHome board name: lowercase letters, digits, hyphens, underscores and dots.");
     const rx = pin(c.rx_pin);
     const tx = pin(c.tx_pin);
-    if (!rx) errors.rx_pin = "Enter a GPIO number, e.g. GPIO5.";
-    if (!tx) errors.tx_pin = "Enter a GPIO number, e.g. GPIO4.";
-    else if (rx && number(rx) === number(tx)) errors.tx_pin = "RX and TX must be different pins.";
+    if (!rx) errors.rx_pin = this._t("Enter a GPIO number, e.g. GPIO5.");
+    if (!tx) errors.tx_pin = this._t("Enter a GPIO number, e.g. GPIO4.");
+    else if (rx && number(rx) === number(tx)) errors.tx_pin = this._t("RX and TX must be different pins.");
     return errors;
   }
 
@@ -1598,7 +1611,7 @@ class LevoitEsphomePanel extends HTMLElement {
     } catch (err) {
       if (this._add === a) {
         a.custom = { board: "", rx_pin: "", tx_pin: "", boards: [] };
-        this._toast(`Template: ${err.message || err}`);
+        this._toast(this._t("Template: {reason}", { reason: this._t(err.message || String(err)) }));
       }
     } finally {
       if (this._add === a) {
@@ -1655,11 +1668,11 @@ class LevoitEsphomePanel extends HTMLElement {
     const a = this._add;
     const c = a.nameCheck;
     const typed = this._wzName();
-    if (!typed) return { text: "Lowercase letters, digits and hyphens, at most 31 characters.", cls: "" };
-    if (!c || c.name !== typed) return { text: "Checking…", cls: "" };
-    if (c.ok) return { text: `${c.name}.yaml in the Device Builder; on the network as ${c.name}.local`, cls: "ok" };
-    const suggestion = c.suggestion && c.suggestion !== c.name ? ` Free: ${c.suggestion}` : "";
-    return { text: `${c.message}${suggestion}`, cls: "bad" };
+    if (!typed) return { text: this._t("Lowercase letters, digits and hyphens, at most 31 characters."), cls: "" };
+    if (!c || c.name !== typed) return { text: this._t("Checking…"), cls: "" };
+    if (c.ok) return { text: this._t("{name}.yaml in the Device Builder; on the network as {name}.local", { name: c.name }), cls: "ok" };
+    const suggestion = c.suggestion && c.suggestion !== c.name ? this._t(" Free: {name}", { name: c.suggestion }) : "";
+    return { text: this._t(c.message) + suggestion, cls: "bad" };
   }
 
   // the custom form's hints and the Next button, in place (as the name)
@@ -1761,16 +1774,16 @@ class LevoitEsphomePanel extends HTMLElement {
     const a = this._add;
     if (!a) return "";
     if (a.error)
-      return `<div class="card empty"><p class="bad">${esc(a.error)}</p>
-        <button class="btn" data-action="wz-retry">Try again</button></div>`;
+      return `<div class="card empty"><p class="bad">${this._text(a.error)}</p>
+        <button class="btn" data-action="wz-retry">${this._text("Try again")}</button></div>`;
     if (!a.options || (a.loading && !a.step))
-      return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+      return `<div class="card empty"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
     if (a.finished) return this._wzDone();
     const steps = this._wzSteps();
     const i = steps.indexOf(a.step);
     const stepper = `<ol class="wz-steps">${steps
       .map((s, n) => {
-        const label = `${n + 1}. ${WIZARD_STEPS[s]}`;
+        const label = `${n + 1}. ${this._text(WIZARD_STEPS[s])}`;
         const cls = n < i ? "done" : n === i ? "on" : "";
         // before Create, a done step can be opened again; after it, the config exists
         return `<li class="${cls}">${
@@ -1796,13 +1809,13 @@ class LevoitEsphomePanel extends HTMLElement {
       return `<div class="wz">${stepper}<div class="card wz-card">${screens[a.step]()}</div>${this._wzAfterNav()}</div>`;
     const last = a.step === "create";
     const nav = `<div class="wz-nav">
-      <button class="btn" data-action="wz-back" ${a.creating ? "disabled" : ""}>${i === 0 ? "Cancel" : "Back"}</button>
+      <button class="btn" data-action="wz-back" ${a.creating ? "disabled" : ""}>${i === 0 ? this._text("Cancel") : this._text("Back")}</button>
       ${
         last
           ? `<button class="btn primary" data-action="wz-create" ${
               a.creating || !this._wzCanProceed("protection") ? "disabled" : ""
-            }>${a.creating ? `<span class="spinner light"></span> Creating…` : "Create config"}</button>`
-          : `<button class="btn primary" data-action="wz-next" ${this._wzCanProceed(a.step) ? "" : "disabled"}>Next</button>`
+            }>${a.creating ? `<span class="spinner light"></span> ${this._text("Creating…")}` : this._text("Create config")}</button>`
+          : `<button class="btn primary" data-action="wz-next" ${this._wzCanProceed(a.step) ? "" : "disabled"}>${this._text("Next")}</button>`
       }
     </div>`;
     return `<div class="wz">${stepper}<div class="card wz-card">${screens[a.step]()}</div>${nav}</div>`;
@@ -1831,13 +1844,15 @@ class LevoitEsphomePanel extends HTMLElement {
           m.model === a.model,
           deviceImage(m.model),
           esc(m.title),
-          `${esc(m.model)} · ${esc(m.variants.map((v) => v.title).join(", "))}`,
+          `${esc(m.model)} · ${esc(m.variants.map((v) => this._t(v.title)).join(", "))}`,
         ),
       )
       .join("");
     return `${this._wzHead(
-      "Which purifier?",
-      `The models with a template in tuct/levoit. Others (with their own hardware notes) are in the <a href="${DEVICES_URL}" target="_blank" rel="noreferrer">device folders</a>.`,
+      this._text("Which purifier?"),
+      this._markup("The models with a template in tuct/levoit. Others (with their own hardware notes) are in the {link}.", {
+        link: `<a href="${DEVICES_URL}" target="_blank" rel="noreferrer">${this._text("device folders")}</a>`,
+      }),
     )}<div class="wz-grid">${cards}</div>`;
   }
 
@@ -1853,8 +1868,8 @@ class LevoitEsphomePanel extends HTMLElement {
             `data-file="${esc(v.file)}"`,
             a.variant === v.file,
             icon("memory"),
-            esc(v.title),
-            `Board ${esc(v.board)} · a template config: follows tuct/levoit`,
+            this._text(v.title),
+            this._text("Board {board} · a template config: follows tuct/levoit", { board: v.board }),
           ),
         )
         .join("") +
@@ -1863,16 +1878,14 @@ class LevoitEsphomePanel extends HTMLElement {
         `data-file="custom"`,
         a.variant === "custom",
         icon("pencil"),
-        "Other ESP",
-        "Your own board and UART pins · a custom config: never rewritten",
+        this._text("Other ESP"),
+        this._text("Your own board and UART pins · a custom config: never rewritten"),
       );
     let custom = "";
     if (a.variant === "custom") {
       const base = m.variants.find((v) => v.file === m.custom_base);
       if (a.customLoading || !a.custom)
-        custom = `<div class="wz-custom"><div class="hint pad"><span class="spinner"></span> Reading the ${esc(
-          base?.title || "",
-        )} template…</div></div>`;
+        custom = `<div class="wz-custom"><div class="hint pad"><span class="spinner"></span> ${this._text("Reading the {template} template…", { template: this._t(base?.title) })}</div></div>`;
       else {
         const errors = this._wzCustomErrors();
         const c = a.custom;
@@ -1883,20 +1896,24 @@ class LevoitEsphomePanel extends HTMLElement {
             hint,
           )}">${esc(errors[key] || hint)}</span></label>`;
         custom = `<div class="wz-custom">
-          <div class="hint pad">Made from the ${esc(base?.title || "")} config of tuct/levoit with your board and pins. Updates never rewrite it; they only build the newer component it pulls. They must match how the ESP is wired: <a href="${DEVICES_URL}${esc(
-            folder,
-          )}" target="_blank" rel="noreferrer">wiring notes</a>.</div>
+          <div class="hint pad">${this._markup(
+            "Made from the {template} config of tuct/levoit with your board and pins. Updates never rewrite it; they only build the newer component it pulls. They must match how the ESP is wired: {link}.",
+            {
+              template: this._text(base?.title),
+              link: `<a href="${DEVICES_URL}${esc(folder)}" target="_blank" rel="noreferrer">${this._text("wiring notes")}</a>`,
+            },
+          )}</div>
           <div class="wz-fields">
-            ${field("board", "ESP board", "ESPHome board name, e.g. seeed_xiao_esp32s3 or esp32-c6-devkitc-1", 'list="wz-boards"')}
+            ${field("board", this._text("ESP board"), this._t("ESPHome board name, e.g. seeed_xiao_esp32s3 or esp32-c6-devkitc-1"), 'list="wz-boards"')}
             <datalist id="wz-boards">${(c.boards || []).map((b) => `<option value="${esc(b)}">`).join("")}</datalist>
-            ${field("rx_pin", "RX pin", "The ESP pin wired to the MCU's TX, e.g. GPIO5")}
-            ${field("tx_pin", "TX pin", "The ESP pin wired to the MCU's RX, e.g. GPIO4")}
+            ${field("rx_pin", this._text("RX pin"), this._t("The ESP pin wired to the MCU's TX, e.g. GPIO5"))}
+            ${field("tx_pin", this._text("TX pin"), this._t("The ESP pin wired to the MCU's RX, e.g. GPIO4"))}
           </div></div>`;
       }
     }
     return `${this._wzHead(
-      `${esc(m.title)}: which ESP?`,
-      "A template config follows tuct/levoit: every update rewrites it from the newest template, keeping name, secrets and channel. Other ESP makes a config of your own for a board or pins without a template.",
+      this._text("{model}: which ESP?", { model: m.title }),
+      this._text("A template config follows tuct/levoit: every update rewrites it from the newest template, keeping name, secrets and channel. Other ESP makes a config of your own for a board or pins without a template."),
     )}<div class="wz-grid">${cards}</div>${custom}`;
   }
 
@@ -1909,17 +1926,17 @@ class LevoitEsphomePanel extends HTMLElement {
         'data-name=""',
         a.existing === null,
         icon("plus"),
-        "New device",
-        "A new name and new keys. Flashed once over USB, then updated over the air.",
+        this._text("New device"),
+        this._text("A new name and new keys. Flashed once over USB, then updated over the air."),
       ) +
       a.options.existing
         .map((d) => {
           const other = Boolean(d.model && d.model !== m.model);
           const hint = other
-            ? `reports ${esc(d.model)}, not a ${esc(m.title)}`
+            ? this._text("reports {model}, not a {expected}", { model: d.model, expected: m.title })
             : d.model
               ? esc(d.model)
-              : "model not reported (firmware before 1.7.1)";
+              : this._text("model not reported (firmware before 1.7.1)");
           return this._wzOption(
             "wz-device",
             `data-name="${esc(d.name)}"`,
@@ -1932,24 +1949,24 @@ class LevoitEsphomePanel extends HTMLElement {
         })
         .join("");
     return `${this._wzHead(
-      "A new device, or one Home Assistant knows?",
-      "A device that runs the firmware already but has no config in this Device Builder keeps its name and API key; the next update installs the new config over the air.",
+      this._text("A new device, or one Home Assistant knows?"),
+      this._text("A device that runs the firmware already but has no config in this Device Builder keeps its name and API key; the next update installs the new config over the air."),
     )}<div class="wz-grid">${cards}</div>`;
   }
 
   _wzChannel() {
     const a = this._add;
-    return `<div class="wz-field"><span class="field">Update channel</span>
-      <div class="segs" role="group" aria-label="Update channel">${[
+    return `<div class="wz-field"><span class="field">${this._text("Update channel")}</span>
+      <div class="segs" role="group" aria-label="${this._text("Update channel")}">${[
         ["stable", "Stable"],
         ["main", "Main"],
       ]
         .map(
           ([v, t]) =>
-            `<button class="seg${a.channel === v ? " on" : ""}" aria-pressed="${a.channel === v}" data-action="wz-set" data-field="channel" data-value="${v}">${t}</button>`,
+            `<button class="seg${a.channel === v ? " on" : ""}" aria-pressed="${a.channel === v}" data-action="wz-set" data-field="channel" data-value="${v}">${this._text(t)}</button>`,
         )
         .join("")}</div>
-      <span class="hint">Stable gets releases, main every merge.</span></div>`;
+      <span class="hint">${this._text("Stable gets releases, main every merge.")}</span></div>`;
   }
 
   _wzNameScreen() {
@@ -1958,21 +1975,21 @@ class LevoitEsphomePanel extends HTMLElement {
     if (d)
       return `${this._wzHead(
         esc(d.title),
-        "The device keeps its name, so Home Assistant keeps the device and its history.",
+        this._text("The device keeps its name, so Home Assistant keeps the device and its history."),
       )}
       <div class="wz-fields">
-        <label class="field">Name<input class="inp" type="text" value="${esc(d.name)}" readonly><span class="hint">Fixed: the device's ESPHome name</span></label>
-        <label class="field">OTA password<input class="inp" type="password" data-wz="ota_password" value="${esc(
+        <label class="field">${this._text("Name")}<input class="inp" type="text" value="${esc(d.name)}" readonly><span class="hint">${this._text("Fixed: the device's ESPHome name")}</span></label>
+        <label class="field">${this._text("OTA password")}<input class="inp" type="password" data-wz="ota_password" value="${esc(
           a.otaPassword,
-        )}" autocomplete="new-password"><span class="hint">Home Assistant does not know it: the OTA password the device was built with, if it has one. Leave it empty if not.</span></label>
+        )}" autocomplete="new-password"><span class="hint">${this._text("Home Assistant does not know it: the OTA password the device was built with, if it has one. Leave it empty if not.")}</span></label>
       </div>${this._wzChannel()}`;
     const { text, cls } = this._wzNameMessage();
     return `${this._wzHead(
-      "Name and channel",
-      "The ESPHome name: the config file, the device's hostname and the names of its secrets come from it.",
+      this._text("Name and channel"),
+      this._text("The ESPHome name: the config file, the device's hostname and the names of its secrets come from it."),
     )}
       <div class="wz-fields">
-        <label class="field">Name<input class="inp${cls === "bad" ? " err" : ""}" type="text" data-wz="name" value="${esc(
+        <label class="field">${this._text("Name")}<input class="inp${cls === "bad" ? " err" : ""}" type="text" data-wz="name" value="${esc(
           a.name,
         )}" autocomplete="off" spellcheck="false" maxlength="31"><span class="hint wz-msg ${cls}" data-wz-name-msg>${esc(
           text,
@@ -1987,57 +2004,74 @@ class LevoitEsphomePanel extends HTMLElement {
     const name = this._wzName();
     const secret = (what) => `<code>${esc(name.replace(/-/g, "_"))}_${what}</code>`;
     const rows = [];
-    if (!d) rows.push(["API encryption", `A new key, stored in the Device Builder's secrets.yaml as ${secret("api_key")}.`]);
+    if (!d) rows.push(["API encryption", this._markup("A new key, stored in the Device Builder's secrets.yaml as {secret}.", { secret: secret("api_key") })]);
     else if (d.api_key)
       rows.push([
         "API encryption",
-        `The key Home Assistant uses for the device, stored as ${secret("api_key")}, so Home Assistant keeps the device.`,
+        this._markup("The key Home Assistant uses for the device, stored as {secret}, so Home Assistant keeps the device.", {
+          secret: secret("api_key"),
+        }),
       ]);
-    else rows.push(["API encryption", "None: Home Assistant has no key for this device."]);
+    else rows.push(["API encryption", this._text("None: Home Assistant has no key for this device.")]);
     if (!d)
       rows.push([
         "OTA updates",
         o.ota_encryption
-          ? "Encrypted with the API key (<code>ota: encryption:</code>)."
-          : `With a password, stored as ${secret("ota_password")}: the Device Builder runs ESPHome ${esc(
-              o.esphome_version || "?",
-            )}, before 2026.9.0 brought OTA encryption.`,
+          ? this._markup("Encrypted with the API key ({setting}).", { setting: "<code>ota: encryption:</code>" })
+          : this._markup("With a password, stored as {secret}: the Device Builder runs ESPHome {version}, before 2026.9.0 brought OTA encryption.", {
+              secret: secret("ota_password"),
+              version: esc(o.esphome_version || "?"),
+            }),
       ]);
     else if (a.otaPassword)
       rows.push([
         "OTA updates",
-        `With your password, stored as ${secret(
-          "ota_password",
-        )}. The first update installs with it; from the update after, they are encrypted with the API key.`,
+        this._markup("With your password, stored as {secret}. The first update installs with it; from the update after, they are encrypted with the API key.", {
+          secret: secret("ota_password"),
+        }),
       ]);
     else if (d.api_key)
-      rows.push(["OTA updates", "No password. From the update after the first one, they are encrypted with the API key."]);
-    else rows.push(["OTA updates", "No password and no key: not protected."]);
+      rows.push(["OTA updates", this._text("No password. From the update after the first one, they are encrypted with the API key.")]);
+    else rows.push(["OTA updates", this._text("No password and no key: not protected.")]);
     const missing = o.missing_secrets || [];
+    const reload = `<button class="btn text" data-action="wz-reload" ${a.loading ? "disabled" : ""}>${this._text("check again")}</button>`;
     rows.push([
       "Wi-Fi",
       missing.length
-        ? `<span class="bad">secrets.yaml has no ${esc(missing.join(", "))}.</span> Add ${
-            missing.length === 1 ? "it" : "them"
-          } in the Device Builder (Secrets), then <button class="btn text" data-action="wz-reload" ${
-            a.loading ? "disabled" : ""
-          }>check again</button>.`
-        : "From the shared <code>wifi_ssid</code>, <code>wifi_password</code> and <code>wifi_ap_password</code> secrets.",
+        ? `<span class="bad">${this._text("secrets.yaml has no {secrets}.", { secrets: missing.join(", ") })}</span> ${
+            this._markup("Add {pronoun} in the Device Builder (Secrets), then {button}.", {
+              pronoun: this._text(missing.length === 1 ? "it" : "them"),
+              button: reload,
+            })
+          }`
+        : this._markup("From the shared {ssid}, {password} and {fallback} secrets.", {
+            ssid: "<code>wifi_ssid</code>",
+            password: "<code>wifi_password</code>",
+            fallback: "<code>wifi_ap_password</code>",
+          }),
     ]);
+    const file = `<code>${esc(name)}.yaml</code>`;
+    const channel = this._text(CHANNEL_LABELS[a.channel] || a.channel);
     rows.push([
       "Config",
       a.variant === "custom"
-        ? `<code>${esc(name)}.yaml</code>: a custom config for board ${esc(a.custom.board)}, RX ${esc(
-            a.custom.rx_pin,
-          )}, TX ${esc(a.custom.tx_pin)}, channel ${esc(a.channel)}. Never rewritten.`
-        : `<code>${esc(name)}.yaml</code> from <code>${esc(this._wzTemplateFile())}</code>, channel ${esc(
-            a.channel,
-          )}. Every update rewrites it from the newest template, keeping name, secrets and channel.`,
+        ? this._markup("{file}: a custom config for board {board}, RX {rx}, TX {tx}, channel {channel}. Never rewritten.", {
+            file,
+            channel,
+            board: esc(a.custom.board),
+            rx: esc(a.custom.rx_pin),
+            tx: esc(a.custom.tx_pin),
+          })
+        : this._markup("{file} from {template}, channel {channel}. Every update rewrites it from the newest template, keeping name, secrets and channel.", {
+            file,
+            channel,
+            template: `<code>${esc(this._wzTemplateFile())}</code>`,
+          }),
     ]);
     return `${this._wzHead(
-      "What gets written",
-      "Only secret names are read, never values; a secret that exists is never overwritten; the config is created, never replaced.",
-    )}<dl class="wz-dl">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+      this._text("What gets written"),
+      this._text("Only secret names are read, never values; a secret that exists is never overwritten; the config is created, never replaced."),
+    )}<dl class="wz-dl">${rows.map(([k, v]) => `<dt>${this._text(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
   }
 
   _wzCreateScreen() {
@@ -2045,31 +2079,32 @@ class LevoitEsphomePanel extends HTMLElement {
     const name = this._wzName();
     const m = this._wzModel();
     return `${this._wzHead(
-      "Create the config",
-      `${esc(m.title)} · ${esc(this._wzEspTitle())} · ${esc(name)} · ${esc(CHANNEL_LABELS[a.channel] || a.channel)}`,
+      this._text("Create the config"),
+      `${esc(m.title)} · ${esc(this._wzEspTitle())} · ${esc(name)} · ${this._text(CHANNEL_LABELS[a.channel] || a.channel)}`,
     )}
-      <p>Create <code>${esc(name)}.yaml</code> and its secrets in the ESPHome Device Builder now. ${
-        a.existing
-          ? "Then install it over the air, here or later with Update."
-          : "Then it is compiled here, and you flash it once over USB from the Device Builder; after that, updates come over the air."
-      }</p>${a.createError ? `<p class="bad">${esc(a.createError)}</p>` : ""}`;
+      <p>${this._markup("Create {file} and its secrets in the ESPHome Device Builder now. {next}", {
+        file: `<code>${esc(name)}.yaml</code>`,
+        next: a.existing
+          ? this._text("Then install it over the air, here or later with Update.")
+          : this._text("Then it is compiled here, and you flash it once over USB from the Device Builder; after that, updates come over the air."),
+      })}</p>${a.createError ? `<p class="bad">${this._text(a.createError)}</p>` : ""}`;
   }
 
   // the buttons under the steps after Create: no way back, the config exists
   _wzAfterNav() {
     const a = this._add;
-    const leave = `<button class="btn" data-action="navigate" data-path="${esc(this._base)}/config" title="The integration carries on: a new config is listed as Not flashed yet until its ESP connects">Updates &amp; config</button>`;
+    const leave = `<button class="btn" data-action="navigate" data-path="${esc(this._base)}/config" title="${this._text("The integration carries on: a new config is listed as Not flashed yet until its ESP connects")}">${this._text("Updates & config")}</button>`;
     let main = "";
     if (a.step === "build")
       main = a.buildError
-        ? `<button class="btn primary" data-action="wz-compile" ${a.building ? "disabled" : ""}>Compile again</button>`
-        : `<button class="btn primary" data-action="wz-next" ${this._wzCanProceed("build") ? "" : "disabled"}>Next</button>`;
+        ? `<button class="btn primary" data-action="wz-compile" ${a.building ? "disabled" : ""}>${this._text("Compile again")}</button>`
+        : `<button class="btn primary" data-action="wz-next" ${this._wzCanProceed("build") ? "" : "disabled"}>${this._text("Next")}</button>`;
     else if (a.step === "flash")
-      main = `<button class="btn primary" data-action="wz-next">It is flashed</button>`;
+      main = `<button class="btn primary" data-action="wz-next">${this._text("It is flashed")}</button>`;
     else if (a.step === "install")
       main = `<button class="btn primary" data-action="wz-install" ${
         a.building || !this._wzTarget() ? "disabled" : ""
-      }>${a.building ? `<span class="spinner light"></span> Installing…` : a.buildError ? "Try again" : "Install over the air"}</button>`;
+      }>${a.building ? `<span class="spinner light"></span> ${this._text("Installing…")}` : a.buildError ? this._text("Try again") : this._text("Install over the air")}</button>`;
     return `<div class="wz-nav">${leave}${main}</div>`;
   }
 
@@ -2079,26 +2114,26 @@ class LevoitEsphomePanel extends HTMLElement {
     const name = a.created.name;
     const d = this._wzTarget();
     if (!d)
-      return `<p class="muted"><span class="spinner"></span> Waiting for the Device Builder to list <code>${esc(
-        a.created.configuration,
-      )}</code>…</p>`;
+      return `<p class="muted"><span class="spinner"></span> ${this._markup("Waiting for the Device Builder to list {file}…", {
+        file: `<code>${esc(a.created.configuration)}</code>`,
+      })}</p>`;
     if (!a.buildStarted) return "";
     const steps = d.build && (a.building || a.buildOk || a.buildError) ? this._stepsList(d.build) : "";
     const log = d.has_build_log
-      ? `<button class="btn" data-action="log" data-name="${esc(name)}">${a.building ? "Show the output" : "Log"}</button>`
+      ? `<button class="btn" data-action="log" data-name="${esc(name)}">${a.building ? this._text("Show the output") : this._text("Log")}</button>`
       : "";
     let line = "";
-    if (a.building && !steps) line = `<p class="muted"><span class="spinner"></span> Starting the build…</p>`;
-    else if (a.buildOk) line = `<p class="ok">${upload ? "Compiled and uploaded." : "Compiled."}</p>`;
-    else if (a.buildError) line = `<p class="bad">${esc(a.buildError)}</p>`;
+    if (a.building && !steps) line = `<p class="muted"><span class="spinner"></span> ${this._text("Starting the build…")}</p>`;
+    else if (a.buildOk) line = `<p class="ok">${upload ? this._text("Compiled and uploaded.") : this._text("Compiled.")}</p>`;
+    else if (a.buildError) line = `<p class="bad">${this._text(a.buildError)}</p>`;
     return `<div class="wz-build">${steps}${line}${log ? `<div class="wz-actions">${log}</div>` : ""}</div>`;
   }
 
   _wzBuildScreen() {
     const a = this._add;
     return `${this._wzHead(
-      `Compile ${esc(a.created.configuration)}`,
-      "The Device Builder builds the firmware once now, so a problem shows up before the flash. The first build of a new ESP takes a few minutes; the flash after it is quick, it reuses this build.",
+      this._text("Compile {file}", { file: a.created.configuration }),
+      this._text("The Device Builder builds the firmware once now, so a problem shows up before the flash. The first build of a new ESP takes a few minutes; the flash after it is quick, it reuses this build."),
     )}${this._wzBuildStatus(false)}`;
   }
 
@@ -2109,42 +2144,51 @@ class LevoitEsphomePanel extends HTMLElement {
     const variant = this._wzVariant();
     const folder = (this._wzTemplateFile() || "").split("/")[1] || "";
     const wiring = folder
-      ? `<a href="${DEVICES_URL}${esc(folder)}" target="_blank" rel="noreferrer">wiring and flashing notes</a>`
-      : "wiring and flashing notes";
+      ? `<a href="${DEVICES_URL}${esc(folder)}" target="_blank" rel="noreferrer">${this._text("wiring and flashing notes")}</a>`
+      : this._text("wiring and flashing notes");
     const how =
       variant?.variant === "original"
-        ? `The original ESP is flashed with a USB-serial adapter wired to the module; the ${wiring} show where.`
-        : `Connect the ESP to this computer with a USB data cable; the ${wiring} have the details.`;
+        ? this._markup("The original ESP is flashed with a USB-serial adapter wired to the module; the {link} show where.", { link: wiring })
+        : this._markup("Connect the ESP to this computer with a USB data cable; the {link} have the details.", { link: wiring });
     return `${this._wzHead(
-      "Flash it over USB",
-      "A new ESP gets its first firmware over USB; every update after that comes over the air. The ESPHome Device Builder flashes it from the browser: Chrome or Edge, with Home Assistant opened over HTTPS or on this computer.",
+      this._text("Flash it over USB"),
+      this._text("A new ESP gets its first firmware over USB; every update after that comes over the air. The ESPHome Device Builder flashes it from the browser: Chrome or Edge, with Home Assistant opened over HTTPS or on this computer."),
     )}
       <ol class="wz-howto">
         <li>${how}</li>
-        <li>Open the Device Builder, find <code>${esc(c.configuration)}</code>, choose <b>Install</b>, then <b>Plug into this computer</b>, and pick the serial port. The compile from the step before makes this quick.</li>
-        <li>When it is done, put the ESP back in the purifier and power it on. It joins your Wi-Fi.</li>
+        <li>${this._markup("Open the Device Builder, find {file}, choose {install}, then {plugIn}, and pick the serial port. The compile from the step before makes this quick.", {
+          file: `<code>${esc(c.configuration)}</code>`,
+          install: "<b>Install</b>",
+          plugIn: "<b>Plug into this computer</b>",
+        })}</li>
+        <li>${this._text("When it is done, put the ESP back in the purifier and power it on. It joins your Wi-Fi.")}</li>
       </ol>
       <div class="wz-actions">${
         builderUrl
-          ? `<a class="btn primary" href="${esc(builderUrl)}" target="_blank" rel="noreferrer">Open Device Builder</a>`
+          ? `<a class="btn primary" href="${esc(builderUrl)}" target="_blank" rel="noreferrer">${this._text("Open Device Builder")}</a>`
           : ""
       }</div>
-      <p class="muted"><span class="spinner"></span> Looking for <code>${esc(c.name)}.local</code>: this page goes on by itself once the device is there.</p>`;
+      <p class="muted"><span class="spinner"></span> ${this._markup("Looking for {host}: this page goes on by itself once the device is there.", { host: `<code>${esc(c.name)}.local</code>` })}</p>`;
   }
 
   _wzConnectScreen() {
     const c = this._add.created;
     return `${this._wzHead(
-      `Waiting for ${esc(c.name)}`,
-      "The integration looks for the device every 30 seconds and adds it to Home Assistant's ESPHome integration with its key: there is no discovered device to confirm.",
+      this._text("Waiting for {name}", { name: c.name }),
+      this._text("The integration looks for the device every 30 seconds and adds it to Home Assistant's ESPHome integration with its key: there is no discovered device to confirm."),
     )}
-      <p class="muted"><span class="spinner"></span> Looking for <code>${esc(c.name)}.local</code>…</p>
+      <p class="muted"><span class="spinner"></span> ${this._markup("Looking for {host}…", { host: `<code>${esc(c.name)}.local</code>` })}</p>
       <ul class="wz-howto">
-        <li>Not there after a minute or two? It must be powered and on the same network as Home Assistant.</li>
-        <li>When it cannot join the Wi-Fi of the <code>wifi_ssid</code> secret, it opens a hotspot of its own (password: the <code>wifi_ap_password</code> secret) to set the Wi-Fi.</li>
-        <li>Its log in the Device Builder (<b>Logs</b>, over USB) shows what it does.</li>
+        <li>${this._text("Not there after a minute or two? It must be powered and on the same network as Home Assistant.")}</li>
+        <li>${this._markup("When it cannot join the Wi-Fi of the {ssid} secret, it opens a hotspot of its own (password: the {password} secret) to set the Wi-Fi.", {
+          ssid: "<code>wifi_ssid</code>",
+          password: "<code>wifi_ap_password</code>",
+        })}</li>
+        <li>${this._markup("Its log in the Device Builder ({logs}, over USB) shows what it does.", { logs: "<b>Logs</b>" })}</li>
       </ul>
-      <p class="hint">You can leave this page: until it connects it is listed as <i>Not flashed yet</i> on Updates &amp; config, and it is added as soon as it is there.</p>`;
+      <p class="hint">${this._markup("You can leave this page: until it connects it is listed as {status} on Updates & config, and it is added as soon as it is there.", {
+        status: `<i>${this._text("Not flashed yet")}</i>`,
+      })}</p>`;
   }
 
   _wzInstallScreen() {
@@ -2153,16 +2197,16 @@ class LevoitEsphomePanel extends HTMLElement {
     const d = this._wzExisting();
     const title = d?.title || c.name;
     let first = "";
-    if (a.otaPassword) first = "This upload uses the OTA password you entered. Right after it, the config switches to OTA encrypted with the API key, for the updates after.";
-    else if (d?.api_key) first = "This upload goes without an OTA password. Right after it, the config switches to OTA encrypted with the API key, for the updates after.";
+    if (a.otaPassword) first = this._t("This upload uses the OTA password you entered. Right after it, the config switches to OTA encrypted with the API key, for the updates after.");
+    else if (d?.api_key) first = this._t("This upload goes without an OTA password. Right after it, the config switches to OTA encrypted with the API key, for the updates after.");
     return `${this._wzHead(
-      `Install on ${esc(title)}`,
-      `Compiles <code>${esc(c.configuration)}</code> in the Device Builder and uploads it over the air, as Update does. ${
-        c.custom ? "" : "The template config is refreshed from the newest template first."
-      }`,
+      this._text("Install on {device}", { device: title }),
+      `${this._markup("Compiles {file} in the Device Builder and uploads it over the air, as Update does.", {
+        file: `<code>${esc(c.configuration)}</code>`,
+      })}${c.custom ? "" : ` ${this._text("The template config is refreshed from the newest template first.")}`}`,
     )}${first ? `<p>${esc(first)}</p>` : ""}${
       !a.buildStarted && this._wzTarget()
-        ? `<p class="hint wz-pad">The device restarts at the end; it is back after a few seconds. You can also leave this and install it later with Update.</p>`
+        ? `<p class="hint wz-pad">${this._text("The device restarts at the end; it is back after a few seconds. You can also leave this and install it later with Update.")}</p>`
         : ""
     }${this._wzBuildStatus(true)}`;
   }
@@ -2170,17 +2214,18 @@ class LevoitEsphomePanel extends HTMLElement {
   _wzDone() {
     const c = this._add.created;
     const path = this._devicePath(c.name);
-    const text = c.existing
-      ? `<p>${esc(c.name)} runs <code>${esc(c.configuration)}</code> now. Updates come over the air from here on: in Home Assistant's Updates and on Updates &amp; config.</p>`
-      : `<p>${esc(c.name)} is on the network and in Home Assistant, with <code>${esc(
-          c.configuration,
-        )}</code>. Updates come over the air from here on.</p>`;
+    const text = this._markup(
+      c.existing
+        ? "{name} runs {file} now. Updates come over the air from here on: in Home Assistant's Updates and on Updates & config."
+        : "{name} is on the network and in Home Assistant, with {file}. Updates come over the air from here on.",
+      { name: esc(c.name), file: `<code>${esc(c.configuration)}</code>` },
+    );
     return `<div class="card empty wz-done"><div class="big-icon ok">${icon("check")}</div>
-      <h2>${c.existing ? `${esc(c.name)} installed` : `${esc(c.name)} is online`}</h2>${text}
+      <h2>${this._text(c.existing ? "{name} installed" : "{name} is online", { name: c.name })}</h2><p>${text}</p>
       <div class="wz-nav center">
-        <button class="btn primary" data-action="navigate" data-path="${esc(path)}">Open the device</button>
-        <button class="btn" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</button>
-        <button class="btn" data-action="wz-restart">Add another device</button>
+        <button class="btn primary" data-action="navigate" data-path="${esc(path)}">${this._text("Open the device")}</button>
+        <button class="btn" data-action="navigate" data-path="${esc(this._base)}/config">${this._text("Updates & config")}</button>
+        <button class="btn" data-action="wz-restart">${this._text("Add another device")}</button>
       </div></div>`;
   }
 
@@ -2193,9 +2238,9 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._error || !this._data || (!devices.length && !pending.length)) return this._body();
     const cards = devices.map((d) => this._deviceCard(d)).join("");
     const waiting = pending.length
-      ? `<div class="muted overview-note">${pending.length} device${pending.length === 1 ? "" : "s"} not flashed yet: see <a href="${esc(
+      ? `<div class="muted overview-note">${this._text(pending.length === 1 ? "{count} device not flashed yet: see" : "{count} devices not flashed yet: see", { count: pending.length })} <a href="${esc(
           this._base,
-        )}/config" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</a></div>`
+        )}/config" data-action="navigate" data-path="${esc(this._base)}/config">${this._text("Updates & config")}</a></div>`
       : "";
     return `${this._overviewSummary(devices)}<div class="overview">${cards}</div>${waiting}`;
   }
@@ -2221,16 +2266,16 @@ class LevoitEsphomePanel extends HTMLElement {
     }
     if (!running && !off && !offline) return "";
     const counts = [
-      `<b>${running} running</b>`,
-      `${off} off`,
-      offline ? `<span class="bad">${offline} offline</span>` : "",
+      `<b>${this._text("{count} running", { count: running })}</b>`,
+      this._t("{count} off", { count: off }),
+      offline ? `<span class="bad">${this._text("{count} offline", { count: offline })}</span>` : "",
     ].filter(Boolean);
     // only worth a mention when the air is not good (above the WHO day limit)
     const air =
       worst && worst.value > 15
-        ? `<span>Worst air: <a href="${esc(this._devicePath(worst.d.name))}" data-action="navigate" data-path="${esc(
+        ? `<span>${this._text("Worst air:")} <a href="${esc(this._devicePath(worst.d.name))}" data-action="navigate" data-path="${esc(
             this._devicePath(worst.d.name),
-          )}">${esc(worst.d.title)}</a> · PM2.5 ${esc(formatNumber(Math.round(worst.value)))}${
+          )}">${esc(worst.d.title)}</a> · PM2.5 ${esc(this._formatNumber(Math.round(worst.value)))}${
             worst.unit ? ` ${esc(worst.unit)}` : ""
           }</span>`
         : "";
@@ -2261,30 +2306,28 @@ class LevoitEsphomePanel extends HTMLElement {
     const current = on && presets.includes(a.preset_mode) ? a.preset_mode : "";
     const modeSelect =
       fan && presets.length
-        ? `<select class="mode-select" data-action="none" data-preset="${esc(fan.entity_id)}" aria-label="Mode of ${esc(
-            d.title,
-          )}" ${dis}>${
-            current ? "" : `<option value="" selected disabled>${on ? "Mode" : "Off"}</option>`
+        ? `<select class="mode-select" data-action="none" data-preset="${esc(fan.entity_id)}" aria-label="${this._text("Mode of {device}", { device: d.title })}" ${dis}>${
+            current ? "" : `<option value="" selected disabled>${on ? this._t("Mode") : this._t("Off")}</option>`
           }${presets
-            .map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${esc(m)}</option>`)
+            .map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${this._text(m)}</option>`)
             .join("")}</select>`
         : "";
     const speedButtons = fan
       ? Array.from({ length: count }, (_, i) => i + 1)
           .map(
             (n) =>
-              `<button class="seg sm${n === level ? " on" : ""}" aria-label="Speed ${n}" ${dis} ${this._svc(
+              `<button class="seg sm${n === level ? " on" : ""}" aria-label="${this._text("Speed {speed}", { speed: n })}" ${dis} ${this._svc(
                 "fan",
                 "set_percentage",
                 fan.entity_id,
                 { percentage: Math.min(100, Math.floor(n * step)) },
-              )}>${d.model === "ELEVA300X" && n === count ? "Turbo" : n}</button>`,
+              )}>${d.model === "ELEVA300X" && n === count ? this._t("Turbo") : n}</button>`,
           )
           .join("")
       : "";
     const controls =
       fan && (modeSelect || speedButtons)
-        ? `<div class="dc-controls">${speedButtons ? `<div class="segs" role="group" aria-label="Speed">${speedButtons}</div>` : ""}${modeSelect}</div>`
+        ? `<div class="dc-controls">${speedButtons ? `<div class="segs" role="group" aria-label="${this._text("Speed")}">${speedButtons}</div>` : ""}${modeSelect}</div>`
         : "";
     const timerLeft =
       parseDuration(this._dstate(d, "text_sensor.timer_duration_remaining")?.state) / 60;
@@ -2300,11 +2343,11 @@ class LevoitEsphomePanel extends HTMLElement {
       const st = this._dstate(d, key);
       if (!st) return "";
       const ok = this._usable(st) && !offline;
-      const value = ok ? formatNumber(Math.round(parseFloat(st.state))) : "—";
+      const value = ok ? this._formatNumber(Math.round(parseFloat(st.state))) : "—";
       const unit = ok ? st.attributes.unit_of_measurement || "" : "";
       // the unit goes with the label, so the number always fits the tile
       return `<div class="dc-stat"><div class="dc-val">${esc(value)}${
-        dot && ok ? `<span class="aqi-dot q${dot}" title="${esc(AQI_WORDS[dot])}"></span>` : ""
+        dot && ok ? `<span class="aqi-dot q${dot}" title="${this._text(AQI_WORDS[dot])}"></span>` : ""
       }</div><div class="dc-label">${esc(label)}${unit ? ` ${esc(unit)}` : ""}</div></div>`;
     };
     const aqiKey = levelSt || d.controls?.["sensor.aqi"] ? "sensor.aqi" : "sensor.aqi_index";
@@ -2314,8 +2357,8 @@ class LevoitEsphomePanel extends HTMLElement {
       stat("sensor.current_cadr", "CADR"),
     ].join("");
     const power = fan
-      ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? `Turn ${esc(d.title)} off` : `Turn ${esc(d.title)} on`}" title="${
-          on ? "Turn off" : "Turn on"
+      ? `<button class="power small${on ? " on" : ""}" aria-label="${on ? this._text("Turn {device} off", { device: d.title }) : this._text("Turn {device} on", { device: d.title })}" title="${
+          on ? this._t("Turn off") : this._t("Turn on")
         }" ${dis} ${this._svc("fan", on ? "turn_off" : "turn_on", fan.entity_id)}>${icon("power")}</button>`
       : "";
     // under the name: model and filter; a line below: timer, update, offline and group
@@ -2324,23 +2367,23 @@ class LevoitEsphomePanel extends HTMLElement {
         ? (() => {
             const value = Math.max(0, Math.min(100, d.filter_life));
             const lvl = value < 10 ? "bad" : value < 25 ? "low" : "good";
-            return `<span class="dc-filter ${lvl}" title="Filter ${Math.round(value)} % left">${icon(
+            return `<span class="dc-filter ${lvl}" title="${this._text("Filter {percent} % left", { percent: Math.round(value) })}">${icon(
               "filter",
             )}<span class="bar"><span style="width:${value}%"></span></span>${Math.round(value)} %</span>`;
           })()
         : "";
     const flags = [
-      timerLeft > 0 && on && !offline ? `<span class="chip info">Off in ${esc(formatMinutes(timerLeft))}</span>` : "",
+      timerLeft > 0 && on && !offline ? `<span class="chip info">${this._text("Off in {time}", { time: formatMinutes(timerLeft) })}</span>` : "",
       d.update_available && !offline
-        ? `<button class="chip warning chip-btn" data-action="navigate" data-path="${esc(this._base)}/config" title="Open Updates &amp; config">Update</button>`
+        ? `<button class="chip warning chip-btn" data-action="navigate" data-path="${esc(this._base)}/config" title="${this._text("Open Updates & config")}">${this._text("Update")}</button>`
         : "",
-      offline ? `<span class="chip bad-chip"><span class="dot-i"></span>Offline</span>` : "",
+      offline ? `<span class="chip bad-chip"><span class="dot-i"></span>${this._text("Offline")}</span>` : "",
     ].join("");
     const groupChip = this._groupChip(d);
     const path = this._devicePath(d.name);
     return `<div class="dcard${on && !offline ? " on" : ""}${offline ? " offline" : ""}" role="link" tabindex="0" data-action="navigate" data-path="${esc(
       path,
-    )}" aria-label="${esc(d.title)}: open its page">
+    )}" aria-label="${this._text("{device}: open its page", { device: d.title })}">
       <div class="dc-top">
         <span class="dev-tile">${deviceImage(d.model)}</span>
         <div class="dc-name">
@@ -2419,33 +2462,33 @@ class LevoitEsphomePanel extends HTMLElement {
   // (its level 4) and of the Everest Air (its Turbo preset, 3 speeds + Turbo) is Turbo
   _speedLabel(p, n) {
     const turbo = p?.model === "ELEVA300X" || p?.model === "EVERESTAIR";
-    return turbo && n === 4 && (p.speeds || 4) === 4 ? "Turbo" : String(n);
+    return turbo && n === 4 && (p.speeds || 4) === 4 ? this._t("Turbo") : String(n);
   }
 
   // a member's step as the group editor names it: Off, Sleep or its speed
   _stepLabel(p, step) {
-    if (step === "off") return "Off";
-    if (step === "sleep") return "Sleep";
+    if (step === "off") return this._t("Off");
+    if (step === "sleep") return this._t("Sleep");
     return step == null ? "—" : this._speedLabel(p, step);
   }
 
   // what a member does right now: Off, Manual · 3, Auto, Offline
   _memberState(entityId, member) {
-    if (this._offline(entityId)) return "Offline";
-    if (member?.paused_until) return `Changed by hand · until ${this._time(member.paused_until)}`;
+    if (this._offline(entityId)) return this._t("Offline");
+    if (member?.paused_until) return this._t("Changed by hand · until {time}", { time: this._time(member.paused_until) });
     const st = this._hass.states[entityId];
-    if (st.state !== "on") return "Off";
+    if (st.state !== "on") return this._t("Off");
     const preset = st.attributes.preset_mode;
     if ((st.attributes.preset_modes || []).length && preset && preset !== "Manual") return preset;
     const step = Number(st.attributes.percentage_step) || 25;
     const n = Math.round((Number(st.attributes.percentage) || 0) / step);
-    return `Manual · ${this._speedLabel(this._purifier(entityId), n)}`;
+    return this._t("Manual · {speed}", { speed: this._speedLabel(this._purifier(entityId), n) });
   }
 
   _levelBars(level, max) {
     const bars = Array.from({ length: max }, (_, i) => `<i${i < level ? ' class="f"' : ""}></i>`).join("");
     return `<span class="lvl" role="img" aria-label="${
-      level ? `Level ${level} of ${max}` : "Not controlling"
+      level ? this._t("Level {level} of {max}", { level, max }) : this._t("Not controlling")
     }">${bars}</span>`;
   }
 
@@ -2482,25 +2525,25 @@ class LevoitEsphomePanel extends HTMLElement {
   _groupsView() {
     if (this._groupsError)
       return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
-        <button class="btn" data-action="groups-retry">Try again</button></div>`;
-    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+        <button class="btn" data-action="groups-retry">${this._text("Try again")}</button></div>`;
+    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
     const { groups, purifiers } = this._groups;
     const head = `<div class="page-head">
-        <span class="muted grp-intro">A group watches shared air sensors and sets the speed of all its purifiers together. Each purifier can be in one group.</span>
+        <span class="muted grp-intro">${this._text("A group watches shared air sensors and sets the speed of all its purifiers together. Each purifier can be in one group.")}</span>
         <span class="spacer"></span>
         <button class="btn primary" data-action="navigate" data-path="${esc(this._groupsPath("new"))}" ${
           purifiers.length < 2 ? "disabled" : ""
-        }>${icon("plus")}New group</button>
+        }>${icon("plus")}${this._text("New group")}</button>
       </div>`;
     const body = groups.length
       ? `<div class="groups">${groups.map((g) => this._groupCard(g)).join("")}</div>`
       : `<div class="card empty">
           <div class="big-icon">${icon("purifier")}</div>
-          <p>No purifier groups yet.</p>
+          <p>${this._text("No purifier groups yet.")}</p>
           <p class="muted">${
             purifiers.length < 2
-              ? "A group needs at least 2 purifiers with this integration."
-              : "Put purifiers that share a room in a group: the worst air sensor sets the speed of all of them."
+              ? this._t("A group needs at least 2 purifiers with this integration.")
+              : this._t("Put purifiers that share a room in a group: the worst air sensor sets the speed of all of them.")
           }</p>
         </div>`;
     return `${head}${body}${this._suggestions()}`;
@@ -2516,25 +2559,25 @@ class LevoitEsphomePanel extends HTMLElement {
     const st = g.state || {};
     const level = st.level || 0;
     const [kind, text] = !g.enabled
-      ? ["paused", "Paused"]
+      ? ["paused", this._t("Paused")]
       : g.mode === "manual"
-        ? ["act", `Manual · level ${level} of 4`]
+        ? ["act", this._t("Manual · level {level} of 4", { level })]
         : level > 0
-          ? ["act", `Auto · level ${level} of 4`]
+          ? ["act", this._t("Auto · level {level} of 4", { level })]
           : st.status === "no_sensors"
-            ? ["warn", "No sensor values"]
-            : ["watch", "Auto · watching"];
+            ? ["warn", this._t("No sensor values")]
+            : ["watch", this._t("Auto · watching")];
     return `<span class="pill ${kind}"><i></i>${esc(text)}</span>`;
   }
 
   _groupReason(g) {
     const st = g.state || {};
-    if (!g.enabled) return "Group control is off · purifiers are left alone";
-    if (g.mode === "manual") return "All purifiers follow the speed you set";
+    if (!g.enabled) return this._t("Group control is off · purifiers are left alone");
+    if (g.mode === "manual") return this._t("All purifiers follow the speed you set");
     if ((st.level || 0) > 0) return st.reason || "";
     if (st.status === "no_sensors")
-      return g.sensors.length ? "None of its sensors has a value right now" : "No air sensors: add one in the editor";
-    return "Waiting for sensor values · purifiers run on their own";
+      return g.sensors.length ? this._t("None of its sensors has a value right now") : this._t("No air sensors: add one in the editor");
+    return this._t("Waiting for sensor values · purifiers run on their own");
   }
 
   // Devices card: the group the purifier is in, tinted while the group runs it
@@ -2545,7 +2588,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const path = this._groupsPath(encodeURIComponent(g.id));
     return `<button class="chip group-chip${active ? " act" : ""}" data-action="navigate" data-path="${esc(
       path,
-    )}" title="${esc(`Purifier group ${g.name}${active ? ": in control" : ""}`)}">${icon("group")}${esc(g.name)}</button>`;
+    )}" title="${esc(this._t("Purifier group {name}{status}", { name: g.name, status: active ? this._t(": in control") : "" }))}">${icon("group")}${esc(g.name)}</button>`;
   }
 
   // device page: which group runs this purifier, and what a change here does
@@ -2557,19 +2600,19 @@ class LevoitEsphomePanel extends HTMLElement {
     const note = !g.enabled
       ? ""
       : member?.paused_until
-        ? `Changed by hand: the group leaves this purifier alone until ${this._time(member.paused_until)}.`
+        ? this._t("Changed by hand: the group leaves this purifier alone until {time}.", { time: this._time(member.paused_until) })
         : g.respect_manual
-          ? `Changing mode or speed here pauses the group for this purifier for ${g.manual_pause_min} minutes.`
-          : "The group sets mode and speed again after a change here.";
+          ? this._t("Changing mode or speed here pauses the group for this purifier for {minutes} minutes.", { minutes: g.manual_pause_min })
+          : this._t("The group sets mode and speed again after a change here.");
     const path = this._groupsPath(encodeURIComponent(g.id));
     return `<div class="card group-banner">
       <span class="gb-icon">${icon("group")}</span>
       <div class="gb-text">
-        <div class="gb-title"><span>In the group <b>${esc(g.name)}</b></span>${this._groupPill(g)}</div>
+        <div class="gb-title"><span>${this._text("In the group")} <b>${esc(g.name)}</b></span>${this._groupPill(g)}</div>
         <div class="gb-reason">${esc(this._groupReason(g))}</div>
         ${note ? `<div class="hint">${esc(note)}</div>` : ""}
       </div>
-      <button class="btn" data-action="navigate" data-path="${esc(path)}">Open group</button>
+      <button class="btn" data-action="navigate" data-path="${esc(path)}">${this._text("Open group")}</button>
     </div>`;
   }
 
@@ -2587,16 +2630,16 @@ class LevoitEsphomePanel extends HTMLElement {
         label,
       )}</button>`;
     const modes = [
-      ["auto", "Auto"],
-      ["manual", "Manual"],
+      ["auto", this._t("Auto")],
+      ["manual", this._t("Manual")],
     ]
       .map(([k, l]) => seg("mode", k, l, g.mode === k))
       .join("");
     const speeds = manual
-      ? `<div class="segs" role="group" aria-label="Speed for ${esc(g.name)}">${Array.from({ length: max }, (_, i) =>
+      ? `<div class="segs" role="group" aria-label="${this._text("Speed for {name}", { name: g.name })}">${Array.from({ length: max }, (_, i) =>
           seg("manual_level", i + 1, String(i + 1), g.manual_level === i + 1),
         ).join("")}</div>`
-      : `<span class="hint">Speed follows the sensors</span>`;
+      : `<span class="hint">${this._text("Speed follows the sensors")}</span>`;
     const members = (st.members || g.members.map((m) => ({ entity_id: m })))
       .map((m) => {
         const p = this._purifier(m.entity_id);
@@ -2608,7 +2651,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const counts = {};
     for (const s of g.sensors) counts[s.type] = (counts[s.type] || 0) + 1;
     const chips = SENSOR_TYPES.filter((t) => counts[t])
-      .map((t) => `<span class="chip">${esc(SENSOR_TYPE_INFO[t].label)} ×${counts[t]}</span>`)
+      .map((t) => `<span class="chip">${this._text(SENSOR_TYPE_INFO[t].label)} ×${counts[t]}</span>`)
       .join("");
     const path = this._groupsPath(encodeURIComponent(g.id));
     const area = this._areaName(g.area_id);
@@ -2616,21 +2659,19 @@ class LevoitEsphomePanel extends HTMLElement {
       <div class="gc-head">
         <div class="gc-title">
           <a class="gc-name" href="${esc(path)}" data-action="navigate" data-path="${esc(path)}">${esc(g.name)}</a>
-          <div class="hint">${g.members.length} purifiers${area ? ` · ${esc(area)}` : ""}</div>
+          <div class="hint">${this._text(g.members.length === 1 ? "{count} purifier" : "{count} purifiers", { count: g.members.length })}${area ? ` · ${esc(area)}` : ""}</div>
         </div>
-        <button class="switch${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="Group control for ${esc(
-          g.name,
-        )}" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}"><span></span></button>
+        <button class="switch${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="${this._text("Group control for {name}", { name: g.name })}" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}"><span></span></button>
       </div>
       <div class="gc-status">
         <div>${this._groupPill(g)}<div class="gc-reason">${esc(this._groupReason(g))}</div></div>
         ${this._levelBars(active ? level : 0, max)}
       </div>
-      <div class="gc-mode"><div class="segs" role="group" aria-label="Mode for ${esc(g.name)}">${modes}</div>${speeds}</div>
+      <div class="gc-mode"><div class="segs" role="group" aria-label="${this._text("Mode for {name}", { name: g.name })}">${modes}</div>${speeds}</div>
       <div class="gc-members">${members}</div>
       <div class="gc-foot">${chips}<button class="btn text" data-action="navigate" data-path="${esc(
         this._groupsPath(`${encodeURIComponent(g.id)}/edit`),
-      )}">Edit</button></div>
+      )}">${this._text("Edit")}</button></div>
     </div>`;
   }
 
@@ -2648,20 +2689,20 @@ class LevoitEsphomePanel extends HTMLElement {
           <div class="sug-text">
             <div class="sug-name">${esc(this._areaName(area) || area)}</div>
             <div class="hint">${esc(
-              list.map((p) => p.title + (this._offline(p.entity_id) ? " (offline)" : "")).join(", "),
+              list.map((p) => p.title + (this._offline(p.entity_id) ? this._t(" (offline)") : "")).join(", "),
             )}</div>
           </div>
-          <button class="btn text" data-action="sug-dismiss" data-area="${esc(area)}">Dismiss</button>
+          <button class="btn text" data-action="sug-dismiss" data-area="${esc(area)}">${this._text("Dismiss")}</button>
           <button class="btn" data-action="navigate" data-path="${esc(
             this._groupsPath(`new/${encodeURIComponent(area)}`),
-          )}">Create group</button>
+          )}">${this._text("Create group")}</button>
         </div>`,
       )
       .join("");
     if (!cards) return "";
     return `<div class="sug-wrap">
-      <h2>Suggested from your rooms</h2>
-      <div class="hint">Rooms in Home Assistant with 2 or more purifiers that aren't in a group yet.</div>
+      <h2>${this._text("Suggested from your rooms")}</h2>
+      <div class="hint">${this._text("Rooms in Home Assistant with 2 or more purifiers that aren't in a group yet.")}</div>
       ${cards}
     </div>`;
   }
@@ -2681,12 +2722,12 @@ class LevoitEsphomePanel extends HTMLElement {
   _groupDetail() {
     if (this._groupsError)
       return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
-        <button class="btn" data-action="groups-retry">Try again</button></div>`;
-    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+        <button class="btn" data-action="groups-retry">${this._text("Try again")}</button></div>`;
+    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
     const g = this._detailGroup();
     if (!g)
-      return `<div class="card empty"><p>This group no longer exists.</p>
-        <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">All groups</button></div>`;
+      return `<div class="card empty"><p>${this._text("This group no longer exists.")}</p>
+        <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">${this._text("All groups")}</button></div>`;
     if (!this._history && !this._historyLoading && !this._historyError && this._historySeries().length)
       Promise.resolve().then(() => this._loadHistory());
     const st = g.state || {};
@@ -2698,8 +2739,8 @@ class LevoitEsphomePanel extends HTMLElement {
 
     // power, mode and level
     const modes = [
-      ["auto", "Auto"],
-      ["manual", "Manual"],
+      ["auto", this._t("Auto")],
+      ["manual", this._t("Manual")],
     ]
       .map(
         ([k, l]) =>
@@ -2708,21 +2749,21 @@ class LevoitEsphomePanel extends HTMLElement {
       .join("");
     const levels = GROUP_LEVELS.map((n) => {
       const current = on && (manual ? g.manual_level === n : level === n);
-      return `<button class="seg${current ? " on" : ""}" aria-pressed="${current}" ${dis} aria-label="Level ${n}" title="Run every purifier at level ${n} (Manual)" data-action="group-level" data-id="${id}" data-value="${n}">${n}</button>`;
+      return `<button class="seg${current ? " on" : ""}" aria-pressed="${current}" ${dis} aria-label="${this._text("Level {level}", { level: n })}" title="${this._text("Run every purifier at level {level} (Manual)", { level: n })}" data-action="group-level" data-id="${id}" data-value="${n}">${n}</button>`;
     }).join("");
     const title = !on
-      ? "Off"
+      ? this._t("Off")
       : manual
-        ? `Manual · Level ${g.manual_level}`
+        ? this._t("Manual · Level {level}", { level: g.manual_level })
         : level
-          ? `Auto · Level ${level}`
-          : "Auto · not controlling";
+          ? this._t("Auto · Level {level}", { level })
+          : this._t("Auto · not controlling");
     const sub = !on
-      ? "Group control is off · purifiers are left alone"
+      ? this._t("Group control is off · purifiers are left alone")
       : manual
-        ? "All purifiers follow this level"
+        ? this._t("All purifiers follow this level")
         : level
-          ? `${AQI_WORDS[level]} · ${st.reason || ""}`
+          ? `${this._t(AQI_WORDS[level])} · ${st.reason || ""}`
           : this._groupReason(g);
 
     // tiles: the combined value of each sensor type, and the total CADR
@@ -2733,18 +2774,18 @@ class LevoitEsphomePanel extends HTMLElement {
       const n = v.sensors.length;
       return {
         label: SENSOR_TYPE_INFO[t].label,
-        value: t === "aqi" ? formatNumber(Math.round(v.value * 10) / 10) : formatNumber(Math.round(v.value)),
-        unit: t === "aqi" ? AQI_WORDS[v.level] : "µg/m³",
-        note: n > 1 ? `${cap(COMBINE_WORDS[v.how] || "highest")} of ${n}` : this._sensorOwner(v.sensors[0]),
+        value: t === "aqi" ? this._formatNumber(Math.round(v.value * 10) / 10) : this._formatNumber(Math.round(v.value)),
+        unit: t === "aqi" ? this._t(AQI_WORDS[v.level]) : "µg/m³",
+        note: n > 1 ? this._t("{method} of {count}", { method: cap(this._t(COMBINE_WORDS[v.how] || "highest")), count: n }) : this._sensorOwner(v.sensors[0]),
         dot: `q${v.level}`,
       };
     });
     if (st.cadr?.sensors?.length)
       tiles.push({
-        label: "CADR now",
-        value: st.cadr.value == null ? "—" : formatNumber(Math.round(st.cadr.value)),
+        label: this._t("CADR now"),
+        value: st.cadr.value == null ? "—" : this._formatNumber(Math.round(st.cadr.value)),
         unit: "m³/h",
-        note: `Total of ${st.cadr.sensors.length}`,
+        note: this._t("Total of {count}", { count: st.cadr.sensors.length }),
         dot: "cadr",
       });
     const tileHtml = tiles.length
@@ -2755,17 +2796,17 @@ class LevoitEsphomePanel extends HTMLElement {
               <div class="gd-tn"><i class="gd-dot ${t.dot}"></i>${esc(t.note)}</div></div>`,
           )
           .join("")}</div>`
-      : `<div class="hint">No sensor values yet</div>`;
+      : `<div class="hint">${this._text("No sensor values yet")}</div>`;
     const controls = `<div class="card gd-controls">
       <div class="gd-main">
-        <button class="gd-power${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="Group control" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}">${icon(
+        <button class="gd-power${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="${this._text("Group control")}" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}">${icon(
           "power",
         )}</button>
         <div class="gd-state">
           <div class="gd-title"><span>${esc(title)}</span></div>
           <div class="hint">${esc(sub)}</div>
-          <div class="gd-segs"><div class="segs" role="group" aria-label="Group mode">${modes}</div>
-            <div class="segs" role="group" aria-label="Group level">${levels}</div></div>
+          <div class="gd-segs"><div class="segs" role="group" aria-label="${this._text("Group mode")}">${modes}</div>
+            <div class="segs" role="group" aria-label="${this._text("Group level")}">${levels}</div></div>
         </div>
       </div>
       ${tileHtml}
@@ -2774,7 +2815,7 @@ class LevoitEsphomePanel extends HTMLElement {
     // history of the group's own sensors
     const history = this._historyCard();
     const historyNote = history
-      ? `<div class="hint gd-note">Values are the group's combined readings, as set per sensor type in the editor; CADR is the total of its purifiers (right axis); the strip shows the group's level.</div>`
+      ? `<div class="hint gd-note">${this._text("Values are the group's combined readings, as set per sensor type in the editor; CADR is the total of its purifiers (right axis); the strip shows the group's level.")}</div>`
       : "";
 
     // the purifiers
@@ -2816,7 +2857,7 @@ class LevoitEsphomePanel extends HTMLElement {
       })
       .join("");
     const purifiers = `<div class="card gd-card gd-wide">
-      <div class="gd-head"><h2>Purifiers</h2><span class="hint">${online} online · ${running} running</span></div>
+      <div class="gd-head"><h2>${this._text("Purifiers")}</h2><span class="hint">${this._text("{online} online · {running} running", { online, running })}</span></div>
       ${rows}
     </div>`;
 
@@ -2824,7 +2865,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const extra = g.sensors.filter((s) => s.source === "manual");
     const extras = extra.length
       ? `<div class="card gd-card gd-side">
-          <div class="gd-head"><div><h2>Additional sensors</h2><div class="hint">Not part of a purifier, added in the editor</div></div></div>
+          <div class="gd-head"><div><h2>${this._text("Additional sensors")}</h2><div class="hint">${this._text("Not part of a purifier, added in the editor")}</div></div></div>
           ${extra
             .map((s) => {
               const lvl = levelOf[s.entity_id];
@@ -2924,15 +2965,15 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!this._usable(st)) return "offline";
     const v = parseFloat(st.state);
     if (!Number.isFinite(v)) return st.state;
-    if (type === "aqi") return AQI_WORDS[aqiLevel(v)] || formatNumber(Math.round(v));
+    if (type === "aqi") return this._t(AQI_WORDS[aqiLevel(v)]) || this._formatNumber(Math.round(v));
     const unit = st.attributes.unit_of_measurement;
-    return `${formatNumber(Math.round(v))}${unit ? ` ${unit}` : ""}`;
+    return `${this._formatNumber(Math.round(v))}${unit ? ` ${unit}` : ""}`;
   }
 
   _thresholdError() {
     const t = this._edit.draft.thresholds;
     const bad = THRESHOLD_TYPES.find((k) => t[k].some((v, i) => !Number.isFinite(v) || (i && v < t[k][i - 1])));
-    return bad ? `${SENSOR_TYPE_INFO[bad].label}: each level must start at or above the one before` : "";
+    return bad ? this._t("{sensor}: each level must start at or above the one before", { sensor: SENSOR_TYPE_INFO[bad].label }) : "";
   }
 
   // the thresholds of a type with handle i moved to slider position u (0-1),
@@ -2984,14 +3025,14 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!e?.draft || e.saving) return;
     const d = e.draft;
     if (!d.name.trim()) {
-      this._toast("Give the group a name");
+      this._toast(this._t("Give the group a name"));
       return;
     }
     e.saving = true;
     this._render();
     try {
       await this._hass.callWS({ type: "levoit_esphome/groups/save", group: this._draftPayload() });
-      this._toast(`${d.name.trim()} saved`);
+      this._toast(this._t("{name} saved", { name: d.name.trim() }));
       this._edit = null;
       this._navigate(this._groupsPath());
     } catch (err) {
@@ -3008,7 +3049,7 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!d?.id) return;
     try {
       await this._hass.callWS({ type: "levoit_esphome/groups/apply", group_id: d.id });
-      this._toast(`${d.name.trim() || "Group"}: applied to the purifiers`);
+      this._toast(this._t("{name}: applied to the purifiers", { name: d.name.trim() || this._t("Group") }));
     } catch (err) {
       this._toast(`${err.message || err}`);
     }
@@ -3017,7 +3058,7 @@ class LevoitEsphomePanel extends HTMLElement {
   async _deleteEdit() {
     const d = this._edit?.draft;
     if (!d?.id) return;
-    if (!confirm(`Delete the group ${d.name}?\n\nIts purifiers keep running as they are.`)) return;
+    if (!confirm(this._t("Delete the group {name}?\n\nIts purifiers keep running as they are.", { name: d.name }))) return;
     try {
       await this._hass.callWS({ type: "levoit_esphome/groups/delete", group_id: d.id });
       this._edit = null;
@@ -3055,55 +3096,55 @@ class LevoitEsphomePanel extends HTMLElement {
   _groupEditor() {
     if (this._groupsError)
       return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
-        <button class="btn" data-action="groups-retry">Try again</button></div>`;
-    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+        <button class="btn" data-action="groups-retry">${this._text("Try again")}</button></div>`;
+    if (!this._groups) return `<div class="card empty"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
     this._ensureEdit();
     const e = this._edit;
     if (e.missing)
-      return `<div class="card empty"><p>This group no longer exists.</p>
-        <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">All groups</button></div>`;
+      return `<div class="card empty"><p>${this._text("This group no longer exists.")}</p>
+        <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">${this._text("All groups")}</button></div>`;
     const d = e.draft;
     const manual = d.mode === "manual";
-    const autoOnly = manual ? `<span class="tag">Used in Auto only</span>` : "";
+    const autoOnly = manual ? `<span class="tag">${this._text("Used in Auto only")}</span>` : "";
     const levels = GROUP_LEVELS;
 
     // General
     const areas = Object.values(this._hass?.areas || {}).sort((a, b) => a.name.localeCompare(b.name));
-    const areaOptions = `<option value="">No room</option>${areas
+    const areaOptions = `<option value="">${this._text("No room")}</option>${areas
       .map(
         (a) =>
           `<option value="${esc(a.area_id)}"${a.area_id === d.area_id ? " selected" : ""}>${esc(a.name)}</option>`,
       )
       .join("")}`;
     const general = `<div class="card section">
-      <div class="sec-head"><h2>General</h2></div>
+      <div class="sec-head"><h2>${this._text("General")}</h2></div>
       <div class="ged-fields">
-        <label class="field">Name<input class="inp" type="text" data-ed-field="name" value="${esc(d.name)}" placeholder="Living room"></label>
-        <label class="field">Room (Home Assistant area)<select class="inp" data-ed-field="area_id">${areaOptions}</select></label>
+        <label class="field">${this._text("Name")}<input class="inp" type="text" data-ed-field="name" value="${esc(d.name)}" placeholder="${this._text("Living room")}"></label>
+        <label class="field">${this._text("Room (Home Assistant area)")}<select class="inp" data-ed-field="area_id">${areaOptions}</select></label>
       </div>
       ${this._setting(
-        "Mode",
-        manual ? "You pick one speed; every purifier follows it" : "The sensors pick the speed",
+        this._t("Mode"),
+        manual ? this._t("You pick one speed; every purifier follows it") : this._t("The sensors pick the speed"),
         `<div class="ged-modes">${this._edSegs(
           "mode",
           [
-            ["auto", "Auto"],
-            ["manual", "Manual"],
+            ["auto", this._t("Auto")],
+            ["manual", this._t("Manual")],
           ],
           d.mode,
-          "Group mode",
+          this._t("Group mode"),
         )}${
           manual
             ? this._edSegs(
                 "manual_level",
                 levels.map((n) => [n, String(n)]),
                 d.manual_level,
-                "Group speed",
+                this._t("Group speed"),
               )
             : ""
         }</div>`,
       )}
-      ${this._setting("Group control", "When off, the purifiers are left alone", this._edSwitch("enabled", "Group control"))}
+      ${this._setting(this._t("Group control"), this._t("When off, the purifiers are left alone"), this._edSwitch("enabled", this._t("Group control")))}
     </div>`;
 
     // Purifiers
@@ -3112,12 +3153,13 @@ class LevoitEsphomePanel extends HTMLElement {
       .map((p) => {
         const other = p.group_id && p.group_id !== d.id;
         const tags = [];
-        if (other)
-          tags.push(["", `In ${this._groups.groups.find((g) => g.id === p.group_id)?.name || "a group"}`]);
-        else if (d.area_id && p.area_id === d.area_id) tags.push(["sug", "In this room"]);
+        if (other) {
+          const group = this._groups.groups.find((g) => g.id === p.group_id);
+          tags.push(["", group ? this._t("In {group}", { group: group.name }) : this._t("In a group")]);
+        } else if (d.area_id && p.area_id === d.area_id) tags.push(["sug", this._t("In this room")]);
         else if (p.area_id) tags.push(["", this._areaName(p.area_id)]);
-        if (this._offline(p.entity_id)) tags.push(["err", "Offline"]);
-        const sub = `${p.model || "Levoit"} · ${p.speeds} speeds${p.sensors.length ? "" : " · no air sensor"}`;
+        if (this._offline(p.entity_id)) tags.push(["err", this._t("Offline")]);
+        const sub = this._t("{model} · {count} speeds{suffix}", { model: p.model || "Levoit", count: p.speeds, suffix: p.sensors.length ? "" : this._t(" · no air sensor") });
         return `<label class="mem${other ? " dis" : ""}">
           <input type="checkbox" data-member="${esc(p.entity_id)}" ${chosen.has(p.entity_id) ? "checked" : ""} ${
             other ? "disabled" : ""
@@ -3133,14 +3175,12 @@ class LevoitEsphomePanel extends HTMLElement {
       .join("");
     const count = chosen.size;
     const purifiers = `<div class="card section">
-      <div class="sec-head"><div><h2>Purifiers</h2><div class="hint">Purifiers in ${esc(
-        this._areaName(d.area_id) || "the group's room",
-      )} are suggested; you can add any purifier.</div></div>
-        <span class="tag ${count < 2 ? "err" : "sug"}">${count} selected${count < 2 ? " · pick at least 2" : ""}</span></div>
+      <div class="sec-head"><div><h2>${this._text("Purifiers")}</h2><div class="hint">${this._text("Purifiers in {room} are suggested; you can add any purifier.", { room: this._areaName(d.area_id) || this._t("the group's room") })}</div></div>
+        <span class="tag ${count < 2 ? "err" : "sug"}">${this._text("{count} selected{hint}", { count, hint: count < 2 ? this._t(" · pick at least 2") : "" })}</span></div>
       ${rows}
-      <div class="mem dis"><input type="checkbox" disabled aria-label="Other fans"><span class="dev-tile">${icon(
+      <div class="mem dis"><input type="checkbox" disabled aria-label="${this._text("Other fans")}"><span class="dev-tile">${icon(
         "fan",
-      )}</span><span class="mem-text"><span class="mem-name">Other fans</span><span class="hint">Any Home Assistant fan entity</span></span><span class="tags"><span class="tag">Coming later</span></span></div>
+      )}</span><span class="mem-text"><span class="mem-name">${this._text("Other fans")}</span><span class="hint">${this._text("Any Home Assistant fan entity")}</span></span><span class="tags"><span class="tag">${this._text("Coming later")}</span></span></div>
     </div>`;
 
     // Air quality sensors
@@ -3151,23 +3191,19 @@ class LevoitEsphomePanel extends HTMLElement {
         .filter((s) => s.type === t)
         .map(
           (s) => `<span class="schip"><span>${esc(s.label)}</span><b>${esc(this._sensorValue(s.entity_id, t))}</b>
-            <button data-action="ed-remove-sensor" data-entity="${esc(s.entity_id)}" aria-label="Remove ${esc(
-              s.label,
-            )} ${esc(SENSOR_TYPE_INFO[t].label)}">${icon("close")}</button></span>`,
+            <button data-action="ed-remove-sensor" data-entity="${esc(s.entity_id)}" aria-label="${this._text("Remove {sensor} {type}", { sensor: s.label, type: SENSOR_TYPE_INFO[t].label })}">${icon("close")}</button></span>`,
         )
         .join("");
       const several = shown.filter((s) => s.type === t).length > 1;
       const how = d.combine?.[t] || "max";
       const combine = several
-        ? `<label class="combine"><span class="hint">Combine</span><select class="inp sm" data-combine="${t}" aria-label="Combine the ${esc(
-            SENSOR_TYPE_INFO[t].label,
-          )} sensors">${COMBINE_OPTIONS.map(
-            ([value, label]) => `<option value="${value}"${value === how ? " selected" : ""}>${label}</option>`,
+        ? `<label class="combine"><span class="hint">${this._text("Combine")}</span><select class="inp sm" data-combine="${t}" aria-label="${this._text("Combine the {sensor} sensors", { sensor: this._t(SENSOR_TYPE_INFO[t].label) })}">${COMBINE_OPTIONS.map(
+            ([value, label]) => `<option value="${value}"${value === how ? " selected" : ""}>${this._text(label)}</option>`,
           ).join("")}</select></label>`
         : "";
-      return `<div class="stype"><div class="stype-label">${esc(SENSOR_TYPE_INFO[t].label)}<div class="hint">${esc(
+      return `<div class="stype"><div class="stype-label">${this._text(SENSOR_TYPE_INFO[t].label)}<div class="hint">${esc(
         SENSOR_TYPE_INFO[t].unit,
-      )}</div></div><div class="stype-chips">${chips || `<span class="hint">None: this type is not used</span>`}</div>${combine}</div>`;
+      )}</div></div><div class="stype-chips">${chips || `<span class="hint">${this._text("None: this type is not used")}</span>`}</div>${combine}</div>`;
     }).join("");
     const removed = [];
     const removedIds = new Set(d.removed_sensors);
@@ -3197,36 +3233,36 @@ class LevoitEsphomePanel extends HTMLElement {
     const menu = e.addOpen
       ? `<div class="menu" role="menu">${
           removed.length
-            ? `<div class="mh">From this group's purifiers</div>${removed
+            ? `<div class="mh">${this._text("From this group's purifiers")}</div>${removed
                 .map(
                   (s) =>
                     `<button role="menuitem" data-action="ed-restore-sensor" data-entity="${esc(s.entity_id)}"><span>${esc(
                       s.label,
-                    )} · ${esc(SENSOR_TYPE_INFO[s.type].label)}</span><span class="hint">${esc(
+                    )} · ${this._text(SENSOR_TYPE_INFO[s.type].label)}</span><span class="hint">${esc(
                       this._sensorValue(s.entity_id, s.type),
                     )}</span></button>`,
                 )
                 .join("")}`
             : ""
-        }<div class="mh">Other Home Assistant sensors</div>${
+        }<div class="mh">${this._text("Other Home Assistant sensors")}</div>${
           extras.length
             ? extras
                 .map(
                   (x) =>
                     `<button role="menuitem" data-action="ed-add-sensor" data-entity="${esc(x.entity_id)}" data-type="${x.type}"><span>${esc(
                       x.label,
-                    )} · ${esc(SENSOR_TYPE_INFO[x.type].label)}</span><span class="mono-id">${esc(x.entity_id)}</span></button>`,
+                    )} · ${this._text(SENSOR_TYPE_INFO[x.type].label)}</span><span class="mono-id">${esc(x.entity_id)}</span></button>`,
                 )
                 .join("")
-            : `<div class="hint menu-empty">No other PM1, PM2.5 or PM10 sensors</div>`
+            : `<div class="hint menu-empty">${this._text("No other PM1, PM2.5 or PM10 sensors")}</div>`
         }</div>`
       : "";
     const sensors = `<div class="card section">
-      <div class="sec-head"><div><h2>Air quality sensors${autoOnly}</h2><div class="hint">Picked from the purifiers above. With several sensors of one type, pick how they are combined; the worst type decides the group's level.</div></div></div>
+      <div class="sec-head"><div><h2>${this._text("Air quality sensors")}${autoOnly}</h2><div class="hint">${this._text("Picked from the purifiers above. With several sensors of one type, pick how they are combined; the worst type decides the group's level.")}</div></div></div>
       ${typeRows}
       <div class="add-wrap"><button class="btn" data-action="ed-add-toggle" aria-haspopup="menu" aria-expanded="${e.addOpen}">${icon(
         "plus",
-      )}Add sensor</button>${menu}</div>
+      )}${this._text("Add sensor")}</button>${menu}</div>
     </div>`;
 
     // Speeds: each purifier's lowest and highest step, and its step per level
@@ -3245,34 +3281,28 @@ class LevoitEsphomePanel extends HTMLElement {
         const highs = ladder
           .filter((s, i) => typeof s === "number" && (i > li || i === hi))
           .map((s) => option(s, high));
-        return `<div class="gl"><span class="mem-name">${esc(p.title)}</span><span class="hint">${p.speeds} speeds${
-          p.sleep ? " + Sleep" : ""
-        }</span></div>
-          <div><select class="inp sm" data-member-lo="${esc(p.entity_id)}" aria-label="Lowest step of ${esc(
-            p.title,
-          )}">${lows.join("")}</select></div>
-          <div><select class="inp sm" data-member-hi="${esc(p.entity_id)}" aria-label="Highest speed of ${esc(
-            p.title,
-          )}">${highs.join("")}</select></div>
+        return `<div class="gl"><span class="mem-name">${esc(p.title)}</span><span class="hint">${this._text("{count} speeds{suffix}", { count: p.speeds, suffix: p.sleep ? this._t(" + Sleep") : "" })}</span></div>
+          <div><select class="inp sm" data-member-lo="${esc(p.entity_id)}" aria-label="${this._text("Lowest step of {device}", { device: p.title })}">${lows.join("")}</select></div>
+          <div><select class="inp sm" data-member-hi="${esc(p.entity_id)}" aria-label="${this._text("Highest speed of {device}", { device: p.title })}">${highs.join("")}</select></div>
           ${levels
             .map((l) => `<div class="${l === now ? "cur" : ""}">${esc(this._stepLabel(p, memberStep(l, p, rng)))}</div>`)
             .join("")}`;
       })
       .join("");
     const speed = `<div class="card section">
-      <div class="sec-head"><div><h2>Speeds</h2><div class="hint">The group works in 4 levels; each purifier spreads them over its own speeds</div></div>
-        ${now ? `<span class="tag sug">Now: level ${now} · ${esc(AQI_WORDS[now])}</span>` : ""}</div>
+      <div class="sec-head"><div><h2>${this._text("Speeds")}</h2><div class="hint">${this._text("The group works in 4 levels; each purifier spreads them over its own speeds")}</div></div>
+        ${now ? `<span class="tag sug">${this._text("Now: level {level} · {quality}", { level: now, quality: this._t(AQI_WORDS[now]) })}</span>` : ""}</div>
       ${
         members.length
-          ? `<div class="tbl-scroll"><div class="grid-tbl speeds" style="--cols:6"><div class="gh gl">Purifier</div><div class="gh">Lowest</div><div class="gh">Highest</div>${levels
+          ? `<div class="tbl-scroll"><div class="grid-tbl speeds" style="--cols:6"><div class="gh gl">${this._text("Purifier")}</div><div class="gh">${this._text("Lowest")}</div><div class="gh">${this._text("Highest")}</div>${levels
               .map(
                 (l) =>
-                  `<div class="gh lvh${l === now ? " cur" : ""}">Level ${l}<span>${esc(AQI_WORDS[l])}</span></div>`,
+                  `<div class="gh lvh${l === now ? " cur" : ""}">${this._text("Level {level}", { level: l })}<span>${this._text(AQI_WORDS[l])}</span></div>`,
               )
               .join("")}${mapRows}</div></div>`
           : ""
       }
-      <div class="hint pad">Pick what each purifier runs at in very good air (Off, Sleep or a speed) and its highest speed; the levels in between are spread across that range.</div>
+      <div class="hint pad">${this._text("Pick what each purifier runs at in very good air (Off, Sleep or a speed) and its highest speed; the levels in between are spread across that range.")}</div>
     </div>`;
 
     // When to step in
@@ -3291,21 +3321,19 @@ class LevoitEsphomePanel extends HTMLElement {
       const handles = th
         .map(
           (v, i) =>
-            `<span class="mv" data-th-label="${i}" style="left: ${pos(v)}">${esc(formatNumber(v))}</span>
-            <input type="range" min="0" max="1000" step="1" value="${Math.round(thFrac(v) * 1000)}" data-th="${t}.${i}" aria-label="${esc(
-              label,
-            )}: level ${i + 2} starts at" aria-valuetext="${esc(formatNumber(v))} µg/m³">`,
+            `<span class="mv" data-th-label="${i}" style="left: ${pos(v)}">${esc(this._formatNumber(v))}</span>
+            <input type="range" min="0" max="1000" step="1" value="${Math.round(thFrac(v) * 1000)}" data-th="${t}.${i}" aria-label="${this._text("{sensor}: level {level} starts at", { sensor: label, level: i + 2 })}" aria-valuetext="${esc(this._formatNumber(v))} µg/m³">`,
         )
         .join("");
       return `<div class="th-row"><div class="stype-label">${esc(label)}<div class="hint">µg/m³</div></div>
         <div class="ms"><div class="trk" style="background: ${track}"></div>${handles}${ticks}</div></div>`;
     }).join("");
     const legend = GROUP_LEVELS.map(
-      (l) => `<span class="lg"><i class="q${l}"></i>${l} · ${esc(AQI_WORDS[l])}</span>`,
+      (l) => `<span class="lg"><i class="q${l}"></i>${l} · ${this._text(AQI_WORDS[l])}</span>`,
     ).join("");
-    const aqiMap = GROUP_LEVELS.map((l) => `<span class="lmap q${l}">${l} → level ${l}</span>`).join("");
+    const aqiMap = GROUP_LEVELS.map((l) => `<span class="lmap q${l}">${this._text("{value} → level {level}", { value: l, level: l })}</span>`).join("");
     const stepIn = `<div class="card section">
-      <div class="sec-head"><div><h2>When to step in${autoOnly}</h2><div class="hint">Level 1 is the baseline (very good air). A reading at or above a value starts that level; the worst sensor type wins.</div></div></div>
+      <div class="sec-head"><div><h2>${this._text("When to step in")}${autoOnly}</h2><div class="hint">${this._text("Level 1 is the baseline (very good air). A reading at or above a value starts that level; the worst sensor type wins.")}</div></div></div>
       <div class="lgs">${legend}</div>
       ${thRows}
       <div class="th-row"><div class="stype-label">${esc(SENSOR_TYPE_INFO.aqi.label)}<div class="hint">${esc(
@@ -3313,41 +3341,41 @@ class LevoitEsphomePanel extends HTMLElement {
       )}</div></div><div class="lmaps">${aqiMap}</div></div>
       ${thError ? `<div class="err-line">${esc(thError)}</div>` : ""}
       <div class="rise">
-        ${this._edSwitch("rise.enabled", "Rising fast rule")}
-        <span>Rising fast: go straight to level 4 if PM2.5 climbs</span>
-        ${this._edNumber("rise.pm25", "PM2.5 rise in µg/m³", { min: 1, step: "any" })}
-        <span class="hint">µg/m³ within</span>
-        ${this._edNumber("rise.window_min", "Rise window in minutes", { min: 1 })}
+        ${this._edSwitch("rise.enabled", this._t("Rising fast rule"))}
+        <span>${this._text("Rising fast: go straight to level 4 if PM2.5 climbs")}</span>
+        ${this._edNumber("rise.pm25", this._t("PM2.5 rise in µg/m³"), { min: 1, step: "any" })}
+        <span class="hint">${this._text("µg/m³ within")}</span>
+        ${this._edNumber("rise.window_min", this._t("Rise window in minutes"), { min: 1 })}
         <span class="hint">min</span>
       </div>
     </div>`;
 
     // When the air is clean again
     const clean = `<div class="card section">
-      <div class="sec-head"><h2>When the air is clean again${autoOnly}</h2></div>
+      <div class="sec-head"><h2>${this._text("When the air is clean again")}${autoOnly}</h2></div>
       ${this._setting(
-        "Stay at a level for at least",
-        "Then step down one level at a time",
-        `<span class="num-unit">${this._edNumber("hold_min", "Minimum minutes per level")}<span class="hint">min</span></span>`,
+        this._t("Stay at a level for at least"),
+        this._t("Then step down one level at a time"),
+        `<span class="num-unit">${this._edNumber("hold_min", this._t("Minimum minutes per level"))}<span class="hint">min</span></span>`,
       )}
       ${this._setting(
-        "Turn purifiers on when needed",
-        "Otherwise purifiers that are off stay off",
-        this._edSwitch("turn_on", "Turn purifiers on when needed"),
+        this._t("Turn purifiers on when needed"),
+        this._t("Otherwise purifiers that are off stay off"),
+        this._edSwitch("turn_on", this._t("Turn purifiers on when needed")),
       )}
       ${this._setting(
-        "Respect manual changes",
-        "If someone changes a purifier by hand, leave it alone for",
-        `<span class="num-unit">${this._edNumber("manual_pause_min", "Pause minutes after a manual change", {
+        this._t("Respect manual changes"),
+        this._t("If someone changes a purifier by hand, leave it alone for"),
+        `<span class="num-unit">${this._edNumber("manual_pause_min", this._t("Pause minutes after a manual change"), {
           min: 1,
-        })}<span class="hint">min</span>${this._edSwitch("respect_manual", "Respect manual changes")}</span>`,
+        })}<span class="hint">min</span>${this._edSwitch("respect_manual", this._t("Respect manual changes"))}</span>`,
       )}
     </div>`;
 
     return `<div class="ged">
       <div class="ged-main">${general}${purifiers}${sensors}${speed}${stepIn}${clean}</div>
-      <aside class="ged-aside" aria-label="Live preview">${this._rightNow()}
-        <div class="hint now-note">The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.</div>
+      <aside class="ged-aside" aria-label="${this._text("Live preview")}">${this._rightNow()}
+        <div class="hint now-note">${this._text("The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.")}</div>
       </aside>
     </div>`;
   }
@@ -3359,42 +3387,42 @@ class LevoitEsphomePanel extends HTMLElement {
     const p = e.preview;
     const manual = d.mode === "manual";
     if (e.previewError)
-      return `<div class="card now"><div class="now-k">Right now</div><div class="now-reason bad">${esc(
+      return `<div class="card now"><div class="now-k">${this._text("Right now")}</div><div class="now-reason bad">${esc(
         e.previewError,
       )}</div></div>`;
     if (!p)
-      return `<div class="card now"><div class="now-k">Right now</div><div class="now-reason"><span class="spinner"></span> Working it out…</div></div>`;
+      return `<div class="card now"><div class="now-k">${this._text("Right now")}</div><div class="now-reason"><span class="spinner"></span> ${this._text("Working it out…")}</div></div>`;
     const level = p.level || 0;
     const usable = p.sensors.some((s) => s.value != null);
     const title = !d.enabled
-      ? "Paused"
+      ? this._t("Paused")
       : manual
-        ? `Manual · level ${level} of 4`
+        ? this._t("Manual · level {level} of 4", { level })
         : level
-          ? `Level ${level} · ${AQI_WORDS[level]}`
-          : "Not controlling";
+          ? this._t("Level {level} · {quality}", { level, quality: this._t(AQI_WORDS[level]) })
+          : this._t("Not controlling");
     const reason = !d.enabled
-      ? "Group control is off."
+      ? this._t("Group control is off.")
       : manual
-        ? "Every purifier runs at the group speed, whatever the sensors say."
+        ? this._t("Every purifier runs at the group speed, whatever the sensors say.")
         : level
           ? p.reason || ""
           : !p.sensors.length
-            ? "No air sensors: the group never steps in."
+            ? this._t("No air sensors: the group never steps in.")
             : usable
               ? ""
-              : "No sensor has a value right now: the purifiers run on their own.";
+              : this._t("No sensor has a value right now: the purifiers run on their own.");
     const members = p.members
       .map((m) => {
         const pur = this._purifier(m.entity_id);
         const target = this._offline(m.entity_id)
-          ? "Offline · skipped"
+          ? this._t("Offline · skipped")
           : !d.enabled
-            ? "Left alone"
+            ? this._t("Left alone")
             : level === 0 || m.speed == null
-              ? "Left as it is"
+              ? this._t("Left as it is")
               : typeof m.speed === "number"
-                ? `Manual · ${this._speedLabel(pur, m.speed)}`
+                ? this._t("Manual · {speed}", { speed: this._speedLabel(pur, m.speed) })
                 : this._stepLabel(pur, m.speed);
         return `<div class="now-row"><span>${esc(pur?.title || m.entity_id)}</span><b>${esc(target)}</b></div>`;
       })
@@ -3404,7 +3432,7 @@ class LevoitEsphomePanel extends HTMLElement {
         const owner = (this._groups.purifiers || []).find((x) => x.sensors.some((y) => y.entity_id === s.entity_id));
         const name = owner ? owner.title : this._hass?.states?.[s.entity_id]?.attributes?.friendly_name || s.entity_id;
         const lvl = s.value == null ? "skipped" : `level ${s.level}`;
-        return `<div class="now-row"><span>${esc(name)} ${esc(SENSOR_TYPE_INFO[s.type].label)}</span><span><b>${esc(
+        return `<div class="now-row"><span>${esc(name)} ${this._text(SENSOR_TYPE_INFO[s.type].label)}</span><span><b>${esc(
           s.value == null ? "—" : this._sensorValue(s.entity_id, s.type),
         )}</b> <span class="hint">→ ${esc(lvl)}</span></span></div>`;
       })
@@ -3413,25 +3441,23 @@ class LevoitEsphomePanel extends HTMLElement {
     const combined = (p.types || [])
       .filter((t) => t.sensors.length > 1)
       .map((t) => {
-        const how = COMBINE_WORDS[d.combine?.[t.type] || "max"];
+        const how = this._t(COMBINE_WORDS[d.combine?.[t.type] || "max"]);
         const value =
-          t.type === "aqi" ? AQI_WORDS[Math.round(t.value)] || formatNumber(t.value) : `${formatNumber(Math.round(t.value))} µg/m³`;
-        return `<div class="now-row"><span>${esc(SENSOR_TYPE_INFO[t.type].label)} · ${esc(how)} of ${
-          t.sensors.length
-        }</span><span><b>${esc(value)}</b> <span class="hint">→ level ${t.level}</span></span></div>`;
+          t.type === "aqi" ? this._t(AQI_WORDS[Math.round(t.value)]) || this._formatNumber(t.value) : `${this._formatNumber(Math.round(t.value))} µg/m³`;
+        return `<div class="now-row"><span>${esc(SENSOR_TYPE_INFO[t.type].label)} · ${this._text("{method} of {count}", { method: how, count: t.sensors.length })}</span><span><b>${esc(value)}</b> <span class="hint">${this._text("→ level {level}", { level: t.level })}</span></span></div>`;
       })
       .join("");
     const saved = (this._groups?.groups || []).find((g) => g.id === d.id);
     const canApply = Boolean(saved?.enabled);
     return `<div class="card now">
-      <div class="now-head"><div class="now-k">Right now</div>
-        <button class="play" data-action="ed-apply" ${canApply ? "" : "disabled"} aria-label="Apply the saved settings to the purifiers now" title="${
-          saved ? (canApply ? "Apply the saved settings to the purifiers now" : "Group control is off") : "Save the group first"
+      <div class="now-head"><div class="now-k">${this._text("Right now")}</div>
+        <button class="play" data-action="ed-apply" ${canApply ? "" : "disabled"} aria-label="${this._text("Apply the saved settings to the purifiers now")}" title="${
+          saved ? (canApply ? this._t("Apply the saved settings to the purifiers now") : this._t("Group control is off")) : this._t("Save the group first")
         }">${icon("play")}</button></div>
       <div class="now-title"><span>${esc(title)}</span>${this._levelBars(d.enabled ? level : 0, 4)}</div>
       <div class="now-reason">${esc(reason)}</div>
-      ${members ? `<div class="now-h">Purifiers</div>${members}` : ""}
-      ${sensors ? `<div class="now-h">Sensors</div>${sensors}${combined}` : ""}
+      ${members ? `<div class="now-h">${this._text("Purifiers")}</div>${members}` : ""}
+      ${sensors ? `<div class="now-h">${this._text("Sensors")}</div>${sensors}${combined}` : ""}
     </div>`;
   }
 
@@ -3497,7 +3523,7 @@ class LevoitEsphomePanel extends HTMLElement {
             "select_option",
             st.entity_id,
             { option },
-          )}>${esc(labels[option] || option)}</button>`,
+          )}>${this._text(labels[option] || option)}</button>`,
       )
       .join("");
     return this._setting(label, hint, `<div class="segs">${buttons}</div>`, dim);
@@ -3512,7 +3538,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const value = parseFloat(st.state);
     const known = !Number.isNaN(value);
     const off = !this._usable(st) || dim;
-    const shown = known ? `${formatNumber(value)}${(unit ?? a.unit_of_measurement) ? ` ${unit ?? a.unit_of_measurement}` : ""}` : "—";
+    const shown = known ? `${this._formatNumber(value)}${(unit ?? a.unit_of_measurement) ? ` ${unit ?? a.unit_of_measurement}` : ""}` : "—";
     return this._setting(
       label,
       hint,
@@ -3535,10 +3561,10 @@ class LevoitEsphomePanel extends HTMLElement {
     const known = !Number.isNaN(value);
     const off = !this._usable(st) || dim || !known;
     const step = Number(a.step) || 1;
-    const show = format || ((v) => `${formatNumber(v)}${a.unit_of_measurement ? ` ${a.unit_of_measurement}` : ""}`);
+    const show = format || ((v) => `${this._formatNumber(v)}${a.unit_of_measurement ? ` ${a.unit_of_measurement}` : ""}`);
     const button = (delta, text) => {
       const next = Math.min(Number(a.max), Math.max(Number(a.min), value + delta));
-      return `<button class="step" aria-label="${delta < 0 ? "Less" : "More"}" ${
+      return `<button class="step" aria-label="${delta < 0 ? this._t("Less") : this._t("More")}" ${
         off || next === value ? "disabled" : ""
       } ${this._svc("number", "set_value", st.entity_id, { value: next })}>${text}</button>`;
     };
@@ -3558,7 +3584,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const value = this._usable(st)
       ? format
         ? format(st.state)
-        : `${st.state}${(unit ?? st.attributes.unit_of_measurement) ? ` ${unit ?? st.attributes.unit_of_measurement}` : ""}`
+        : `${this._t(st.state)}${(unit ?? st.attributes.unit_of_measurement) ? ` ${unit ?? st.attributes.unit_of_measurement}` : ""}`
       : "—";
     return this._setting(label, "", `<span class="readout">${esc(value)}</span>`);
   }
@@ -3570,9 +3596,9 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!st) return "";
     const ok = this._usable(st);
     const number = parseFloat(st.state);
-    const value = !ok ? "—" : Number.isFinite(number) ? formatNumber(Math.round(number)) : st.state;
+    const value = !ok ? "—" : Number.isFinite(number) ? this._formatNumber(Math.round(number)) : st.state;
     const unit = ok ? st.attributes.unit_of_measurement || "" : "";
-    const badge = ok && level ? `<span class="aqi-badge q${level}">${esc(AQI_WORDS[level])}</span>` : "";
+    const badge = ok && level ? `<span class="aqi-badge q${level}">${this._text(AQI_WORDS[level])}</span>` : "";
     return `<div class="tile"><div class="t-label">${esc(label)}</div><div class="t-val">${esc(value)}${
       unit ? `<span class="unit">${esc(unit)}</span>` : ""
     }${badge}</div></div>`;
@@ -3597,27 +3623,25 @@ class LevoitEsphomePanel extends HTMLElement {
   _devicePage() {
     if (this._pageError)
       return `<div class="card empty"><p class="bad">${esc(this._pageError)}</p>
-        <button class="btn" data-action="page-retry">Try again</button></div>`;
+        <button class="btn" data-action="page-retry">${this._text("Try again")}</button></div>`;
     const page = this._page;
-    if (!page) return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+    if (!page) return `<div class="card empty"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
     const haDevice = `/config/devices/device/${page.device_id}`;
     const haLink = `<button class="btn" data-action="navigate" data-path="${esc(haDevice)}">${icon(
       "open",
-    )}<span>Home Assistant device page</span></button>`;
+    )}<span>${this._text("Home Assistant device page")}</span></button>`;
     if (!page.supported)
       return `<div class="card empty">
         <div class="big-icon">${icon("purifier")}</div>
-        <p>${page.model ? `The ${esc(page.model)}` : "This device"} has no settings page here yet.</p>
-        <p class="muted">Its settings are on the Home Assistant device page.</p>
+        <p>${page.model ? this._text("The {model} has no settings page here yet.", { model: page.model }) : this._text("This device has no settings page here yet.")}</p>
+        <p class="muted">${this._text("Its settings are on the Home Assistant device page.")}</p>
         ${haLink}
       </div>`;
     const settings = Object.keys(page.controls).filter((key) => !key.startsWith("text_sensor."));
     if (!settings.length)
       return `<div class="card empty">
-        <p>No settings of this device found.</p>
-        <p class="muted">They are found by entity name, as the tuct/levoit configs name them${
-          page.from_config ? " or as its config does" : ""
-        }. Renamed entities are on the Home Assistant device page.</p>
+        <p>${this._text("No settings of this device found.")}</p>
+        <p class="muted">${this._text("They are found by entity name, as the tuct/levoit configs name them{config}. Renamed entities are on the Home Assistant device page.", { config: page.from_config ? this._t(" or as its config does") : "" })}</p>
         ${haLink}
       </div>`;
     return `${this._alerts()}
@@ -3638,11 +3662,11 @@ class LevoitEsphomePanel extends HTMLElement {
   _alerts() {
     const alerts = [];
     if (this._state("binary_sensor.cover_open")?.state === "on")
-      alerts.push("The cover is open: the purifier stays off until it is closed.");
+      alerts.push(this._t("The cover is open: the purifier stays off until it is closed."));
     const error = this._state("text_sensor.error_message");
-    if (this._usable(error) && !/^ok$/i.test(error.state)) alerts.push(`Error: ${error.state}`);
+    if (this._usable(error) && !/^ok$/i.test(error.state)) alerts.push(this._t("Error: {reason}", { reason: error.state }));
     if (this._state("binary_sensor.filter_low")?.state === "on")
-      alerts.push("The filter is nearly used up: time for a new one.");
+      alerts.push(this._t("The filter is nearly used up: time for a new one."));
     return alerts.map((text) => `<div class="notice warn">${esc(text)}</div>`).join("");
   }
 
@@ -3656,8 +3680,8 @@ class LevoitEsphomePanel extends HTMLElement {
       this._tile("sensor.pm10", "PM10"),
       // the 1-4 level on every model, with its word; the Eleva also has its 0-500 index
       this._tile("sensor.aqi", "AQI", { level }),
-      this._tile("sensor.aqi_index", "AQI index"),
-      this._tile("sensor.current_cadr", "CADR now"),
+      this._tile("sensor.aqi_index", this._t("AQI index")),
+      this._tile("sensor.current_cadr", this._t("CADR now")),
     ].join("");
     let controls = "";
     if (fan) {
@@ -3668,20 +3692,20 @@ class LevoitEsphomePanel extends HTMLElement {
       const count = Math.max(1, Math.round(100 / step));
       const level = on ? Math.round((Number(a.percentage) || 0) / step) : 0;
       const turbo = this._page.model === "ELEVA300X";
-      const speedName = (n) => (turbo && n === count ? "Turbo" : `Speed ${n}`);
+      const speedName = (n) => (turbo && n === count ? this._t("Turbo") : this._t("Speed {speed}", { speed: n }));
       // what it is doing, in words: "Running · Auto · Room Size · off in 1 h"
       const offline = !usable && fan.state !== "off";
       const autoMode = this._state("select.auto_mode");
       const timerLeft = parseDuration(this._state("text_sensor.timer_duration_remaining")?.state) / 60;
       const doing = [];
       if (on) {
-        if (a.preset_mode) doing.push(a.preset_mode);
-        if (a.preset_mode === "Auto" && this._usable(autoMode)) doing.push(autoMode.state);
+        if (a.preset_mode) doing.push(this._t(a.preset_mode));
+        if (a.preset_mode === "Auto" && this._usable(autoMode)) doing.push(this._t(autoMode.state));
         else if ((!a.preset_mode || a.preset_mode === "Manual") && level) doing.push(speedName(level));
-        if (timerLeft > 0) doing.push(`off in ${formatMinutes(timerLeft)}`);
+        if (timerLeft > 0) doing.push(this._t("off in {time}", { time: formatMinutes(timerLeft) }));
       }
-      const status = offline ? "Offline" : on ? "Running" : "Off";
-      const statusSub = offline ? "Not connected to Home Assistant" : doing.join(" · ");
+      const status = offline ? this._t("Offline") : on ? this._t("Running") : this._t("Off");
+      const statusSub = offline ? this._t("Not connected to Home Assistant") : doing.join(" · ");
       const speeds = Array.from({ length: count }, (_, i) => i + 1)
         .map(
           (n) =>
@@ -3691,7 +3715,7 @@ class LevoitEsphomePanel extends HTMLElement {
               fan.entity_id,
               // floor: 2 of 3 speeds is 66 %, which Home Assistant maps to speed 2 (67 % would be 3)
               { percentage: Math.min(100, Math.floor(n * step)) },
-            )}>${turbo && n === count ? "Turbo" : n}</button>`,
+            )}>${turbo && n === count ? this._t("Turbo") : n}</button>`,
         )
         .join("");
       const presets = (a.preset_modes || [])
@@ -3702,15 +3726,15 @@ class LevoitEsphomePanel extends HTMLElement {
               "set_preset_mode",
               fan.entity_id,
               { preset_mode: mode },
-            )}>${esc(mode)}</button>`,
+            )}>${this._text(mode)}</button>`,
         )
         .join("");
       // the speed buttons look pressed in Manual only; in Auto or Sleep they show
       // the speed it picked, dimmed (a click switches to Manual)
       const manual = on && (!a.preset_mode || a.preset_mode === "Manual");
       controls = `<div class="hero-controls">
-        <button class="power${on ? " on" : ""}" aria-label="${on ? "Turn off" : "Turn on"}" title="${
-          on ? "Turn off" : "Turn on"
+        <button class="power${on ? " on" : ""}" aria-label="${on ? this._t("Turn off") : this._t("Turn on")}" title="${
+          on ? this._t("Turn off") : this._t("Turn on")
         }" ${usable || fan.state === "off" ? "" : "disabled"} ${this._svc(
           "fan",
           on ? "turn_off" : "turn_on",
@@ -3721,13 +3745,13 @@ class LevoitEsphomePanel extends HTMLElement {
             statusSub ? `<span class="hs-sub">${esc(statusSub)}</span>` : ""
           }</div>
           <div class="hero-segs">
-            ${presets ? `<div class="segs" role="group" aria-label="Mode">${presets}</div>` : ""}
-            <div class="segs${manual ? "" : " dim"}" role="group" aria-label="Speed">${speeds}</div>
+            ${presets ? `<div class="segs" role="group" aria-label="${this._text("Mode")}">${presets}</div>` : ""}
+            <div class="segs${manual ? "" : " dim"}" role="group" aria-label="${this._text("Speed")}">${speeds}</div>
           </div>
         </div>
       </div>`;
     }
-    const vent = this._slider("number.vent_angle", "Vent angle", "45° points up, 90° straight ahead");
+    const vent = this._slider("number.vent_angle", this._t("Vent angle"), this._t("45° points up, 90° straight ahead"));
     return `<div class="card hero">
       <div class="hero-main">
         ${controls}
@@ -3743,22 +3767,22 @@ class LevoitEsphomePanel extends HTMLElement {
     const highFan = this._state("text_sensor.auto_mode_room_size_high_fan");
     const highFanLeft = this._usable(highFan) && parseDuration(highFan.state) > 0;
     return this._section(
-      "Automatic",
+      this._t("Automatic"),
       [
-        this._choices("select.auto_mode", "Auto mode", "How Auto picks the speed. Choosing one switches the fan to Auto"),
+        this._choices("select.auto_mode", this._t("Auto mode"), this._t("How Auto picks the speed. Choosing one switches the fan to Auto")),
         // The preset number is only remembered on the ESP (sent when Room
         // Size is picked); the room size number sends it to the purifier now.
         // Set both, so a change applies at once and survives a mode change.
         roomSize
           ? this._state("number.auto_profile_room_size_input")
-            ? this._slider("number.auto_profile_room_size_input", "Room size", "Auto runs for a room this size", {
+            ? this._slider("number.auto_profile_room_size_input", this._t("Room size"), this._t("Auto runs for a room this size"), {
                 also: "number.efficiency_room_size",
               })
-            : this._slider("number.efficiency_room_size", "Room size", "Auto runs for a room this size")
+            : this._slider("number.efficiency_room_size", this._t("Room size"), this._t("Auto runs for a room this size"))
           : "",
-        highFanLeft ? this._readout("text_sensor.auto_mode_room_size_high_fan", "High speed for another") : "",
-        this._toggle("switch.dynamic_manual", "Dynamic manual", "In Manual, the speed goes up when the air gets bad"),
-        this._toggle("switch.adaptive_start", "Adaptive start", "Stored on the purifier; VeSync runs it in its cloud"),
+        highFanLeft ? this._readout("text_sensor.auto_mode_room_size_high_fan", this._t("High speed for another")) : "",
+        this._toggle("switch.dynamic_manual", this._t("Dynamic manual"), this._t("In Manual, the speed goes up when the air gets bad")),
+        this._toggle("switch.adaptive_start", this._t("Adaptive start"), this._t("Stored on the purifier; VeSync runs it in its cloud")),
       ],
     );
   }
@@ -3769,23 +3793,23 @@ class LevoitEsphomePanel extends HTMLElement {
     const profile = this._state("select.sleep_preference");
     if (!profile) return "";
     const dim = profile.state === "Default";
-    const sleepLevel = (v) => (v >= 5 ? "Auto" : `Level ${formatNumber(v)}`);
+    const sleepLevel = (v) => (v >= 5 ? this._t("Auto") : this._t("Level {level}", { level: this._formatNumber(v) }));
     return this._section(
-      "Sleep",
+      this._t("Sleep"),
       [
-        this._choices("select.sleep_preference", "Sleep profile", "Custom1 / Custom2 use the steps below; Default uses the purifier's own"),
-        dim ? `<div class="hint pad">Pick Custom1 or Custom2 to change the steps below.</div>` : "",
-        this._subhead("1 · Quick clean first"),
-        this._toggle("switch.quick_clean", "Quick clean", "Run fast for a while before sleep", { dim }),
-        this._stepper("number.quick_clean_minutes", "For", "", { dim, format: (v) => formatMinutes(v) }),
-        this._stepper("number.quick_clean_fan_level", "At level", "", { dim, format: (v) => `Level ${formatNumber(v)}` }),
-        this._subhead("2 · Sleep"),
-        this._stepper("number.sleep_minutes", "Sleep for", "", { dim, format: (v) => formatMinutes(v) }),
-        this._stepper("number.sleep_fan_level", "At level", "", { dim, format: sleepLevel }),
-        this._subhead("3 · Then"),
-        this._toggle("switch.daytime_enabled", "Daytime mode", "Switch to a daytime mode when sleep ends", { dim }),
-        this._choices("select.daytime_fan_mode", "Mode", "", { dim }),
-        this._stepper("number.daytime_fan_level", "Level", "", { dim, format: (v) => `Level ${formatNumber(v)}` }),
+        this._choices("select.sleep_preference", this._t("Sleep profile"), this._t("Custom1 / Custom2 use the steps below; Default uses the purifier's own")),
+        dim ? `<div class="hint pad">${this._text("Pick Custom1 or Custom2 to change the steps below.")}</div>` : "",
+        this._subhead(this._t("1 · Quick clean first")),
+        this._toggle("switch.quick_clean", this._t("Quick clean"), this._t("Run fast for a while before sleep"), { dim }),
+        this._stepper("number.quick_clean_minutes", this._t("For"), "", { dim, format: (v) => formatMinutes(v) }),
+        this._stepper("number.quick_clean_fan_level", this._t("At level"), "", { dim, format: (v) => this._t("Level {level}", { level: this._formatNumber(v) }) }),
+        this._subhead(this._t("2 · Sleep")),
+        this._stepper("number.sleep_minutes", this._t("Sleep for"), "", { dim, format: (v) => formatMinutes(v) }),
+        this._stepper("number.sleep_fan_level", this._t("At level"), "", { dim, format: sleepLevel }),
+        this._subhead(this._t("3 · Then")),
+        this._toggle("switch.daytime_enabled", this._t("Daytime mode"), this._t("Switch to a daytime mode when sleep ends"), { dim }),
+        this._choices("select.daytime_fan_mode", this._t("Mode"), "", { dim }),
+        this._stepper("number.daytime_fan_level", this._t("Level"), "", { dim, format: (v) => this._t("Level {level}", { level: this._formatNumber(v) }) }),
       ],
     );
   }
@@ -3805,18 +3829,18 @@ class LevoitEsphomePanel extends HTMLElement {
           )}" data-number="${esc(st.entity_id)}" ${this._usable(st) ? "" : "disabled"}>`
         : "";
     return this._section(
-      "Quiet period",
+      this._t("Quiet period"),
       [
         this._toggle(
           "switch.quiet_period",
-          "Quiet period",
-          active ? "Active now: the fan runs one level lower" : "Runs the fan one level lower",
+          this._t("Quiet period"),
+          active ? this._t("Active now: the fan runs one level lower") : this._t("Runs the fan one level lower"),
         ),
-        this._choices("select.quiet_trigger", "Starts", "", { labels: { Light: "When dark", Timer: "At set times" } }),
+        this._choices("select.quiet_trigger", this._t("Starts"), "", { labels: { Light: this._t("When dark"), Timer: this._t("At set times") } }),
         byTime && (start || end)
-          ? this._setting("From – to", "", `<div class="times">${time(start)}<span>–</span>${time(end)}</div>`)
+          ? this._setting(this._t("From – to"), "", `<div class="times">${time(start)}<span>–</span>${time(end)}</div>`)
           : "",
-        this._toggle("switch.dynamic_sleep", "Dynamic sleep", "In Sleep, the speed goes up when the air gets bad"),
+        this._toggle("switch.dynamic_sleep", this._t("Dynamic sleep"), this._t("In Sleep, the speed goes up when the air gets bad")),
       ],
     );
   }
@@ -3837,37 +3861,35 @@ class LevoitEsphomePanel extends HTMLElement {
       })}>${esc(text)}</button>`;
     const status = running
       ? `<div class="timer-run">
-          <div class="big">${esc(formatMinutes(left))} <span class="muted">left${
-            total ? ` of ${esc(formatMinutes(total))}` : ""
-          }</span></div>
+          <div class="big">${esc(formatMinutes(left))} <span class="muted">${total ? this._text("left of {time}", { time: formatMinutes(total) }) : this._text("left")}</span></div>
           ${total ? `<div class="bar"><span style="width:${Math.min(100, Math.round((left / total) * 100))}%"></span></div>` : ""}
         </div>`
-      : `<div class="muted pad">No timer running. Pick a time to turn the purifier off.</div>`;
+      : `<div class="muted pad">${this._text("No timer running. Pick a time to turn the purifier off.")}</div>`;
     return this._section(
-      "Timer",
+      this._t("Timer"),
       [
         status,
-        `<div class="opts" role="group" aria-label="${running ? "New timer" : "Turn off in"}">${presets
+        `<div class="opts" role="group" aria-label="${running ? this._t("New timer") : this._t("Turn off in")}">${presets
           .map((m) => set(m, formatMinutes(m), "opt"))
           .join("")}</div>`,
       ],
       "",
-      running ? set(0, "Cancel", "btn text") : "",
+      running ? set(0, this._t("Cancel"), "btn text") : "",
     );
   }
 
   _displaySection() {
     const dark = this._state("binary_sensor.dark_detected");
-    const lightHint = `Dims the display in the dark${
-      dark && this._usable(dark) ? ` (now: ${dark.state === "on" ? "dark" : "light"})` : ""
-    }`;
-    return this._section("Display & panel", [
-      this._toggle("switch.display", "Display", "The panel's lights"),
-      this._toggle("switch.light_detect", "Light detect", lightHint),
-      this._choices("select.nightlight", "Night light", ""),
-      this._toggle("switch.aqi_ring_dim", "Dim the AQI ring", ""),
-      this._toggle("switch.mute", "Mute", "No beeps from the panel"),
-      this._toggle("switch.child_lock", "Child lock", "The buttons on the purifier do nothing"),
+    const lightHint = dark && this._usable(dark)
+      ? this._t("Dims the display in the dark (now: {light})", { light: this._t(dark.state === "on" ? "dark" : "light") })
+      : this._t("Dims the display in the dark");
+    return this._section(this._t("Display & panel"), [
+      this._toggle("switch.display", this._t("Display"), this._t("The panel's lights")),
+      this._toggle("switch.light_detect", this._t("Light detect"), lightHint),
+      this._choices("select.nightlight", this._t("Night light"), ""),
+      this._toggle("switch.aqi_ring_dim", this._t("Dim the AQI ring"), ""),
+      this._toggle("switch.mute", this._t("Mute"), this._t("No beeps from the panel")),
+      this._toggle("switch.child_lock", this._t("Child lock"), this._t("The buttons on the purifier do nothing")),
     ]);
   }
 
@@ -3878,31 +3900,31 @@ class LevoitEsphomePanel extends HTMLElement {
       life === null
         ? ""
         : `<div class="filter-big${life < 5 ? " bad" : life < 20 ? " low" : ""}">
-            <div class="big">${esc(formatNumber(Math.round(life)))}<span class="muted"> % left</span></div>
+            <div class="big">${esc(this._formatNumber(Math.round(life)))}<span class="muted"> ${this._text("% left")}</span></div>
             <div class="bar"><span style="width:${Math.max(0, Math.min(100, life))}%"></span></div>
           </div>`;
     return this._section(
-      "Filter",
+      this._t("Filter"),
       [
         bar,
-        this._stepper("number.filter_lifetime_months", "Filter lasts", "Used to work out the %", {
-          format: (v) => `${formatNumber(v)} month${v === 1 ? "" : "s"}`,
+        this._stepper("number.filter_lifetime_months", this._t("Filter lasts"), this._t("Used to work out the %"), {
+          format: (v) => this._t(v === 1 ? "{count} month" : "{count} months", { count: this._formatNumber(v) }),
         }),
         reset
           ? this._setting(
-              "New filter fitted?",
-              "Starts the filter life at 100 % again",
+              this._t("New filter fitted?"),
+              this._t("Starts the filter life at 100 % again"),
               `<button class="btn" ${this._usable(reset) || reset.state === "unknown" ? "" : "disabled"} ${this._svc(
                 "button",
                 "press",
                 reset.entity_id,
                 {},
-                "Reset the filter life to 100 %? Do this after fitting a new filter.",
-              )}>Reset</button>`,
+                this._t("Reset the filter life to 100 %? Do this after fitting a new filter."),
+              )}>${this._text("Reset")}</button>`,
             )
           : "",
       ],
-      "Worked out on the ESP from the air moved, not measured",
+      this._t("Worked out on the ESP from the air moved, not measured"),
     );
   }
 
@@ -3922,7 +3944,7 @@ class LevoitEsphomePanel extends HTMLElement {
         ...s,
         entity: entities[s.key],
       }));
-      if (entities.level) series.push({ key: "band", title: "Level", band: true, entity: entities.level });
+      if (entities.level) series.push({ key: "band", title: this._t("Level"), band: true, entity: entities.level });
       return series;
     }
     const controls = this._page?.controls || {};
@@ -3951,18 +3973,18 @@ class LevoitEsphomePanel extends HTMLElement {
     let now = "—";
     if (ok && s.band) {
       // the level and its word, "4 Poor" (the index without a level sensor: "232 Poor")
-      const shownValue = formatNumber(Math.round(parseFloat(st.state)));
-      now = `${shownValue} ${AQI_WORDS[this._bandLevel(s, st.state)] || ""}`.trim();
+      const shownValue = this._formatNumber(Math.round(parseFloat(st.state)));
+      now = `${shownValue} ${this._t(AQI_WORDS[this._bandLevel(s, st.state)]) || ""}`.trim();
     } else if (ok) {
       const unit = st.attributes.unit_of_measurement || "";
-      now = `${formatNumber(Math.round(parseFloat(st.state)))}${unit ? ` ${unit}` : ""}`;
+      now = `${this._formatNumber(Math.round(parseFloat(st.state)))}${unit ? ` ${unit}` : ""}`;
     }
     const shown = !this._histHidden.has(s.key);
     const swatch = s.band
       ? `<span class="sw band"></span>`
       : `<span class="sw c-${s.color}${s.axis === "right" ? " line" : ""}"></span>`;
     return `<button class="lg${shown ? "" : " off"}" data-action="toggle-series" data-key="${esc(s.key)}" aria-pressed="${shown}" title="${
-      shown ? "Hide" : "Show"
+      shown ? this._t("Hide") : this._t("Show")
     } ${esc(s.title)}">${swatch}<span>${esc(s.title)}</span><b>${esc(now)}</b></button>`;
   }
 
@@ -4007,23 +4029,19 @@ class LevoitEsphomePanel extends HTMLElement {
     const ranges = Object.entries(HISTORY_RANGES)
       .map(
         ([key, r]) =>
-          `<button class="seg${key === this._historyRange ? " on" : ""}" data-action="history-range" data-range="${key}">${esc(
-            r.label,
-          )}</button>`,
+          `<button class="seg${key === this._historyRange ? " on" : ""}" data-action="history-range" data-range="${key}">${this._text(r.label)}</button>`,
       )
       .join("");
     const shown = this._shownSeries();
     let body;
     if (this._historyError && !h)
-      body = `<div class="muted pad">History not available: ${esc(this._historyError)}</div>`;
-    else if (!h) body = `<div class="muted pad"><span class="spinner"></span> Loading…</div>`;
-    else if (!shown.length) body = `<div class="muted pad">Pick a reading above to see its history.</div>`;
+      body = `<div class="muted pad">${this._text("History not available: {reason}", { reason: this._historyError })}</div>`;
+    else if (!h) body = `<div class="muted pad"><span class="spinner"></span> ${this._text("Loading…")}</div>`;
+    else if (!shown.length) body = `<div class="muted pad">${this._text("Pick a reading above to see its history.")}</div>`;
     else {
       const stale = this._historyLoading || h.range !== this._historyRange;
       const band = shown.find((s) => s.band);
-      body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="Air quality history, ${esc(
-        HISTORY_RANGES[h.range].label,
-      )}; arrow keys move through the readings">
+      body = `<div class="hist${stale ? " stale" : ""}" tabindex="0" aria-label="${this._text("Air quality history, {range}; arrow keys move through the readings", { range: this._t(HISTORY_RANGES[h.range].label) })}">
         ${this._plot(shown.filter((s) => !s.band), h)}
         ${band ? `<div class="hist-row band-row"><div></div>${this._bandStrip(band, h)}<div></div></div>` : ""}
         ${this._timeAxis(h)}
@@ -4032,9 +4050,9 @@ class LevoitEsphomePanel extends HTMLElement {
     }
     return `<div class="card history">
       <div class="hist-head">
-        <h2>History</h2>
+        <h2>${this._text("History")}</h2>
         <div class="legend">${series.map((s) => this._legendChip(s)).join("")}</div>
-        <div class="segs" role="group" aria-label="Range">${ranges}</div>
+        <div class="segs" role="group" aria-label="${this._text("Range")}">${ranges}</div>
       </div>
       ${body}
     </div>`;
@@ -4062,7 +4080,7 @@ class LevoitEsphomePanel extends HTMLElement {
       })
       .join("");
     return `<svg class="hist-band" viewBox="0 0 ${CHART.width} 10" preserveAspectRatio="none" role="img" aria-label="${esc(
-      `Air quality level, ${HISTORY_RANGES[h.range].label}`,
+      this._t("Air quality level, {range}", { range: this._t(HISTORY_RANGES[h.range].label) }),
     )}">${rects}<line class="xhair" y1="0" y2="10" x1="0" x2="0" visibility="hidden"></line></svg>`;
   }
 
@@ -4120,15 +4138,15 @@ class LevoitEsphomePanel extends HTMLElement {
       axes[s.axis] = [max, max / 2, 0]
         .map(
           (v) =>
-            `<span class="ytick c-${s.color}" style="top:${((yOf(v) / height) * 100).toFixed(1)}%">${esc(formatNumber(v))}</span>`,
+            `<span class="ytick c-${s.color}" style="top:${((yOf(v) / height) * 100).toFixed(1)}%">${esc(this._formatNumber(v))}</span>`,
         )
         .join("");
     }
-    if (!any) return `<div class="hist-empty muted">No history yet</div>`;
+    if (!any) return `<div class="hist-empty muted">${this._text("No history yet")}</div>`;
     const grid = [top, (top + height - bottom) / 2, height - bottom]
       .map((v) => `<line class="grid" x1="0" x2="${width}" y1="${v}" y2="${v}"></line>`)
       .join("");
-    const label = series.map((s) => `${s.title}${s.axis === "right" ? " (right axis)" : ""}`).join(" and ");
+    const label = series.map((s) => `${s.title}${s.axis === "right" ? this._t(" (right axis)") : ""}`).join(this._t(" and "));
     // PM2.5 underneath: its area must not cover the CADR line
     const order = (path) => (path.includes("c-pm") ? 0 : 1);
     paths.sort((a, b) => order(a) - order(b));
@@ -4145,7 +4163,7 @@ class LevoitEsphomePanel extends HTMLElement {
   // shared time axis under the charts: every few hours, every day at midnight,
   // or every Monday for 30 days
   _timeAxis(h) {
-    const lang = this._hass?.locale?.language;
+    const lang = language(this._hass);
     const { tick } = HISTORY_RANGES[h.range];
     const ticks = [];
     const at = new Date(h.start);
@@ -4224,7 +4242,7 @@ class LevoitEsphomePanel extends HTMLElement {
       line.setAttribute("visibility", "visible");
     });
     // values lead, names follow; text via textContent
-    const lang = this._hass?.locale?.language;
+    const lang = language(this._hass);
     const when = new Date(snapped);
     tip.textContent = "";
     const time = document.createElement("div");
@@ -4246,9 +4264,9 @@ class LevoitEsphomePanel extends HTMLElement {
       const value = document.createElement("strong");
       if (s.band) {
         const index = s.index ? (h.data[s.index] || []).find(([pt]) => Math.abs(pt - snapped) <= tolerance) : null;
-        const word = hit ? AQI_WORDS[this._bandLevel(s, hit[1])] || "—" : "—";
-        value.textContent = index ? `${formatNumber(Math.round(index[1]))} · ${word}` : word;
-      } else value.textContent = hit ? `${formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
+        const word = hit ? this._t(AQI_WORDS[this._bandLevel(s, hit[1])]) || "—" : "—";
+        value.textContent = index ? `${this._formatNumber(Math.round(index[1]))} · ${word}` : word;
+      } else value.textContent = hit ? `${this._formatNumber(Math.round(hit[1] * 10) / 10)}${unit ? ` ${unit}` : ""}` : "—";
       const label = document.createElement("span");
       label.textContent = s.title;
       row.append(value, label);
@@ -4264,22 +4282,20 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _infoSection() {
     const rows = [
-      this._readout("text_sensor.model", "Model"),
-      this._readout("text_sensor.esp_version", "Component"),
-      this._readout("text_sensor.mcu_version", "MCU firmware"),
-      this._readout("text_sensor.error_message", "Status"),
-      this._readout("sensor.ambient_light", "Ambient light"),
+      this._readout("text_sensor.model", this._t("Model")),
+      this._readout("text_sensor.esp_version", this._t("Component")),
+      this._readout("text_sensor.mcu_version", this._t("MCU firmware")),
+      this._readout("text_sensor.error_message", this._t("Status")),
+      this._readout("sensor.ambient_light", this._t("Ambient light")),
     ].filter(Boolean);
     if (!rows.length) return "";
     // open state kept here: the page re-renders on every state change
     return `<details class="card section info" ${this._infoOpen ? "open" : ""}>
       <summary class="sec-head" data-action="toggle-info" aria-expanded="${Boolean(this._infoOpen)}">
-        <h2>Info</h2>${icon("chevron")}
+        <h2>${this._text("Info")}</h2>${icon("chevron")}
       </summary>
       ${rows.join("")}
-      <div class="hint pad">Settings found by entity name${
-        this._page.from_config ? ", as named in the device's config" : ", as the tuct/levoit configs name them"
-      }.</div>
+      <div class="hint pad">${this._text("Settings found by entity name{source}.", { source: this._t(this._page.from_config ? ", as named in the device's config" : ", as the tuct/levoit configs name them") })}</div>
     </details>`;
   }
 
@@ -4302,7 +4318,7 @@ class LevoitEsphomePanel extends HTMLElement {
       const result = await this._hass.callWS({ type: "levoit_esphome/build_log", name: this._log.name });
       if (this._log) this._log.lines = result.lines;
     } catch (err) {
-      this._toast(`Log: ${err.message || err}`);
+      this._toast(this._t("Log: {reason}", { reason: err.message || err }));
     } finally {
       this._logFetching = false;
     }
@@ -4323,16 +4339,16 @@ class LevoitEsphomePanel extends HTMLElement {
     const d = this._device(this._log.name);
     const building = Boolean(d?.building);
     const lines = full ? this._log.lines || [] : d?.build?.tail || [];
-    const what = building ? "running build" : d?.last_build ? `last build, ${esc(this._time(d.last_build.at))}` : "last build";
+    const what = building ? this._text("running build") : d?.last_build ? this._text("last build, {time}", { time: this._time(d.last_build.at) }) : this._text("last build");
     return `<div class="backdrop" data-action="close-log">
-      <div class="log" role="dialog" aria-label="Build log of ${esc(title)}">
+      <div class="log" role="dialog" aria-label="${this._text("Build log of {device}", { device: title })}">
         <div class="log-head">
           <span>${esc(title)}: ${what}</span>
-          <button class="btn" data-action="log-full" ${this._logFetching ? "disabled" : ""}>${full ? "Last lines" : "Full log"}</button>
-          <button class="btn" data-action="close-log">Close</button>
+          <button class="btn" data-action="log-full" ${this._logFetching ? "disabled" : ""}>${full ? this._text("Last lines") : this._text("Full log")}</button>
+          <button class="btn" data-action="close-log">${this._text("Close")}</button>
         </div>
         ${this._stepsList(d?.build)}
-        <pre class="${full ? "full" : "tail"}">${lines.length ? lines.map(esc).join("\n") : "No output yet."}</pre>
+        <pre class="${full ? "full" : "tail"}">${lines.length ? lines.map(esc).join("\n") : this._text("No output yet.")}</pre>
       </div>
     </div>`;
   }

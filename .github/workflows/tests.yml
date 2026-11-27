@@ -24,6 +24,10 @@ jobs:
           cache: pip
           cache-dependency-path: requirements_test.txt
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install
         run: pip install -r requirements_test.txt
 
@@ -37,3 +41,6 @@ jobs:
 
       - name: pytest
         run: pytest -v
+
+      - name: Frontend translations
+        run: node --test tests/frontend_translations.mjs

@@ -1,3 +1,5 @@
+import { language, translate } from "./localize.js";
+
 // Levoit ESPHome dashboard cards. Loaded on every Home Assistant page by the
 // integration (no resource to add): custom:levoit-purifier-card,
 // custom:levoit-group-card and custom:levoit-list-card.
@@ -59,7 +61,7 @@ const loadSnapshot = (hass, force = false) => {
 
 // A purifier's fan as the cards show it. Turbo is a speed, also where the
 // device reports it as a mode (Everest Air); the Eleva's level 4 is Turbo.
-const fanView = (st, model) => {
+const fanView = (hass, st, model) => {
   const a = st?.attributes || {};
   const presets = a.preset_modes || [];
   const step = Number(a.percentage_step) || 25;
@@ -82,12 +84,14 @@ const fanView = (st, model) => {
   const speedLabel = speeds.find((s) => s.value === speed)?.label || "";
   const mode = preset === "Turbo" ? "Manual" : preset || "";
   const state = offline
-    ? "Unavailable"
+    ? translate(hass, "Unavailable")
     : !on
-      ? "Off"
+      ? translate(hass, "Off")
       : manual
-        ? `Manual${speedLabel ? ` · ${speedLabel}` : ""}`
-        : preset || "On";
+        ? speedLabel
+          ? translate(hass, "Manual · {speed}", { speed: speedLabel })
+          : translate(hass, "Manual")
+        : translate(hass, preset || "On");
   return { count, speeds, modes, offline, on, manual, speed, speedLabel, mode, state };
 };
 
@@ -160,16 +164,23 @@ class LevoitCardBase extends HTMLElement {
     this._render();
   }
 
+  _t(message, params) {
+    return translate(this._hass, message, params);
+  }
+
+  _text(message, params) {
+    return esc(this._t(message, params));
+  }
+
   set hass(hass) {
     this._hass = hass;
     if (!this._snap && !this._loading) this._load();
-    // render only when a state the card shows has changed
-    const key = this._watched()
-      .map((id) => {
-        const st = hass.states[id];
-        return st ? `${st.state}@${st.last_updated}` : "-";
-      })
-      .join("|");
+    // Render only when the language or a state the card shows has changed.
+    const states = this._watched().map((id) => {
+      const st = hass.states[id];
+      return st ? `${st.state}@${st.last_updated}` : "-";
+    });
+    const key = [language(hass), ...states].join("|");
     if (key !== this._key) {
       this._key = key;
       this._render();
@@ -236,8 +247,8 @@ class LevoitPurifierCard extends LevoitCardBase {
                 { value: "pm25", label: "PM2.5" },
                 { value: "aqi", label: "AQI" },
                 { value: "cadr", label: "CADR" },
-                { value: "filter", label: "Filter" },
-                { value: "group", label: "Group" },
+                { value: "filter", label: translate(undefined, "Filter") },
+                { value: "group", label: translate(undefined, "Group") },
               ],
             },
           },
@@ -249,16 +260,16 @@ class LevoitPurifierCard extends LevoitCardBase {
               multiple: true,
               mode: "list",
               options: [
-                { value: "speed", label: "Speed" },
-                { value: "mode", label: "Mode" },
+                { value: "speed", label: translate(undefined, "Speed") },
+                { value: "mode", label: translate(undefined, "Mode") },
               ],
             },
           },
         },
       ],
-      computeLabel: (s) => ({ entity: "Purifier (its fan)", name: "Name", show: "Show", controls: "Controls" })[s.name],
+      computeLabel: (s) => translate(undefined, ({ entity: "Purifier (its fan)", name: "Name", show: "Show", controls: "Controls" })[s.name]),
       computeHelper: (s) =>
-        s.name === "entity" ? "The fan of a Levoit purifier with the tuct/levoit component" : undefined,
+        s.name === "entity" ? translate(undefined, "The fan of a Levoit purifier with the tuct/levoit component") : undefined,
     };
   }
 
@@ -292,7 +303,7 @@ class LevoitPurifierCard extends LevoitCardBase {
     const el = ev.target.closest("[data-act]");
     if (!el || el.disabled) return;
     const entity = this._config.entity;
-    const view = fanView(this._hass.states[entity], this._purifier?.model);
+    const view = fanView(this._hass, this._hass.states[entity], this._purifier?.model);
     const act = el.dataset.act;
     if (act === "more") this._moreInfo(entity);
     else if (act === "power") this._call("fan", view.on ? "turn_off" : "turn_on", { entity_id: entity });
@@ -322,7 +333,7 @@ class LevoitPurifierCard extends LevoitCardBase {
     const st = hass?.states?.[entity];
     let body;
     if (!hass) body = "";
-    else if (!entity || !st) body = `<div class="msg">${esc(entity ? `${entity} not found` : "Pick a purifier")}</div>`;
+    else if (!entity || !st) body = `<div class="msg">${esc(entity ? this._t("{entity} not found", { entity }) : this._t("Pick a purifier"))}</div>`;
     else body = this._body(st);
     this.shadowRoot.innerHTML = `<style>${BASE_STYLE}${CARD_STYLE}</style><ha-card>${body}</ha-card>`;
   }
@@ -333,7 +344,7 @@ class LevoitPurifierCard extends LevoitCardBase {
     const hass = this._hass;
     const show = new Set(c.show || PURIFIER_SHOW);
     const controls = new Set(c.controls || PURIFIER_CONTROLS);
-    const v = fanView(st, p?.model);
+    const v = fanView(hass, st, p?.model);
     const name = c.name || p?.title || st.attributes.friendly_name || c.entity;
     const pm = show.has("pm25") && p?.pm25 ? numberOf(hass.states[p.pm25]) : null;
     const aqi = show.has("aqi") && p?.aqi ? levelOf(numberOf(hass.states[p.aqi])) : null;
@@ -348,12 +359,12 @@ class LevoitPurifierCard extends LevoitCardBase {
       `<button class="icn ${cls}${v.offline ? " offline" : v.on ? " on" : ""}" data-act="${act}" aria-label="${esc(label)}" ${
         act === "power" ? dis : ""
       }>${icon("purifier")}</button>`;
-    const power = `<button class="pwr${v.on ? " on" : ""}" data-act="power" aria-pressed="${v.on}" aria-label="Power" ${dis}>${icon(
+    const power = `<button class="pwr${v.on ? " on" : ""}" data-act="power" aria-pressed="${v.on}" aria-label="${this._text("Power")}" ${dis}>${icon(
       "power",
     )}</button>`;
     const speedSeg = () =>
       controls.has("speed")
-        ? `<div class="seg${v.manual ? "" : " dim"}" role="group" aria-label="Speed">${v.speeds
+        ? `<div class="seg${v.manual ? "" : " dim"}" role="group" aria-label="${this._text("Speed")}">${v.speeds
             .map((s) => {
               const cur = v.on && s.value === v.speed;
               return `<button class="${cur ? "on" : ""}" aria-pressed="${cur}" data-act="speed" data-value="${s.value}" ${dis}>${esc(
@@ -364,47 +375,45 @@ class LevoitPurifierCard extends LevoitCardBase {
         : "";
     const modeSeg = () =>
       controls.has("mode") && v.modes.length
-        ? `<div class="seg" role="group" aria-label="Mode">${v.modes
+        ? `<div class="seg" role="group" aria-label="${this._text("Mode")}">${v.modes
             .map((m) => {
               const cur = v.on && m === v.mode;
-              return `<button class="${cur ? "on" : ""}" aria-pressed="${cur}" data-act="mode" data-value="${esc(m)}" ${dis}>${esc(
-                m,
-              )}</button>`;
+              return `<button class="${cur ? "on" : ""}" aria-pressed="${cur}" data-act="mode" data-value="${esc(m)}" ${dis}>${this._text(m)}</button>`;
             })
             .join("")}</div>`
         : "";
     const modeSelect = () =>
       controls.has("mode") && v.modes.length
-        ? `<span class="sel"><select data-act="mode" aria-label="Mode" ${dis}>${[...(v.on ? [] : [""]), ...v.modes]
-            .map((m) => `<option value="${esc(m)}"${m === (v.on ? v.mode : "") ? " selected" : ""}>${esc(m || "Off")}</option>`)
+        ? `<span class="sel"><select data-act="mode" aria-label="${this._text("Mode")}" ${dis}>${[...(v.on ? [] : [""]), ...v.modes]
+            .map((m) => `<option value="${esc(m)}"${m === (v.on ? v.mode : "") ? " selected" : ""}>${this._text(m || "Off")}</option>`)
             .join("")}</select>${icon("chevron")}</span>`
         : "";
     const filterLevel = filter == null ? "" : filter < 10 ? "bad" : filter < 25 ? "low" : "";
     const filterBar =
       filter == null
         ? ""
-        : `<span class="filt" role="img" aria-label="Filter ${whole(filter)} % left">${icon("filter")}<span class="fbar ${filterLevel}"><span style="width:${Math.max(
+        : `<span class="filt" role="img" aria-label="${this._text("Filter {percent} % left", { percent: whole(filter) })}">${icon("filter")}<span class="fbar ${filterLevel}"><span style="width:${Math.max(
             0,
             Math.min(100, filter),
           )}%"></span></span>${whole(filter)} %</span>`;
     const groupChip = group ? `<span class="chip">${icon("group")}${esc(group.name)}</span>` : "";
-    const offlinePill = v.offline ? `<span class="off-pill"><span class="dot"></span>Offline</span>` : "";
+    const offlinePill = v.offline ? `<span class="off-pill"><span class="dot"></span>${this._text("Offline")}</span>` : "";
 
     if (layout === "compact") {
       const narrow = columns <= 3;
       const parts = narrow
-        ? [pm != null ? whole(pm) : null, v.on ? v.speedLabel || v.mode : v.state].filter(Boolean)
+        ? [pm != null ? whole(pm) : null, v.on ? v.speedLabel || this._t(v.mode) : v.state].filter(Boolean)
         : [v.state, pm != null ? `${whole(pm)} µg/m³` : null].filter(Boolean);
       return `<div class="compact${narrow ? " narrow" : ""}" data-act="more" role="button" tabindex="0" aria-label="${esc(name)}">
-        ${iconBtn(narrow ? "xs" : "sm", "power", `Power ${name}`)}
+        ${iconBtn(narrow ? "xs" : "sm", "power", this._t("Power {device}", { device: name }))}
         <div class="who"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st${v.offline ? " bad-text" : ""}">${esc(
-          v.offline ? "Offline" : parts.join(" · "),
+          v.offline ? this._t("Offline") : parts.join(" · "),
         )}</div></div>
       </div>`;
     }
     if (layout === "small")
       return `<div class="small">
-        <div class="head">${iconBtn("", "power", `Power ${name}`)}
+        <div class="head">${iconBtn("", "power", this._t("Power {device}", { device: name }))}
           <div class="who" data-act="more"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st">${esc(
             [v.state, pm != null ? `${whole(pm)} µg/m³` : null].filter(Boolean).join(" · "),
           )}</div></div>${offlinePill}</div>
@@ -413,17 +422,17 @@ class LevoitPurifierCard extends LevoitCardBase {
     if (layout === "medium") {
       const facts = [
         cadr != null ? `<span>CADR <b>${whole(cadr)}</b> m³/h</span>` : "",
-        filter != null ? `<span>Filter <b class="${filterLevel ? `${filterLevel}-text` : ""}">${whole(filter)} %</b></span>` : "",
+        filter != null ? `<span>${this._text("Filter")} <b class="${filterLevel ? `${filterLevel}-text` : ""}">${whole(filter)} %</b></span>` : "",
         groupChip,
       ].join("");
       return `<div class="medium">
-        <div class="head">${iconBtn("", "more", `Open ${name}`)}
+        <div class="head">${iconBtn("", "more", this._t("Open {device}", { device: name }))}
           <div class="who"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st">${esc(v.state)}</div></div>
           ${offlinePill || power}</div>
         ${
           pm != null || aqi
             ? `<div class="big">${pm != null ? `<b>${whole(pm)}</b><span class="muted">PM2.5 µg/m³</span>` : ""}${
-                aqi ? `<span class="lvl"><span class="dot q${aqi}"></span><span class="muted">${esc(AQI_WORDS[aqi])}</span></span>` : ""
+                aqi ? `<span class="lvl"><span class="dot q${aqi}"></span><span class="muted">${this._text(AQI_WORDS[aqi])}</span></span>` : ""
               }</div>`
             : ""
         }
@@ -434,12 +443,12 @@ class LevoitPurifierCard extends LevoitCardBase {
     // large
     const stats = [
       pm != null ? `<div class="stat"><b>${whole(pm)}</b><span>PM2.5 µg/m³</span></div>` : "",
-      aqi ? `<div class="stat"><b>${aqi} <span class="dot q${aqi}"></span></b><span>AQI · ${esc(AQI_WORDS[aqi])}</span></div>` : "",
+      aqi ? `<div class="stat"><b>${aqi} <span class="dot q${aqi}"></span></b><span>AQI · ${this._text(AQI_WORDS[aqi])}</span></div>` : "",
       cadr != null ? `<div class="stat"><b>${whole(cadr)}</b><span>CADR m³/h</span></div>` : "",
     ].filter(Boolean);
     const status = [esc(v.state), groupChip, filterBar].filter(Boolean).join(`<span aria-hidden="true">·</span>`);
     return `<div class="large">
-      <div class="head">${iconBtn("", "more", `Open ${name}`)}
+      <div class="head">${iconBtn("", "more", this._t("Open {device}", { device: name }))}
         <div class="who"><div class="trunc nm lg">${esc(name)}</div><div class="status muted">${status}</div></div>
         ${offlinePill || power}</div>
       ${stats.length ? `<div class="stats" style="--n:${stats.length}">${stats.join("")}</div>` : ""}
@@ -505,12 +514,12 @@ const groupView = (hass, group) => {
   const level = on ? Math.round((Number(a.percentage) || 0) / 25) : 0;
   const quality = levelOf(numberOf(hass.states[e.air_quality]));
   const state = offline
-    ? "Unavailable"
+    ? translate(hass, "Unavailable")
     : !on
-      ? "Off"
+      ? translate(hass, "Off")
       : level
-        ? `${mode} · Level ${level}`
-        : `${mode} · no sensor value`;
+        ? translate(hass, "{mode} · Level {level}", { mode: translate(hass, mode), level })
+        : translate(hass, "{mode} · no sensor value", { mode: translate(hass, mode) });
   return { offline, on, mode, auto: mode === "Auto", level, quality, state };
 };
 
@@ -518,11 +527,11 @@ const groupView = (hass, group) => {
 const valueOf = (hass, id) => {
   const st = id ? hass.states[id] : null;
   const a = st?.attributes || {};
-  return { value: numberOf(st), how: COMBINE_SHORT[a.combine] || a.combine || "", count: (a.sensors || []).length };
+  return { value: numberOf(st), how: translate(hass, COMBINE_SHORT[a.combine] || a.combine || ""), count: (a.sensors || []).length };
 };
 
 // what a member purifier runs at, for the group card's chips
-const stepOf = (v) => (v.offline ? "Offline" : !v.on ? "Off" : v.manual ? v.speedLabel || "On" : v.mode);
+const stepOf = (hass, v) => translate(hass, v.offline ? "Offline" : !v.on ? "Off" : v.manual ? v.speedLabel || "On" : v.mode);
 
 class LevoitGroupCard extends LevoitCardBase {
   static getConfigForm() {
@@ -538,9 +547,9 @@ class LevoitGroupCard extends LevoitCardBase {
               mode: "list",
               options: [
                 { value: "pm25", label: "PM2.5" },
-                { value: "aqi", label: "AQI index" },
+                { value: "aqi", label: translate(undefined, "AQI index") },
                 { value: "cadr", label: "CADR" },
-                { value: "members", label: "Purifiers" },
+                { value: "members", label: translate(undefined, "Purifiers") },
               ],
             },
           },
@@ -552,15 +561,15 @@ class LevoitGroupCard extends LevoitCardBase {
               multiple: true,
               mode: "list",
               options: [
-                { value: "mode", label: "Auto / Manual" },
-                { value: "level", label: "Level" },
+                { value: "mode", label: translate(undefined, "Auto / Manual") },
+                { value: "level", label: translate(undefined, "Level") },
               ],
             },
           },
         },
       ],
-      computeLabel: (s) => ({ entity: "Group (its fan)", name: "Name", show: "Show", controls: "Controls" })[s.name],
-      computeHelper: (s) => (s.name === "entity" ? "The fan of a Levoit ESPHome purifier group" : undefined),
+      computeLabel: (s) => translate(undefined, ({ entity: "Group (its fan)", name: "Name", show: "Show", controls: "Controls" })[s.name]),
+      computeHelper: (s) => (s.name === "entity" ? translate(undefined, "The fan of a Levoit ESPHome purifier group") : undefined),
     };
   }
 
@@ -617,7 +626,7 @@ class LevoitGroupCard extends LevoitCardBase {
     const g = this._group;
     let body = "";
     if (!hass) body = "";
-    else if (!c.entity && !c.group) body = `<div class="msg">Pick a group</div>`;
+    else if (!c.entity && !c.group) body = `<div class="msg">${this._text("Pick a group")}</div>`;
     else if (this._error && !this._snap) body = `<div class="msg">${esc(this._error)}</div>`;
     else if (this._snap && !g) {
       // a group made after the page loaded: ask once more
@@ -625,7 +634,7 @@ class LevoitGroupCard extends LevoitCardBase {
         this._retried = true;
         this._load(true);
       }
-      body = `<div class="msg">${esc(`${c.entity || c.group} is not a Levoit ESPHome group`)}</div>`;
+      body = `<div class="msg">${esc(this._t("{entity} is not a Levoit ESPHome group", { entity: c.entity || c.group }))}</div>`;
     } else if (g) body = this._body(g);
     this.shadowRoot.innerHTML = `<style>${BASE_STYLE}${CARD_STYLE}${GROUP_STYLE}</style><ha-card>${body}</ha-card>`;
   }
@@ -642,16 +651,16 @@ class LevoitGroupCard extends LevoitCardBase {
     // the purifiers' AQI index combined, else the group's own air quality (its thresholds)
     const aqiIndex = show.has("aqi") && e.aqi ? levelOf(numberOf(hass.states[e.aqi])) : null;
     const aqi = aqiIndex || (show.has("aqi") ? v.quality : null);
-    const aqiName = aqiIndex ? "AQI index" : "Air quality";
+    const aqiName = aqiIndex ? this._t("AQI index") : this._t("Air quality");
     const cadr = show.has("cadr") && e.cadr ? numberOf(hass.states[e.cadr]) : null;
     const purifiers = this._snap?.purifiers || [];
     const members = (g.members || []).map((id) => {
       const p = purifiers.find((x) => x.entity_id === id);
-      const mv = fanView(hass.states[id], p?.model);
+      const mv = fanView(hass, hass.states[id], p?.model);
       return {
         id,
         name: p?.title || hass.states[id]?.attributes?.friendly_name || id,
-        step: stepOf(mv),
+        step: stepOf(hass, mv),
         cls: mv.offline ? "err" : mv.on ? "run" : "",
         offline: mv.offline,
       };
@@ -661,16 +670,16 @@ class LevoitGroupCard extends LevoitCardBase {
     const dis = v.offline || !v.on ? "disabled" : "";
     const { rows, columns } = this._size(5);
     const layout = rows <= 1 ? "compact" : rows <= 3 ? "small" : columns >= 9 ? "large" : "medium";
-    const word = v.quality ? AQI_WORDS[v.quality] : "";
-    const status = v.offline ? "Unavailable" : !v.on ? "Off · purifiers left alone" : [v.state, word].filter(Boolean).join(" · ");
-    const short = !v.on ? v.state : [v.mode, v.level ? `L${v.level}` : null].filter(Boolean).join(" · ");
+    const word = v.quality ? this._t(AQI_WORDS[v.quality]) : "";
+    const status = v.offline ? this._t("Unavailable") : !v.on ? this._t("Off · purifiers left alone") : [v.state, word].filter(Boolean).join(" · ");
+    const short = !v.on ? v.state : [this._t(v.mode), v.level ? `L${v.level}` : null].filter(Boolean).join(" · ");
     const pmText = pm?.value != null ? `${whole(pm.value)} µg/m³` : null;
 
     const iconCls = `icn${v.offline ? " offline" : v.on ? " on" : ""}`;
-    const power = `<button class="pwr${v.on ? " on" : ""}" data-act="power" aria-pressed="${v.on}" aria-label="Group control" ${
+    const power = `<button class="pwr${v.on ? " on" : ""}" data-act="power" aria-pressed="${v.on}" aria-label="${this._text("Group control")}" ${
       v.offline ? "disabled" : ""
     }>${icon("power")}</button>`;
-    const offlinePill = v.offline ? `<span class="off-pill"><span class="dot"></span>Offline</span>` : "";
+    const offlinePill = v.offline ? `<span class="off-pill"><span class="dot"></span>${this._text("Offline")}</span>` : "";
     const seg = (label, cls, items) =>
       `<div class="seg${cls}" role="group" aria-label="${label}">${items
         .map(
@@ -680,21 +689,21 @@ class LevoitGroupCard extends LevoitCardBase {
             }" data-value="${esc(it.value)}" ${dis}>${esc(it.label)}</button>`,
         )
         .join("")}</div>`;
-    const modeItems = ["Auto", "Manual"].map((m) => ({ act: "mode", value: m, label: m, on: v.on && v.mode === m }));
+    const modeItems = ["Auto", "Manual"].map((m) => ({ act: "mode", value: m, label: this._t(m), on: v.on && v.mode === m }));
     const levelItems = GROUP_LEVELS.map((n) => ({
       act: "level",
       value: n,
       label: String(n),
-      aria: `Level ${n}`,
+      aria: this._t("Level {level}", { level: n }),
       on: v.on && v.level === n,
     }));
     // in Auto the level row shows the sensors' level, dimmed
-    const modeSeg = controls.has("mode") ? seg("Mode", " modes", modeItems) : "";
-    const levelSeg = controls.has("level") ? seg("Level", v.auto ? " dim" : "", levelItems) : "";
+    const modeSeg = controls.has("mode") ? seg(this._t("Mode"), " modes", modeItems) : "";
+    const levelSeg = controls.has("level") ? seg(this._t("Level"), v.auto ? " dim" : "", levelItems) : "";
 
     if (layout === "compact") {
       const narrow = columns <= 3;
-      const text = v.offline ? "Offline" : [short, !narrow && v.on ? pmText : null].filter(Boolean).join(" · ");
+      const text = v.offline ? this._t("Offline") : [short, !narrow && v.on ? pmText : null].filter(Boolean).join(" · ");
       return `<div class="compact${narrow ? " narrow" : ""}" data-act="more" role="button" tabindex="0" aria-label="${esc(name)}">
         <span class="${iconCls} ${narrow ? "xs" : "sm"}" aria-hidden="true">${icon("group")}</span>
         <div class="who"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st${v.offline ? " bad-text" : ""}">${esc(
@@ -705,23 +714,21 @@ class LevoitGroupCard extends LevoitCardBase {
     if (layout === "small") {
       // Auto and the levels in one row: a level is Manual at that level
       const one = [
-        ...(controls.has("mode") ? [{ act: "mode", value: "Auto", label: "Auto", on: v.on && v.auto }] : []),
+        ...(controls.has("mode") ? [{ act: "mode", value: "Auto", label: this._t("Auto"), on: v.on && v.auto }] : []),
         ...(controls.has("level") ? levelItems.map((it) => ({ ...it, on: v.on && !v.auto && v.level === it.value })) : []),
       ];
       return `<div class="small">
-        <div class="head"><button class="${iconCls}" data-act="power" aria-pressed="${v.on}" aria-label="Group control ${esc(
-          name,
-        )}" ${v.offline ? "disabled" : ""}>${icon("group")}</button>
+        <div class="head"><button class="${iconCls}" data-act="power" aria-pressed="${v.on}" aria-label="${this._text("Group control {name}", { name })}" ${v.offline ? "disabled" : ""}>${icon("group")}</button>
           <div class="who" data-act="more"><div class="trunc nm">${esc(name)}</div><div class="trunc muted st">${esc(
-            v.offline ? "Unavailable" : [short, v.on ? pmText : null].filter(Boolean).join(" · "),
+            v.offline ? this._t("Unavailable") : [short, v.on ? pmText : null].filter(Boolean).join(" · "),
           )}</div></div>${offlinePill}</div>
-        ${one.length ? seg("Mode and level", "", one) : ""}
+        ${one.length ? seg(this._t("Mode and level"), "", one) : ""}
       </div>`;
     }
     if (layout === "medium") {
       const facts = [
-        `${members.length} purifier${members.length === 1 ? "" : "s"}`,
-        offlineCount ? `${offlineCount} offline` : "",
+        this._t(members.length === 1 ? "{count} purifier" : "{count} purifiers", { count: members.length }),
+        offlineCount ? this._t("{count} offline", { count: offlineCount }) : "",
         cadr != null ? `CADR <b>${whole(cadr)}</b> m³/h` : "",
       ]
         .filter(Boolean)
@@ -753,12 +760,12 @@ class LevoitGroupCard extends LevoitCardBase {
     // large
     const stats = [
       pm?.value != null
-        ? `<div class="stat"><b>${whole(pm.value)}</b><span>PM2.5${pm.count > 1 ? ` · ${esc(pm.how)} of ${pm.count}` : " µg/m³"}</span></div>`
+        ? `<div class="stat"><b>${whole(pm.value)}</b><span>PM2.5${pm.count > 1 ? this._text(" · {method} of {count}", { method: pm.how, count: pm.count }) : " µg/m³"}</span></div>`
         : "",
       aqi
-        ? `<div class="stat"><b>${aqi} <span class="dot q${aqi}"></span></b><span>${aqiName} · ${esc(AQI_WORDS[aqi])}</span></div>`
+        ? `<div class="stat"><b>${aqi} <span class="dot q${aqi}"></span></b><span>${aqiName} · ${this._text(AQI_WORDS[aqi])}</span></div>`
         : "",
-      cadr != null ? `<div class="stat"><b>${whole(cadr)}</b><span>CADR m³/h · total</span></div>` : "",
+      cadr != null ? `<div class="stat"><b>${whole(cadr)}</b><span>${this._text("CADR m³/h · total")}</span></div>` : "",
     ].filter(Boolean);
     const bars = GROUP_LEVELS.map((n) => `<i class="${v.on && n <= v.level ? "f" : ""}"></i>`).join("");
     const chips = show.has("members")
@@ -775,7 +782,7 @@ class LevoitGroupCard extends LevoitCardBase {
       <div class="head"><span class="${iconCls}" aria-hidden="true">${icon("group")}</span>
         <div class="who" data-act="more"><div class="trunc nm lg">${esc(name)}</div>
           <div class="status muted"><span>${esc(status)}</span>${
-            v.on ? `<span class="lv" role="img" aria-label="Level ${v.level} of 4">${bars}</span>` : ""
+            v.on ? `<span class="lv" role="img" aria-label="${this._text("Level {level} of 4", { level: v.level })}">${bars}</span>` : ""
           }</div></div>
         ${offlinePill || power}</div>
       ${stats.length ? `<div class="stats" style="--n:${stats.length}">${stats.join("")}</div>` : ""}
@@ -813,9 +820,9 @@ class LevoitListCard extends LevoitCardBase {
             select: {
               mode: "dropdown",
               options: [
-                { value: "all", label: "Groups and purifiers" },
-                { value: "groups", label: "Groups" },
-                { value: "devices", label: "Purifiers" },
+                { value: "all", label: translate(undefined, "Groups and purifiers") },
+                { value: "groups", label: translate(undefined, "Groups") },
+                { value: "devices", label: translate(undefined, "Purifiers") },
               ],
             },
           },
@@ -828,23 +835,23 @@ class LevoitListCard extends LevoitCardBase {
               multiple: true,
               mode: "list",
               options: [
-                { value: "mode", label: "Mode" },
-                { value: "speed", label: "Speed / level" },
-                { value: "power", label: "Power" },
+                { value: "mode", label: translate(undefined, "Mode") },
+                { value: "speed", label: translate(undefined, "Speed / level") },
+                { value: "power", label: translate(undefined, "Power") },
               ],
             },
           },
         },
       ],
       computeLabel: (s) =>
-        ({ title: "Title", items: "Show", nest_members: "Purifiers under their group", controls: "Controls" })[s.name],
+        translate(undefined, ({ title: "Title", items: "Show", nest_members: "Purifiers under their group", controls: "Controls" })[s.name]),
       computeHelper: (s) =>
-        s.name === "items" ? "In YAML also a list of group ids and fan entity ids, in that order" : undefined,
+        s.name === "items" ? translate(undefined, "In YAML also a list of group ids and fan entity ids, in that order") : undefined,
     };
   }
 
   static getStubConfig() {
-    return { title: "Air purifiers", items: "all", controls: [...LIST_CONTROLS] };
+    return { items: "all", controls: [...LIST_CONTROLS] };
   }
 
   getCardSize() {
@@ -913,14 +920,14 @@ class LevoitListCard extends LevoitCardBase {
         hasPm: Boolean(pmId),
         modes: ["Auto", "Manual"],
         mode: v.on ? v.mode : "",
-        speeds: GROUP_LEVELS.map((n) => ({ value: String(n), label: `Level ${n}` })),
+        speeds: GROUP_LEVELS.map((n) => ({ value: String(n), label: this._t("Level {level}", { level: n }) })),
         speed: v.on && v.level ? String(v.level) : "",
-        speedName: "Level",
+        speedName: this._t("Level"),
         count: 4,
       };
     }
     const p = r.p;
-    const v = fanView(hass.states[p.entity_id], p.model);
+    const v = fanView(hass, hass.states[p.entity_id], p.model);
     return {
       id: p.entity_id,
       group: false,
@@ -933,9 +940,9 @@ class LevoitListCard extends LevoitCardBase {
       hasPm: Boolean(p.pm25),
       modes: v.modes,
       mode: v.on ? v.mode : "",
-      speeds: v.speeds.map((s) => ({ value: String(s.value), label: s.label === "Turbo" ? "Turbo" : `Speed ${s.label}` })),
+      speeds: v.speeds.map((s) => ({ value: String(s.value), label: s.label === "Turbo" ? this._t("Turbo") : this._t("Speed {speed}", { speed: s.label }) })),
       speed: v.on && v.speed ? String(v.speed) : "",
-      speedName: "Speed",
+      speedName: this._t("Speed"),
       count: v.count,
     };
   }
@@ -985,35 +992,35 @@ class LevoitListCard extends LevoitCardBase {
     const offline = devices.filter((v) => v.offline).length;
     const groups = views.length - devices.length;
     const summary = devices.length
-      ? `${devices.filter((v) => v.on).length} of ${devices.length} purifier${devices.length === 1 ? "" : "s"} running${
-          offline ? ` · ${offline} offline` : ""
-        }`
-      : `${groups} group${groups === 1 ? "" : "s"}`;
-    const title = c.title ?? "Air purifiers";
+      ? this._t(devices.length === 1 ? "{running} of {count} purifier running" : "{running} of {count} purifiers running",
+          { running: devices.filter((v) => v.on).length, count: devices.length }) +
+        (offline ? this._t(" · {count} offline", { count: offline }) : "")
+      : this._t(groups === 1 ? "{count} group" : "{count} groups", { count: groups });
+    const title = c.title ?? this._t("Air purifiers");
     const head = `<div class="lhead">${title ? `<div class="trunc nm lg">${esc(title)}</div>` : ""}<div class="trunc muted st">${esc(
       summary,
     )}</div></div>`;
-    if (!views.length) return `<div class="list">${head}<div class="msg">No Levoit purifiers</div></div>`;
+    if (!views.length) return `<div class="list">${head}<div class="msg">${this._text("No Levoit purifiers")}</div></div>`;
 
     const select = (v, act, label, options, value, width) =>
       `<span class="sel sm"${width ? ` style="${width}"` : ""}><select data-act="${act}" data-id="${esc(v.id)}" data-count="${
         v.count
-      }" aria-label="${esc(`${label} for ${v.name}`)}" ${v.offline ? "disabled" : ""}>${[
-        ...(value ? [] : [{ value: "", label: v.on || act === "speed" ? "—" : "Off" }]),
+      }" aria-label="${esc(this._t("{label} for {name}", { label, name: v.name }))}" ${v.offline ? "disabled" : ""}>${[
+        ...(value ? [] : [{ value: "", label: v.on || act === "speed" ? "—" : this._t("Off") }]),
         ...options,
       ]
         .map((o) => `<option value="${esc(o.value)}"${o.value === value ? " selected" : ""}>${esc(o.label)}</option>`)
         .join("")}</select>${icon("chevron")}</span>`;
     const row = (v) => {
       const air = v.offline
-        ? "Unavailable"
+        ? this._t("Unavailable")
         : v.pm != null
-          ? `PM2.5 ${whole(v.pm)} µg/m³${v.quality ? ` · ${AQI_WORDS[v.quality]}` : ""}`
+          ? `PM2.5 ${whole(v.pm)} µg/m³${v.quality ? ` · ${this._t(AQI_WORDS[v.quality])}` : ""}`
           : v.quality
-            ? AQI_WORDS[v.quality]
+            ? this._t(AQI_WORDS[v.quality])
             : v.hasPm
               ? "PM2.5 —"
-              : "No air sensor";
+              : this._t("No air sensor");
       const who = `<span class="icn xs${v.offline ? " offline" : v.on ? " on" : ""}" aria-hidden="true">${icon(
         v.group ? "group" : "purifier",
       )}</span>
@@ -1025,14 +1032,14 @@ class LevoitListCard extends LevoitCardBase {
       const mode = !controls.has("mode")
         ? ""
         : v.modes.length
-          ? select(v, "mode", "Mode", v.modes.map((m) => ({ value: m, label: m })), v.mode, narrow ? "width:84px" : "width:78px")
+          ? select(v, "mode", this._t("Mode"), v.modes.map((m) => ({ value: m, label: this._t(m) })), v.mode, narrow ? "width:84px" : "width:78px")
           : `<span class="slot" style="${narrow ? "width:84px" : "width:78px"}"></span>`;
       const speed = controls.has("speed")
         ? select(v, "speed", v.speedName, v.speeds, v.speed, narrow ? "flex:1;min-width:0" : "width:86px")
         : "";
       const power = controls.has("power")
         ? `<button class="pwr sm${v.on ? " on" : ""}" data-act="power" data-id="${esc(v.id)}" aria-pressed="${v.on}" aria-label="${esc(
-            `Power ${v.name}`,
+            this._t("Power {device}", { device: v.name }),
           )}" ${v.offline ? "disabled" : ""}>${icon("power")}</button>`
         : "";
       if (narrow)
@@ -1092,4 +1099,10 @@ for (const card of [
   },
 ])
   if (!window.customCards.some((c) => c.type === card.type))
-    window.customCards.push({ ...card, preview: true, documentationURL: DOC_URL });
+    window.customCards.push({
+      ...card,
+      name: translate(undefined, card.name),
+      description: translate(undefined, card.description),
+      preview: true,
+      documentationURL: DOC_URL,
+    });

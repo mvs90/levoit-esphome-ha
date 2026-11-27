@@ -1,0 +1,254 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Levoit ESPHome",
+        "description": "Erkennt ESPHome-Geräte mit der Komponente levoit oder philips und verknüpft sie mit ihrer Konfiguration im ESPHome Device Builder. Wenn im gewählten Aktualisierungskanal eine neuere Komponentenversion verfügbar ist, wird ein Update angeboten. Der Device Builder kompiliert und installiert das Update."
+      }
+    },
+    "abort": {
+      "no_device_builder": "Der ESPHome Device Builder wurde nicht gefunden. Installiere ihn und richte zuerst die ESPHome-Integration ein.",
+      "single_instance_allowed": "Levoit ESPHome ist bereits eingerichtet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Levoit ESPHome",
+        "data": {
+          "show_panel": "In der Seitenleiste anzeigen"
+        },
+        "data_description": {
+          "show_panel": "Levoit-ESPHome-Seite für Administratoren mit Versionen, Aktualisierungskanal und Filterstatus aller Geräte sowie Optionen zum Kompilieren und Installieren."
+        }
+      }
+    }
+  },
+  "entity": {
+    "button": {
+      "compile": {
+        "name": "Firmware kompilieren"
+      },
+      "install": {
+        "name": "Kompilieren und installieren"
+      }
+    },
+    "select": {
+      "update_channel": {
+        "name": "Aktualisierungskanal",
+        "state": {
+          "stable": "Stabil (Veröffentlichungen)",
+          "main": "Main (jede Zusammenführung)"
+        }
+      }
+    },
+    "sensor": {
+      "filter_life": {
+        "name": "Filterlebensdauer"
+      },
+      "installed_version": {
+        "name": "Installierte Komponentenversion"
+      },
+      "latest_version": {
+        "name": "Neueste Komponentenversion"
+      },
+      "model": {
+        "name": "Komponentenmodell"
+      },
+      "channel": {
+        "name": "Firmwarekanal",
+        "state": {
+          "stable": "Stabil (Veröffentlichungen)",
+          "main": "Main (jede Zusammenführung)",
+          "pinned": "Festgelegt (andere Referenz oder anderer Fork)",
+          "local": "Lokale Komponente"
+        }
+      },
+      "configuration": {
+        "name": "Device-Builder-Konfiguration"
+      },
+      "config_kind": {
+        "name": "Konfigurationstyp",
+        "state": {
+          "original": "Vorlage: Original-ESP",
+          "xiao_c3": "Vorlage: XIAO ESP32-C3",
+          "c3": "Vorlage: ESP32-C3",
+          "s3": "Vorlage: XIAO ESP32-S3",
+          "custom": "Benutzerdefiniert"
+        }
+      },
+      "group_level": {
+        "name": "Stufe"
+      },
+      "group_air_quality": {
+        "name": "Luftqualität"
+      },
+      "group_pm1": {
+        "name": "PM1"
+      },
+      "group_pm25": {
+        "name": "PM2.5"
+      },
+      "group_pm10": {
+        "name": "PM10"
+      },
+      "group_aqi": {
+        "name": "Luftqualitätsindex"
+      },
+      "group_cadr": {
+        "name": "CADR"
+      }
+    },
+    "update": {
+      "firmware": {
+        "name": "Komponenten-Firmware"
+      }
+    },
+    "switch": {
+      "group_control": {
+        "name": "Steuerung"
+      }
+    },
+    "binary_sensor": {
+      "group_active": {
+        "name": "Aktiv"
+      }
+    }
+  },
+  "exceptions": {
+    "no_configuration": {
+      "message": "Für dieses Gerät gibt es keine Konfiguration im ESPHome Device Builder."
+    },
+    "no_device_builder": {
+      "message": "Der ESPHome Device Builder ist nicht verfügbar."
+    },
+    "compile_failed": {
+      "message": "{configuration} konnte nicht kompiliert werden: {reason}. Das vollständige Protokoll findest du auf der Levoit-ESPHome-Seite in der Seitenleiste (Protokoll) und in den Home-Assistant-Protokollen."
+    },
+    "upload_failed": {
+      "message": "{configuration} konnte nicht installiert werden: {reason}. Das vollständige Protokoll findest du auf der Levoit-ESPHome-Seite in der Seitenleiste (Protokoll) und in den Home-Assistant-Protokollen."
+    },
+    "template_refresh_failed": {
+      "message": "{configuration} konnte nicht aus seiner Vorlage aktualisiert werden: {error}"
+    },
+    "already_building": {
+      "message": "Die Firmware für dieses Gerät wird bereits erstellt."
+    },
+    "custom_channel": {
+      "message": "Dieses Gerät verwendet eine eigene Konfiguration. Ändere dort den Eintrag ref unter external_components."
+    },
+    "channel_failed": {
+      "message": "Der Aktualisierungskanal in {configuration} konnte nicht geändert werden: {error}"
+    }
+  },
+  "config_subentries": {
+    "device": {
+      "entry_type": "Gerätekonfiguration",
+      "initiate_flow": {
+        "user": "Gerät hinzufügen"
+      },
+      "step": {
+        "user": {
+          "title": "Gerät hinzufügen",
+          "description": "Erstelle aus einer Vorlage von tuct/levoit eine Konfiguration für den ESPHome Device Builder.",
+          "menu_options": {
+            "new": "Neues Gerät",
+            "existing": "Vorhandenes Home-Assistant-Gerät ohne Konfiguration"
+          }
+        },
+        "existing": {
+          "title": "Vorhandenes Gerät",
+          "description": "Die Konfiguration übernimmt den Gerätenamen und den API-Schlüssel der ESPHome-Verbindung. So bleibt das Gerät in Home Assistant erhalten.",
+          "data": {
+            "device": "Gerät"
+          }
+        },
+        "new": {
+          "title": "Modell",
+          "data": {
+            "model": "Modell"
+          }
+        },
+        "variant": {
+          "title": "{model}",
+          "description": "Welcher ESP ist im Gerät verbaut? Bei jedem Update wird die Konfiguration aus der neuesten Vorlage von tuct/levoit erstellt. Wähle „Anderer ESP“, wenn es für dein Board oder deine Pins keine Vorlage gibt. Diese eigene Konfiguration bleibt bei Updates erhalten.",
+          "data": {
+            "variant": "ESP"
+          }
+        },
+        "custom": {
+          "title": "{model}: eigener ESP",
+          "description": "Eigene Konfiguration auf Basis von {base} aus tuct/levoit mit deinem Board und deinen UART-Pins. Bei einem Update wird nur die neuere Komponente kompiliert. Die Konfiguration bleibt erhalten.",
+          "data": {
+            "board": "ESP-Board",
+            "rx_pin": "RX-Pin",
+            "tx_pin": "TX-Pin"
+          },
+          "data_description": {
+            "board": "Board-Name in ESPHome, z. B. seeed_xiao_esp32s3, esp32dev oder esp32-c6-devkitc-1. Wähle ein Board aus oder gib einen anderen Namen ein.",
+            "rx_pin": "Der ESP-Pin, der mit TX der MCU verbunden ist, z. B. GPIO5.",
+            "tx_pin": "Der ESP-Pin, der mit RX der MCU verbunden ist, z. B. GPIO4."
+          }
+        },
+        "details": {
+          "title": "{model}",
+          "description": "Für dieses Gerät wird ein API-Schlüssel erstellt und unter seinem Namen in der secrets.yaml des Device Builders gespeichert, z. B. als levoit_everest_air_c3_api_key. Der Schlüssel verschlüsselt auch OTA-Updates. Das WLAN verwendet die Einträge wifi_ssid, wifi_password und wifi_ap_password.",
+          "data": {
+            "name": "Name",
+            "channel": "Aktualisierungskanal"
+          },
+          "data_description": {
+            "name": "ESPHome-Name aus Kleinbuchstaben, Ziffern und Bindestrichen.",
+            "channel": "„Stabil“ folgt veröffentlichten Versionen. „Main“ folgt jeder Zusammenführung."
+          }
+        },
+        "details_existing": {
+          "title": "{model}: {name}",
+          "description": "Das Gerät behält seinen Namen. Der API-Schlüssel aus der ESPHome-Verbindung in Home Assistant wird als {api_secret} in der secrets.yaml des Device Builders gespeichert. Wenn die Verbindung keinen Schlüssel hat, bleibt sie unverschlüsselt. Gib das OTA-Passwort ein, falls das Gerät eines hat. Nach dem ersten Update über diese Integration wird der API-Schlüssel für verschlüsselte OTA-Updates verwendet.",
+          "data": {
+            "channel": "Aktualisierungskanal",
+            "ota_password": "OTA-Passwort"
+          }
+        }
+      },
+      "error": {
+        "invalid_name": "Verwende höchstens 31 Kleinbuchstaben, Ziffern und Bindestriche.",
+        "invalid_board": "Verwende einen ESPHome-Board-Namen aus Kleinbuchstaben, Ziffern, Bindestrichen, Unterstrichen und Punkten.",
+        "invalid_pin": "Gib eine GPIO-Nummer ein, z. B. GPIO5.",
+        "same_pin": "RX und TX müssen unterschiedliche Pins verwenden.",
+        "name_taken": "Es gibt bereits ein Gerät oder eine Konfiguration mit diesem Namen.",
+        "missing_wifi_secrets": "In der secrets.yaml des Device Builders fehlen folgende Einträge: {missing}. Ergänze sie im Device Builder unter „Secrets“ und versuche es erneut.",
+        "secret_exists": "{secret} ist bereits in der secrets.yaml vorhanden. Entferne den Eintrag dort oder wähle einen anderen Namen.",
+        "config_exists": "Im Device Builder gibt es bereits eine Konfiguration mit diesem Namen.",
+        "template_failed": "Die Vorlage konnte nicht von GitHub geladen werden oder hat ein unerwartetes Format.",
+        "cannot_connect": "Der ESPHome Device Builder antwortet nicht."
+      },
+      "abort": {
+        "no_device_builder": "Der ESPHome Device Builder ist nicht verfügbar.",
+        "templates_unavailable": "Die Gerätevorlagen konnten nicht von GitHub geladen werden.",
+        "cannot_connect": "Der ESPHome Device Builder antwortet nicht."
+      },
+      "create_entry": {
+        "default": "Die Konfiguration {configuration} wurde im [ESPHome Device Builder]({builder_url}) erstellt. Öffne den Device Builder, suche {configuration}, wähle „Install“ und dann „Plug into this computer“. Installiere die Firmware einmalig über USB. Bis dahin wird das Gerät in der Levoit-ESPHome-Seitenleiste unter „Noch nicht geflasht“ angezeigt. Sobald das Gerät im WLAN ist, wird es automatisch zur ESPHome-Integration hinzugefügt. Weitere Updates werden drahtlos über Home Assistant installiert.",
+        "existing": "Die Konfiguration {configuration} wurde im [ESPHome Device Builder]({builder_url}) für {name} erstellt. Gerätename und Schlüssel bleiben erhalten. Beim nächsten Update wird sie drahtlos installiert."
+      }
+    }
+  },
+  "selector": {
+    "variant": {
+      "options": {
+        "original": "Original-ESP",
+        "xiao_c3": "Seeed XIAO ESP32-C3",
+        "c3": "ESP32-C3",
+        "s3": "Seeed XIAO ESP32-S3",
+        "custom": "Anderer ESP: eigenes Board und eigene Pins"
+      }
+    },
+    "channel": {
+      "options": {
+        "stable": "Stabil (Veröffentlichungen)",
+        "main": "Main (jede Zusammenführung)"
+      }
+    }
+  }
+}
