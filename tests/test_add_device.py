@@ -84,16 +84,41 @@ async def test_new_device(
 
     text = builder.files.configs["levoit-everest-air-c3.yaml"]
     assert text.startswith(f"{MARKER_PREFIX}{EVEREST_C3.file}\n")
+    # encrypted OTA with the API key; no OTA password any more
+    assert config_values(text) == ConfigValues(
+        name="levoit-everest-air-c3",
+        api_key=Value(secret="levoit_everest_air_c3_api_key"),
+        channel="main",
+        ota_uses_api_key=True,
+    )
+    assert "  - platform: esphome\n    encryption:\n" in text
+    secrets = builder.files.secrets
+    assert len(secrets["levoit_everest_air_c3_api_key"]) == 44
+    assert "levoit_everest_air_c3_ota_password" not in secrets
+    assert secrets["wifi_password"] == "wifi-pw"  # untouched
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_new_device_on_old_device_builder(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """A Device Builder before ESPHome 2026.9.0 cannot encrypt OTA: a password, as before."""
+    for device in builder.api.configured:
+        device["current_version"] = "2026.8.2"
+    entry = await _setup(hass)
+    result = await _start(hass, entry)
+    result = await _step(hass, result, {"model": "EVERESTAIR"})
+    result = await _step(hass, result, {"variant": "xiao_c3"})
+    result = await _step(hass, result, {"name": "levoit-everest-air-c3", "channel": "stable"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    text = builder.files.configs["levoit-everest-air-c3.yaml"]
     assert config_values(text) == ConfigValues(
         name="levoit-everest-air-c3",
         api_key=Value(secret="levoit_everest_air_c3_api_key"),
         ota_password=Value(secret="levoit_everest_air_c3_ota_password"),
-        channel="main",
+        channel="stable",
     )
-    secrets = builder.files.secrets
-    assert len(secrets["levoit_everest_air_c3_api_key"]) == 44
-    assert len(secrets["levoit_everest_air_c3_ota_password"]) == 32
-    assert secrets["wifi_password"] == "wifi-pw"  # untouched
+    assert len(builder.files.secrets["levoit_everest_air_c3_ota_password"]) == 32
 
 
 @pytest.mark.usefixtures("esphome_devices")
@@ -237,7 +262,14 @@ async def test_install_refreshes_template_config(
         await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
 
     new = builder.files.configs["bedroom-purifier.yaml"]
-    assert new == render(BUILDER_TEXT, EVEREST_C3, values)
+    expected = render(BUILDER_TEXT, EVEREST_C3, values)
+    if protection == "password":
+        # the upload installed a build that offers encryption: the config now requires it
+        expected = expected.replace(
+            "    password: !secret bedroom_purifier_ota_password\n", "    encryption:\n"
+        )
+        values = replace(values, ota_password=None, ota_uses_api_key=True)
+    assert new == expected
     assert config_values(new) == values  # keeps name, secrets, channel
     assert_compiled(builder, "bedroom-purifier.yaml")
     assert_uploaded(builder, "bedroom-purifier.yaml")
@@ -382,8 +414,10 @@ async def test_custom_new_device(
     assert "board: seeed_xiao_esp32s3" in text
     assert "  rx_pin: GPIO5\n" in text
     assert "  tx_pin: GPIO4\n" in text
-    assert config_values(text).api_key == Value(secret="hall_air_api_key")
-    assert "hall_air_ota_password" in builder.files.secrets
+    values = config_values(text)
+    assert values.api_key == Value(secret="hall_air_api_key")
+    assert values.ota_uses_api_key and values.ota_password is None
+    assert "hall_air_ota_password" not in builder.files.secrets
 
 
 async def test_custom_existing_device(
@@ -424,3 +458,121 @@ async def test_custom_existing_device(
     assert values.ota_password is None
     secrets = builder.files.secrets
     assert secrets["core300s_s3_api_key"] == "ZXhpc3Rpbmcta2V5LW9mLXRoZS1kZXZpY2UtMzJieXRlcyE="
+
+
+# --- from an OTA password to encryption, over two updates ----------------------------
+
+
+def _password_values() -> ConfigValues:
+    return ConfigValues(
+        name="bedroom-purifier",
+        api_key=Value(secret="bedroom_purifier_api_key"),
+        ota_password=Value(secret="bedroom_purifier_ota_password"),
+        channel="stable",
+    )
+
+
+@pytest.mark.usefixtures("esphome_devices")
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("2026.11.0", (), True),
+        ("2026.8.2", (), False),  # a Device Builder before OTA encryption
+        ("2026.8.2", ("INFO ESPHome 2026.9.0",), True),  # the version in the upload output wins
+    ],
+)
+async def test_install_switches_ota_password_to_encryption(
+    hass: HomeAssistant,
+    patch_sources: AsyncMock,
+    builder: FakeBuilder,
+    case: tuple[str, tuple[str, ...], bool],
+) -> None:
+    """After a password upload of a build that offers encryption, the config requires it."""
+    builder_version, upload_lines, migrates = case
+    values = _password_values()
+    old = render(BUILDER_TEXT, EVEREST_C3, values)
+    builder.files.configs["bedroom-purifier.yaml"] = old
+    for device in builder.api.configured:
+        device["current_version"] = builder_version
+
+    async def upload(configuration: str, port: str, line_received_cb: Any = None) -> bool:
+        for line in upload_lines:
+            line_received_cb(line)
+        return True
+
+    builder.api.upload.side_effect = upload
+    await _setup(hass)
+    await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    assert_uploaded(builder, "bedroom-purifier.yaml")
+
+    new = builder.files.configs["bedroom-purifier.yaml"]
+    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    assert last.ok
+    if not migrates:
+        assert new == old
+        assert last.note is None
+        return
+    # the password line became `encryption:`; nothing else changed, nothing built again
+    assert config_values(new) == replace(values, ota_password=None, ota_uses_api_key=True)
+    assert new == old.replace(
+        "    password: !secret bedroom_purifier_ota_password\n", "    encryption:\n"
+    )
+    assert builder.files.writes == ["bedroom-purifier.yaml"]
+    assert last.note == "OTA encrypted from the next update on"
+    builder.api.compile.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_install_leaves_other_ota_configs(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """Unprotected (no API key): the upload changes nothing in the config."""
+    values = ConfigValues(name="bedroom-purifier", channel="stable")
+    old = render(BUILDER_TEXT, EVEREST_C3, values)
+    builder.files.configs["bedroom-purifier.yaml"] = old
+    await _setup(hass)
+    await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    assert builder.files.configs["bedroom-purifier.yaml"] == old
+    assert builder.files.writes == []
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_refused_encrypted_upload_restores_password(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """The device did not offer encryption: the password line is back while its secret exists."""
+    values = replace(_password_values(), ota_password=None, ota_uses_api_key=True)
+    old = render(BUILDER_TEXT, EVEREST_C3, values)
+    builder.files.configs["bedroom-purifier.yaml"] = old
+    builder.files.secrets["bedroom_purifier_ota_password"] = "pw"
+
+    async def refused(configuration: str, port: str, line_received_cb: Any = None) -> bool:
+        line_received_cb("INFO ESPHome 2026.11.0")
+        line_received_cb(
+            "ERROR An OTA encryption key is configured but the device did not offer encryption"
+        )
+        return False
+
+    builder.api.upload.side_effect = refused
+    await _setup(hass)
+    with pytest.raises(HomeAssistantError) as error:
+        await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    assert error.value.translation_key == "upload_failed"
+
+    new = builder.files.configs["bedroom-purifier.yaml"]
+    assert config_values(new) == _password_values()
+    assert new == old.replace(
+        "    encryption:\n", "    password: !secret bedroom_purifier_ota_password\n"
+    )
+    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    assert not last.ok
+    assert last.note == "OTA password restored for the next update"
+
+    # without the secret the config stays encrypted: nothing to fall back to
+    builder.files.configs["bedroom-purifier.yaml"] = old
+    builder.files.writes.clear()
+    del builder.files.secrets["bedroom_purifier_ota_password"]
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    assert builder.files.configs["bedroom-purifier.yaml"] == old
+    assert builder.files.writes == []

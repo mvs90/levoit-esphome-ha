@@ -889,12 +889,15 @@ class LevoitEsphomePanel extends HTMLElement {
       // the result step's summary: Flash and RAM of the finished build
       const result = (d.build?.steps || []).find((s) => s.key === "result");
       const sizes = result?.detail ? ` · ${esc(result.detail)}` : "";
-      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}${sizes}${logLink}</div>`;
+      // what the integration did after the build, e.g. the OTA migration
+      const note = last.note ? ` · ${esc(last.note)}` : "";
+      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}${sizes}${note}${logLink}</div>`;
     }
     const what = last.upload ? "Compile and upload" : "Compile";
+    const note = last.note ? ` · ${esc(last.note)}` : "";
     return `<div class="sub bad" title="${esc(last.error)}">${what} failed ${when}${logLink}: ${esc(
       last.error,
-    )}</div>`;
+    )}${note}</div>`;
   }
 
   // --- build steps ---------------------------------------------------------------

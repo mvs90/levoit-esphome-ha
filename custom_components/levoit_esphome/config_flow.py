@@ -133,6 +133,7 @@ class AddDeviceFlow(ConfigSubentryFlow):
         # custom: the user's own board and pins, on the template's builder file
         self._custom: tpl.CustomEsp | None = None
         self._source: str | None = None
+        self._esphome_version: str | None = None  # the Device Builder's, from its listing
 
     @property
     def _coordinator(self) -> LevoitEsphomeCoordinator:
@@ -310,6 +311,14 @@ class AddDeviceFlow(ConfigSubentryFlow):
             return self.async_abort(reason="cannot_connect")
         taken = {d["name"] for d in listing.get("configured", []) if d.get("name")}
         taken |= set(self._coordinator.data.devices) if self._coordinator.data else set()
+        self._esphome_version = next(
+            (
+                d["current_version"]
+                for d in listing.get("configured", [])
+                if d.get("current_version")
+            ),
+            None,
+        )
 
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {"model": self._template.title}
@@ -378,13 +387,16 @@ class AddDeviceFlow(ConfigSubentryFlow):
         if builder is None:
             return self.async_abort(reason="no_device_builder")
 
-        # what goes into secrets.yaml
+        # what goes into secrets.yaml; a new device gets encrypted OTA that
+        # inherits its API key, a password only on a Device Builder too old for it
         api_secret = tpl.secret_key(name, "api_key")
         ota_secret = tpl.secret_key(name, "ota_password")
         new_secrets: dict[str, str] = {}
+        encrypt = self._existing is None and tpl.supports_ota_encryption(self._esphome_version)
         if self._existing is None:
             new_secrets[api_secret] = tpl.new_api_key()
-            new_secrets[ota_secret] = tpl.new_ota_password()
+            if not encrypt:
+                new_secrets[ota_secret] = tpl.new_ota_password()
         else:
             if api_key := self._existing_api_key(name):
                 new_secrets[api_secret] = api_key
@@ -410,6 +422,7 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 api_key=tpl.Value(secret=api_secret) if api_secret in new_secrets else None,
                 ota_password=tpl.Value(secret=ota_secret) if ota_secret in new_secrets else None,
                 channel=channel,
+                ota_uses_api_key=encrypt,
             )
             content = self._render(source, values)
 
