@@ -12,7 +12,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .groups import SIGNAL_GROUPS, GroupManager, group_identifier, signal_group
-from .groups_logic import GroupConfig
+from .groups_logic import GROUP_AUTOMATION, GroupConfig
 
 
 class LevoitGroupEntity(Entity):
@@ -26,11 +26,12 @@ class LevoitGroupEntity(Entity):
         self._manager = manager
         self._group_id = group_id
         self._attr_unique_id = f"group_{group_id}_{key}"
+        config = manager.groups[group_id]
         self._attr_device_info = DeviceInfo(
             identifiers={group_identifier(group_id)},
-            name=manager.groups[group_id].name,
+            name=config.device_name,
             manufacturer="Levoit ESPHome",
-            model="Purifier group",
+            model="Automation group" if config.kind == GROUP_AUTOMATION else "Purifier group",
             entry_type=DeviceEntryType.SERVICE,
         )
 

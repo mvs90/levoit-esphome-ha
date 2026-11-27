@@ -17,6 +17,7 @@ And for the dashboard cards, any user (read only):
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import probatio
@@ -28,7 +29,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DOMAIN, SIGNAL_COORDINATOR
 from .groups import GroupManager, has_sleep, speeds_of
-from .groups_logic import GroupError
+from .groups_logic import GROUP_AUTOMATION, GROUP_PURIFIER, GroupError
 
 if TYPE_CHECKING:
     from .coordinator import LevoitEsphomeCoordinator
@@ -95,17 +96,21 @@ def group_entities(hass: HomeAssistant, group_id: str) -> dict[str, str]:
 def groups_snapshot(manager: GroupManager) -> dict[str, Any]:
     """Groups with their state, and every purifier that can be in a group."""
     hass = manager.hass
+    groups = [
+        {
+            **config.as_dict(),
+            "state": manager.state(group_id),
+            "entities": group_entities(hass, group_id),
+        }
+        for group_id, config in sorted(
+            manager.groups.items(), key=lambda item: item[1].name.lower()
+        )
+    ]
     return {
         "groups": [
-            {
-                **config.as_dict(),
-                "state": manager.state(group_id),
-                "entities": group_entities(hass, group_id),
-            }
-            for group_id, config in sorted(
-                manager.groups.items(), key=lambda item: item[1].name.lower()
-            )
+            group for group in groups if group.get("kind", GROUP_PURIFIER) == GROUP_PURIFIER
         ],
+        "automations": [group for group in groups if group.get("kind") == GROUP_AUTOMATION],
         "purifiers": [
             {
                 "entity_id": fan.entity_id,
@@ -119,8 +124,22 @@ def groups_snapshot(manager: GroupManager) -> dict[str, Any]:
                 "sensors": [{"entity_id": s.entity_id, "type": s.type} for s in fan.sensors],
                 "cadr": fan.cadr,
                 "group_id": group.id if (group := manager.group_of(fan.entity_id)) else None,
+                "automation_group_id": group.id
+                if (group := manager.group_of(fan.entity_id, GROUP_AUTOMATION))
+                else None,
             }
             for fan in sorted(manager.levoit_fans().values(), key=lambda f: f.title.lower())
+        ],
+        "humidifiers": [
+            {
+                **asdict(humidifier),
+                "group_id": group.id
+                if (group := manager.group_of(humidifier.entity_id, GROUP_AUTOMATION))
+                else None,
+            }
+            for humidifier in sorted(
+                manager.levoit_humidifiers().values(), key=lambda item: item.title.lower()
+            )
         ],
         "dismissed_areas": list(manager.dismissed_areas),
     }
@@ -205,6 +224,7 @@ def cards_snapshot(manager: GroupManager) -> dict[str, Any]:
             "entities": group_entities(manager.hass, group_id),
         }
         for group_id, config in sorted(manager.groups.items(), key=lambda i: i[1].name.lower())
+        if config.kind == GROUP_PURIFIER
     ]
     return {"purifiers": purifiers, "groups": groups}
 

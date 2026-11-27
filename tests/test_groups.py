@@ -891,3 +891,193 @@ async def test_cards_for_any_user(
     # the panel's group commands stay admins only
     msg = await _call(client, {"type": "levoit_esphome/groups/list"})
     assert msg["error"]["code"] == "unauthorized"
+
+
+def _humidifier(hass: HomeAssistant, model: str, mac: str, suffix: str) -> str:
+    """Add a Levoit humidifier with the corresponding stock target entity name."""
+    fan = f"fan.{suffix}"
+    target = f"number.{suffix}_target"
+    humidity = f"sensor.{suffix}_humidity"
+    add_esphome_device(hass, suffix, mac, suffix, "1.7.0+10361cc esphome", model=model)
+    _add_entities(
+        hass,
+        mac,
+        {
+            fan: "Humidifier" if model == "LV600S" else "Fan",
+            target: "Target Humidity Preset" if model == "LV600S" else "Humidity Target",
+            humidity: "Humidity",
+        },
+    )
+    hass.states.async_set(fan, "off", {"percentage_step": 100 / 9})
+    hass.states.async_set(target, "58", {"unit_of_measurement": "%"})
+    hass.states.async_set(humidity, "43", {"unit_of_measurement": "%"})
+    return fan
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_group_humidifier_membership_is_for_display(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Mixed groups expose entity mappings, keep membership, and drive only purifiers."""
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    humidifier = _humidifier(hass, "LV600S", "de:ad:be:ef:00:04", "lv600s")
+    superior = _humidifier(hass, "SUPERIOR6000S", "de:ad:be:ef:00:05", "superior")
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    group = await _save(
+        client,
+        kind="automation",
+        members=["fan.bedroom"],
+        humidifiers=[humidifier, superior],
+        mode="manual",
+        manual_level=2,
+    )
+    await _settle(hass)
+    assert group["humidifiers"] == [humidifier, superior]
+    assert hass_storage[STORAGE_KEY]["data"]["automations"][0]["humidifiers"] == [
+        humidifier,
+        superior,
+    ]
+    assert group["sensors"] == [
+        {"entity_id": "sensor.bedroom_pm25", "type": "pm25", "source": "auto"}
+    ]
+    assert calls and {entity_id for _, entity_id, _ in calls} == {"fan.bedroom"}
+    listing = (await _call(client, {"type": "levoit_esphome/groups/list"}))["result"]
+    assert {item["entity_id"] for item in listing["purifiers"]} == {*MEMBERS, superior}
+    assert listing["groups"] == []
+    assert [item["id"] for item in listing["automations"]] == [group["id"]]
+    assert {
+        item["entity_id"]: (item["target"], item["humidity"], item["group_id"])
+        for item in listing["humidifiers"]
+    } == {
+        humidifier: ("number.lv600s_target", "sensor.lv600s_humidity", group["id"]),
+        superior: ("number.superior_target", "sensor.superior_humidity", group["id"]),
+    }
+    other = await _call(
+        client,
+        {
+            "type": "levoit_esphome/groups/save",
+            "group": {
+                "name": "Another room",
+                "kind": "automation",
+                "members": ["fan.living"],
+                "humidifiers": [humidifier],
+            },
+        },
+    )
+    assert other["error"]["code"] == "members"
+    updated = await _save(client, id=group["id"], members=["fan.bedroom"])
+    assert updated["humidifiers"] == [humidifier, superior]
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_automation_accepts_a_single_member_only_in_its_own_tab(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    humidifier = _humidifier(hass, "LV600S", "de:ad:be:ef:00:04", "lv600s")
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    for data in (
+        {"members": ["fan.bedroom"]},
+        {"members": MEMBERS, "humidifiers": [humidifier]},
+        {"kind": "automation", "members": [], "humidifiers": []},
+    ):
+        result = await _call(
+            client,
+            {
+                "type": "levoit_esphome/groups/save",
+                "group": {"name": "Invalid", **data},
+            },
+        )
+        assert result["error"]["code"] == "members"
+
+    humidity_only = await _save(
+        client, name="Humidity", kind="automation", humidifiers=[humidifier]
+    )
+    purifier_only = await _save(
+        client, name="Air quality", kind="automation", members=["fan.bedroom"]
+    )
+    await _settle(hass)
+    assert humidity_only["enabled"] is False
+    assert humidity_only["members"] == []
+    assert purifier_only["members"] == ["fan.bedroom"]
+    assert all(entity_id == "fan.bedroom" for _, entity_id, _ in calls)
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_existing_groups_are_copied_once_and_keep_the_original_controller(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_storage: dict[str, Any],
+) -> None:
+    calls = await _fake_fans(hass)
+    _purifiers(hass)
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "key": STORAGE_KEY,
+        "data": {
+            "groups": [
+                {
+                    "id": "legacy",
+                    "name": "Original",
+                    "members": MEMBERS,
+                    "mode": "manual",
+                    "manual_level": 2,
+                    "hold_min": 7,
+                }
+            ],
+        },
+    }
+    entry = await _setup(hass)
+    await _settle(hass)
+    client = await hass_ws_client(hass)
+    listing = (await _call(client, {"type": "levoit_esphome/groups/list"}))["result"]
+    (original,) = listing["groups"]
+    (copy,) = listing["automations"]
+    assert original["id"] == copy["source_group_id"] == "legacy"
+    assert original["enabled"] and not copy["enabled"]
+    assert copy["id"] != original["id"]
+    for key in ("members", "name", "mode", "manual_level", "hold_min", "thresholds"):
+        assert copy[key] == original[key]
+    stored = hass_storage[STORAGE_KEY]["data"]
+    assert [g["id"] for g in stored["groups"]] == [original["id"]]
+    assert [g["id"] for g in stored["automations"]] == [copy["id"]]
+    assert stored["automations_initialized"]
+    assert calls and {payload["percentage"] for _, _, payload in calls} == {50, 66}
+
+    blocked = await _call(
+        client,
+        {
+            "type": "levoit_esphome/groups/save",
+            "group": {
+                "id": copy["id"],
+                "name": copy["name"],
+                "members": MEMBERS,
+                "enabled": True,
+            },
+        },
+    )
+    assert blocked["error"]["code"] == "members"
+    assert "Original" in blocked["error"]["message"]
+    await _save(client, id=original["id"], name=original["name"], members=MEMBERS, enabled=False)
+    updated = await _save(
+        client,
+        id=copy["id"],
+        name="Edited copy",
+        members=MEMBERS,
+        enabled=True,
+        source_group_id="ignored",
+    )
+    assert updated["source_group_id"] == "legacy"
+    assert updated["enabled"] is True
+    manager = entry.runtime_data.groups
+    manager._copy_purifier_groups()
+    assert len(manager.groups) == 2
+    assert manager.groups[copy["id"]].name == "Edited copy"
+    assert manager.groups["legacy"].name == "Original"

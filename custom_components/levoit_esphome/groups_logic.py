@@ -1,6 +1,6 @@
 """Purifier groups: the rules, without Home Assistant.
 
-A group ties two or more purifiers to shared air sensors. The sensors of one
+A group ties its purifiers to shared air sensors. The sensors of one
 type (PM1, PM2.5, PM10, the Levoit AQI level) are combined into one value, by
 default the highest; each type's value gives a level from 1 (very good air) to
 4 (poor), and the worst type sets the group level. Each member runs at a step
@@ -48,6 +48,8 @@ type Step = int | str
 
 MAX_LEVEL = 4
 MIN_MEMBERS = 2
+GROUP_PURIFIER = "purifier"
+GROUP_AUTOMATION = "automation"
 MAX_FAN_SPEEDS = 10
 
 # Where levels 2, 3 and 4 start per sensor type, in µg/m³; level 1 is below.
@@ -133,6 +135,14 @@ class GroupConfig:
     manual_level: int = 1
     # per member: its lowest and highest step (absent: speed 1 to its fastest)
     member_speeds: Mapping[str, MemberSpeeds] = field(default_factory=dict)
+    humidifiers: tuple[str, ...] = ()
+    kind: str = GROUP_PURIFIER
+    source_group_id: str | None = None
+
+    @property
+    def device_name(self) -> str:
+        """The Home Assistant device name, distinct for copied groups."""
+        return f"{self.name} (Automation)" if self.kind == GROUP_AUTOMATION else self.name
 
     def speeds_of(self, member: str) -> MemberSpeeds:
         """A member's range (the default when it has none)."""
@@ -143,6 +153,15 @@ class GroupConfig:
         return {
             "id": self.id,
             "name": self.name,
+            **(
+                {
+                    "kind": self.kind,
+                    "humidifiers": list(self.humidifiers),
+                    "source_group_id": self.source_group_id,
+                }
+                if self.kind == GROUP_AUTOMATION
+                else {}
+            ),
             "area_id": self.area_id,
             "enabled": self.enabled,
             "members": list(self.members),
@@ -313,20 +332,32 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
             raise GroupError(ERR_INVALID, "The group needs a name")
         name = ""
     members = _entity_ids(data.get("members"), "members")
-    if check_members and len(members) < MIN_MEMBERS:
-        raise GroupError(ERR_MEMBERS, f"Pick at least {MIN_MEMBERS} purifiers")
+    kind = _choice(data, "kind", GROUP_PURIFIER, (GROUP_PURIFIER, GROUP_AUTOMATION))
+    humidifiers = _entity_ids(data.get("humidifiers"), "humidifiers")
+    if kind == GROUP_PURIFIER:
+        if humidifiers:
+            raise GroupError(ERR_MEMBERS, "Add humidifiers from Automations")
+        if check_members and len(members) < MIN_MEMBERS:
+            raise GroupError(ERR_MEMBERS, f"Pick at least {MIN_MEMBERS} purifiers")
+    elif set(members).intersection(humidifiers):
+        raise GroupError(ERR_MEMBERS, "A device cannot be both a purifier and a humidifier")
+    elif check_members and not (members or humidifiers):
+        raise GroupError(ERR_MEMBERS, "Pick at least one device")
     rise = data.get("rise") or {}
     if not isinstance(rise, Mapping):
         raise GroupError(ERR_INVALID, "rise must be an object")
     area_id = data.get("area_id")
     if area_id is not None and not isinstance(area_id, str):
         raise GroupError(ERR_INVALID, "area_id must be text")
+    source_group_id = data.get("source_group_id") if kind == GROUP_AUTOMATION else None
+    if source_group_id is not None and not isinstance(source_group_id, str):
+        raise GroupError(ERR_INVALID, "source_group_id must be text")
     return GroupConfig(
         id=str(data.get("id") or ""),
         name=name.strip(),
         members=members,
         area_id=area_id or None,
-        enabled=_bool(data, "enabled", True),
+        enabled=_bool(data, "enabled", True) and (kind == GROUP_PURIFIER or bool(members)),
         sensors=_sensors(data.get("sensors")),
         removed_sensors=_entity_ids(data.get("removed_sensors"), "removed_sensors"),
         combine=_combine(data.get("combine")),
@@ -343,6 +374,9 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
         mode=_choice(data, "mode", MODE_AUTO, (MODE_AUTO, MODE_MANUAL)),
         manual_level=_int(data, "manual_level", 1, 1, MAX_LEVEL),
         member_speeds=_member_speeds(data, members),
+        humidifiers=humidifiers,
+        kind=kind,
+        source_group_id=source_group_id,
     )
 
 

@@ -56,7 +56,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.util.percentage import ranged_value_to_percentage
 
-from .const import DOMAIN
+from .const import DOMAIN, HUMIDIFIER_MODELS
 from .controls import match_controls
 from .groups_logic import (
     AQI,
@@ -64,6 +64,8 @@ from .groups_logic import (
     COMBINE_MEDIAN,
     COMBINE_MIN,
     ERR_MEMBERS,
+    GROUP_AUTOMATION,
+    GROUP_PURIFIER,
     MODE_AUTO,
     MODE_MANUAL,
     PM1,
@@ -241,6 +243,19 @@ def step_of(hass: HomeAssistant, config: GroupConfig, member: str, level: int) -
     return member_step(level, speeds, sleep, config.speeds_of(member))
 
 
+@dataclass(frozen=True)
+class LevoitHumidifier:
+    """A group member whose humidity is displayed."""
+
+    entity_id: str
+    name: str
+    title: str
+    model: str
+    area_id: str | None
+    target: str | None
+    humidity: str | None
+
+
 class GroupManager:
     """The purifier groups: stored config, one runner per group."""
 
@@ -260,21 +275,60 @@ class GroupManager:
     async def async_load(self) -> None:
         """Read the groups (a "runtime" part from earlier versions is ignored)."""
         data = await self._store.async_load() or {}
-        for raw in data.get("groups", []):
+        for raw in (*data.get("groups", []), *data.get("automations", [])):
             try:
                 config = parse_config(raw, check_members=False)
             except GroupError as err:
-                _LOGGER.warning("Skipping a stored purifier group: %s", err)
+                _LOGGER.warning("Skipping a stored group: %s", err)
                 continue
             if config.id:
                 self.groups[config.id] = config
         self.dismissed_areas = [a for a in data.get("dismissed_areas", []) if isinstance(a, str)]
+        if self.groups and not data.get("automations_initialized"):
+            self._copy_purifier_groups()
+            await self._async_save()
+
+    @callback
+    def _copy_purifier_groups(self) -> None:
+        """Seed the new tab once without enabling a second controller."""
+        humidifiers = self.levoit_humidifiers()
+        fans = self.levoit_fans()
+        copied_sources = {group.source_group_id for group in self.groups.values()}
+        for source in list(self.groups.values()):
+            if source.kind != GROUP_PURIFIER or source.id in copied_sources:
+                continue
+            members = tuple(member for member in source.members if member not in humidifiers)
+            copied = replace(
+                source,
+                id=uuid4().hex,
+                kind=GROUP_AUTOMATION,
+                source_group_id=source.id,
+                enabled=False,
+                members=members,
+                humidifiers=tuple(member for member in source.members if member in humidifiers),
+                member_speeds={
+                    member: speeds
+                    for member, speeds in source.member_speeds.items()
+                    if member in members
+                },
+            )
+            if copied.members != source.members:
+                copied = self._with_sensors(copied, fans)
+            self.groups[copied.id] = copied
 
     @callback
     def _data_to_save(self) -> dict[str, Any]:
         return {
-            "groups": [config.as_dict() for config in self.groups.values()],
+            "groups": [
+                config.as_dict() for config in self.groups.values() if config.kind == GROUP_PURIFIER
+            ],
+            "automations": [
+                config.as_dict()
+                for config in self.groups.values()
+                if config.kind == GROUP_AUTOMATION
+            ],
             "dismissed_areas": self.dismissed_areas,
+            "automations_initialized": True,
         }
 
     async def _async_save(self) -> None:
@@ -346,7 +400,7 @@ class GroupManager:
         dev_reg = dr.async_get(self.hass)
         fans: dict[str, LevoitFan] = {}
         for device in data.devices.values() if data else ():
-            if "philips" in device.components:
+            if "philips" in device.components or device.model == "LV600S":
                 continue
             controls = match_controls(
                 self.hass, device.esphome_device_id, device.model, device.control_names
@@ -369,6 +423,32 @@ class GroupManager:
                 cadr=controls.get(CADR_KEY),
             )
         return fans
+
+    @callback
+    def levoit_humidifiers(self) -> dict[str, LevoitHumidifier]:
+        """Fan entity id -> humidifier, with the mapped ESPHome humidity entities."""
+        data = self.coordinator.data
+        dev_reg = dr.async_get(self.hass)
+        humidifiers: dict[str, LevoitHumidifier] = {}
+        for device in data.devices.values() if data else ():
+            if device.model not in HUMIDIFIER_MODELS:
+                continue
+            controls = match_controls(
+                self.hass, device.esphome_device_id, device.model, device.control_names
+            )
+            if (fan := controls.get("fan.fan")) is None:
+                continue
+            entry = dev_reg.async_get(device.esphome_device_id)
+            humidifiers[fan] = LevoitHumidifier(
+                entity_id=fan,
+                name=device.name,
+                title=device.title,
+                model=device.model,
+                area_id=entry.area_id if entry else None,
+                target=controls.get("number.humidity_target"),
+                humidity=controls.get("sensor.humidity"),
+            )
+        return humidifiers
 
     @callback
     def cadr_sensors(self, config: GroupConfig) -> tuple[str, ...]:
@@ -398,23 +478,53 @@ class GroupManager:
         return replace(config, sensors=merge_sensors(auto, config.sensors, config.removed_sensors))
 
     @callback
-    def group_of(self, entity_id: str) -> GroupConfig | None:
-        """The group a purifier is in."""
-        return next((g for g in self.groups.values() if entity_id in g.members), None)
+    def group_of(self, entity_id: str, kind: str = GROUP_PURIFIER) -> GroupConfig | None:
+        """The group a purifier or humidifier is in."""
+        return next(
+            (
+                g
+                for g in self.groups.values()
+                if g.kind == kind and (entity_id in g.members or entity_id in g.humidifiers)
+            ),
+            None,
+        )
 
     # ---- changes from the panel and the switch ----
 
     async def async_save_group(self, data: dict[str, Any]) -> GroupConfig:
         """Create or change a group; raises GroupError."""
-        config = parse_config(data)
+        prior = self.groups.get(str(data.get("id") or ""))
+        if prior is not None:
+            if data.get("kind", prior.kind) != prior.kind:
+                raise GroupError(ERR_MEMBERS, "A saved group cannot change tabs")
+            data = {"humidifiers": prior.humidifiers, **data, "kind": prior.kind}
+        config = parse_config({**data, "source_group_id": prior.source_group_id if prior else None})
         fans = self.levoit_fans()
+        if config.kind == GROUP_AUTOMATION:
+            fans = {
+                entity_id: fan
+                for entity_id, fan in fans.items()
+                if fan.model not in HUMIDIFIER_MODELS
+            }
         if unknown := [m for m in config.members if m not in fans]:
             raise GroupError(ERR_MEMBERS, f"Not a Levoit purifier: {', '.join(unknown)}")
         if config.id and config.id not in self.groups:
             raise GroupError(ERR_NOT_FOUND, "Unknown group")
+        if config.humidifiers:
+            known = self.levoit_humidifiers().keys() | set(prior.humidifiers if prior else ())
+            if unknown_humidifiers := set(config.humidifiers) - known:
+                raise GroupError(
+                    ERR_MEMBERS,
+                    f"Not a Levoit humidifier: {', '.join(sorted(unknown_humidifiers))}",
+                )
         group_id = config.id or uuid4().hex
+        devices = set(config.members) | set(config.humidifiers)
         for other in self.groups.values():
-            if other.id != group_id and (taken := set(other.members) & set(config.members)):
+            if (
+                other.id != group_id
+                and other.kind == config.kind
+                and (taken := devices.intersection((*other.members, *other.humidifiers)))
+            ):
                 raise GroupError(
                     ERR_MEMBERS, f"Already in the group {other.name}: {', '.join(sorted(taken))}"
                 )
@@ -436,6 +546,17 @@ class GroupManager:
 
     async def _async_apply(self, config: GroupConfig) -> None:
         old = self.groups.get(config.id)
+        if config.enabled:
+            for other in self.groups.values():
+                if (
+                    other.enabled
+                    and other.kind != config.kind
+                    and set(other.members).intersection(config.members)
+                ):
+                    raise GroupError(
+                        ERR_MEMBERS,
+                        f"Disable group control in {other.name} before enabling this group",
+                    )
         self.groups[config.id] = config
         if (runner := self._runners.get(config.id)) is not None:
             await runner.async_update_config(config)
@@ -449,7 +570,7 @@ class GroupManager:
             if device := dev_reg.async_get_device_by_identifier(
                 group_identifier(config.id), self.coordinator.config_entry.entry_id
             ):
-                dev_reg.async_update_device(device.id, name=config.name)
+                dev_reg.async_update_device(device.id, name=config.device_name)
         self.async_notify(config.id)
 
     async def async_apply_now(self, group_id: str) -> None:
@@ -716,10 +837,14 @@ class GroupRunner:
         """New settings; members that left are let go (they stay as they are)."""
         async with self._lock:
             old = self.config
+            self.config = config
+            if config.kind == GROUP_AUTOMATION and old == replace(
+                config, humidifiers=old.humidifiers
+            ):
+                return
             self._release([m for m in self._targets if m not in config.members])
             for member in set(self.paused_until) - set(config.members):
                 del self.paused_until[member]
-            self.config = config
             if old.mode == MODE_MANUAL and config.mode == MODE_AUTO:
                 self.keeper.since = None  # step down without waiting
             if set(old.members) != set(config.members) or old.sensors != config.sensors:

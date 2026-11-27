@@ -169,3 +169,86 @@ test("the onboarding wizard translates both install paths and preserves YAML and
   panel._hass = hass("en");
   assert.match(panel._wizard(), /existing-fixture installed/);
 });
+
+test("mixed group shows the individual humidifier targets alongside air quality", () => {
+  const panel = component("levoit-esphome-panel");
+  const humidifiers = [
+    { entity_id: "fan.fixture_humidifier", title: "Fixture <one>", target: "number.target", humidity: "sensor.humidity" },
+    { entity_id: "fan.other_humidifier", title: "Fixture two", target: "number.other_target" },
+  ];
+  const states = {
+    "sensor.fixture_pm25": { state: "8", attributes: { unit_of_measurement: "µg/m³" } },
+    "number.target": { state: "62.5" },
+    "number.other_target": { state: "unavailable" },
+    "sensor.humidity": { state: "43" },
+  };
+  const group = {
+    id: "fixture", name: "Fixture", enabled: true, mode: "auto", members: [entity],
+    humidifiers: humidifiers.map((device) => device.entity_id),
+    sensors: [{ type: "pm25", entity_id: "sensor.fixture_pm25" }],
+    state: { values: { pm25: { value: 8, how: "max", level: 1, sensors: ["sensor.fixture_pm25"] } } },
+  };
+  Object.assign(panel, {
+    _hass: { locale: { language: "de" }, states },
+    _groups: { groups: [], automations: [group], purifiers: [], humidifiers },
+    _automation: true,
+    _view: "groupdetail",
+    _detailId: group.id,
+    _seen: { ...states },
+  });
+  const summary = panel._groupCard(group);
+  assert.match(summary, /PM2\.5/);
+  assert.match(summary, /Fixture &lt;one&gt; · Zielfeuchte 62,5 %/);
+  assert.match(summary, /Fixture two · Zielfeuchte —/);
+  const detail = panel._groupDetail();
+  assert.match(detail, /PM2\.5/);
+  assert.match(detail, /Zielfeuchte/);
+  assert.match(detail, /Istfeuchte: 43 %/);
+  assert.match(detail, /62,5 %/);
+  assert.equal(panel._pageStatesChanged(), false);
+  states["number.target"] = { state: "71" };
+  assert.equal(panel._pageStatesChanged(), true);
+  assert.match(panel._groupDetail(), /71 %/);
+});
+
+test("checking a humidifier updates the display list without adding a purifier", async () => {
+  const panel = component("levoit-esphome-panel");
+  const draft = { members: ["fan.fixture"], humidifiers: [] };
+  Object.assign(panel, {
+    _view: "group",
+    _edit: { draft },
+    _setDraft: (field, value) => { draft[field] = value; },
+  });
+  const input = {
+    dataset: { member: "fan.fixture_humidifier", humidifier: "" },
+    checked: true, matches: (selector) => selector === "input[data-member]", blur() {},
+  };
+  await panel._onChange({ target: input });
+  assert.deepEqual(draft, { members: ["fan.fixture"], humidifiers: ["fan.fixture_humidifier"] });
+  input.checked = false;
+  await panel._onChange({ target: input });
+  assert.deepEqual(draft, { members: ["fan.fixture"], humidifiers: [] });
+});
+
+test("Automations and Purifier groups use separate routes and member rules", () => {
+  const panel = component("levoit-esphome-panel");
+  const original = { id: "original", name: "Original group", members: [entity], sensors: [], enabled: true };
+  const copy = { id: "copy", name: "Automation copy", members: [], humidifiers: ["fan.humidifier"], sensors: [] };
+  Object.assign(panel, {
+    _groups: { groups: [original], automations: [copy], purifiers: [], humidifiers: [] },
+    _hass: { locale: { language: "en" }, states: {} },
+    _render: () => {},
+  });
+  panel.route = { path: "/groups", prefix: "/levoit-esphome" };
+  assert.match(panel._groupsView(), /Original group/);
+  assert.doesNotMatch(panel._groupsView(), /Automation copy/);
+  assert.equal(panel._validGroupMembers(1, 0), false);
+  panel.route = { path: "/automations", prefix: "/levoit-esphome" };
+  const automations = panel._groupsView();
+  assert.doesNotMatch(automations, /Original group|data-field="enabled"/);
+  assert.match(automations, /Automation copy/);
+  assert.equal(panel._validGroupMembers(0, 1), true);
+  assert.equal(panel._validGroupMembers(1, 0), true);
+  panel.route = { path: "/automations/copy", prefix: "/levoit-esphome" };
+  assert.equal(panel._detailGroup(), copy);
+});

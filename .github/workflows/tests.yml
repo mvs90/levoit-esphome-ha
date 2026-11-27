@@ -43,4 +43,4 @@ jobs:
         run: pytest -v
 
       - name: Frontend translations
-        run: node --test tests/frontend_translations.mjs
+        run: node --test tests/frontend_translations.mjs tests/frontend_lv600s.mjs

@@ -89,6 +89,11 @@ Assistant's device page. It needs no Device Builder config: the settings are
 found by their entity names, as the tuct/levoit configs name them (or as the
 device's config does, when there is one).
 
+The LV600S page uses the ESPHome fan from `levoit` model `LV600S` for power,
+mist level and operating mode. It also shows humidity, temperature, tank
+status, warm mist and the timer. The older standalone component still appears
+in the device list and links to its Home Assistant device page.
+
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.8" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
 
 ## Purifier groups
@@ -155,6 +160,19 @@ Groups saved by 0.6 keep working: their sensors of the Eleva's 0–500 AQI
 are dropped, PM2.5 keeps where levels 2–4 started, and the max speed and *Up
 to* become each purifier's highest speed. Level 1 now runs the purifiers at
 their lowest step instead of letting go.
+
+## Automations
+
+The Automations tab uses the same group editor and also accepts a single
+Levoit purifier or humidifier. Each humidifier shows its own target and
+current humidity next to the air quality readings. Humidifier settings
+continue to come from the device. The air quality rules control the purifiers.
+
+On first load, existing purifier groups are copied with control switched off.
+The copies are stored separately, and each carries the source group ID for a
+later migration. Editing a copy leaves the original in place. To enable
+control for a copy, first turn off control in the original group for any
+purifiers they share.
 
 ## Dashboard cards
 
