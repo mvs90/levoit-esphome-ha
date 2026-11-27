@@ -118,7 +118,12 @@ async def ws_options(
                 for model, title in onb.models(templates)
             ],
             "existing": [
-                {"name": d.name, "title": d.title, "model": d.model}
+                {
+                    "name": d.name,
+                    "title": d.title,
+                    "model": d.model,
+                    "api_key": onb.existing_api_key(hass, d.name) is not None,
+                }
                 for d in onb.unconfigured(coordinator)
             ],
             "channels": list(onb.CHANNELS),

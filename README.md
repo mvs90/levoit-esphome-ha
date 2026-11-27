@@ -359,8 +359,8 @@ shows on the sidebar page with **No config**, and its update entity says when a
 new version is out, but cannot install it yet. To onboard it:
 
 1. *Add device* → **Device already in Home Assistant, without a config** →
-   pick the device. (**Add config** on its row of the sidebar page opens the
-   integration page, where *Add device* is.)
+   pick the device. (**Add config** on its row of the sidebar page starts the
+   same for that device, as a guided page.)
 2. **Model:** skipped when the device reports it; firmware older than 1.7.1
    has no `model` sensor, so pick it.
 3. **ESP:** the template that matches its hardware (XIAO ESP32-C3, XIAO
@@ -468,6 +468,13 @@ pick the model and the ESP (original, Seeed XIAO ESP32-C3, ESP32-C3, Seeed XIAO 
 or **Other ESP** for a board or pins without a template: enter the ESPHome board
 name (e.g. `seeed_xiao_esp32s3`, `esp32dev`, `esp32-c6-devkitc-1`) and the RX / TX
 pins, and the config is made from the model's builder file with those.
+
+The sidebar page's **Add device** (and **Add config** on the row of a device
+without one) does the same as a guided page, one screen per step: the model,
+the ESP, a new device or one Home Assistant knows, name and channel, what
+gets written (keys, OTA protection, the Wi-Fi secrets, the config), then
+Create. The name is checked against the Device Builder as you type, and the
+last screen says what to do next. Both routes make the same config.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 

@@ -373,7 +373,12 @@ async def test_create_existing_device(
 
     options = (await _call(client, {"type": "levoit_esphome/onboarding/options"}))["result"]
     assert options["existing"] == [
-        {"name": "bedroom-purifier", "title": "Bedroom purifier", "model": "EVERESTAIR"}
+        {
+            "name": "bedroom-purifier",
+            "title": "Bedroom purifier",
+            "model": "EVERESTAIR",
+            "api_key": True,
+        }
     ]
 
     result = await _call(
