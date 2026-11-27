@@ -2,7 +2,6 @@
 // compile and upload. Plain web component, no build step; data comes from the
 // integration's WebSocket commands (levoit_esphome/*), admins only.
 
-const INTEGRATION_PAGE = "/config/integrations/integration/levoit_esphome";
 
 // The version this code was loaded as (panel.py adds ?v=<version>). A browser
 // defines the page element once per session, so after an update the old code
@@ -30,6 +29,16 @@ const STEP_LABELS = {
   result: "Result",
   upload: "Upload",
 };
+// Add device: the wizard's steps (see _wzSteps for which ones a run has)
+const WIZARD_STEPS = {
+  model: "Model",
+  esp: "ESP",
+  device: "Device",
+  name: "Name",
+  protection: "Protection",
+  create: "Create",
+};
+const DEVICES_URL = "https://github.com/tuct/levoit/tree/main/devices/";
 const CHANNEL_LABELS = {
   stable: "Stable",
   main: "Main",
@@ -63,6 +72,8 @@ const ICONS = {
     "M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z",
   delete: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
   fan: "M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C17,2 17.11,5.57 14.75,6.75C13.76,7.24 13.32,8.29 13.13,9.22C13.61,9.42 14.03,9.73 14.35,10.13C18.05,8.13 22.03,8.92 22.03,12.5C22.03,17 18.46,17.1 17.28,14.73C16.78,13.74 15.72,13.3 14.79,13.11C14.59,13.59 14.28,14 13.88,14.34C15.87,18.03 15.08,22 11.5,22C7,22 6.91,18.42 9.27,17.24C10.25,16.75 10.69,15.71 10.89,14.79C10.4,14.59 9.97,14.27 9.65,13.87C5.96,15.85 2,15.07 2,11.5C2,7 5.56,6.89 6.74,9.26C7.24,10.25 8.29,10.68 9.22,10.87C9.41,10.39 9.73,9.97 10.14,9.65C8.15,5.96 8.94,2 12.5,2Z",
+  memory:
+    "M15,9H9V15H15M13,13H11V11H13M21,11V9H19V7A2,2 0 0,0 17,5H15V3H13V5H11V3H9V5H7A2,2 0 0,0 5,7V9H3V11H5V13H3V15H5V17A2,2 0 0,0 7,19H9V21H11V19H13V21H15V19H17A2,2 0 0,0 19,17V15H21V13H19V11M17,17H7V7H17Z",
   filter: "M14,12V19.88C14.04,20.18 13.94,20.5 13.71,20.71C13.32,21.1 12.69,21.1 12.3,20.71L10.29,18.7C10.06,18.47 9.96,18.16 10,17.87V12H9.97L4.21,4.62C3.87,4.19 3.95,3.56 4.38,3.22C4.57,3.08 4.78,3 5,3H19C19.22,3 19.43,3.08 19.62,3.22C20.05,3.56 20.13,4.19 19.79,4.62L14.03,12H14Z",
 };
 
@@ -304,11 +315,24 @@ class LevoitEsphomePanel extends HTMLElement {
     this._detailId = null; // the group page's group id
     this._edit = null; // the editor: {draft, addOpen, saving, preview, previewError, previewSeq}
     this._previewTimer = null;
+    this._add = null; // Add device (route /levoit-esphome/add): the wizard's state, see _startAdd
+    this._wzNameTimer = null;
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     // the group name: kept as it is typed, so Save sees it without a re-render
     this.shadowRoot.addEventListener("input", (ev) => {
       const field = ev.target?.closest?.('input[data-ed-field="name"]');
       if (field && this._edit?.draft) this._edit.draft.name = field.value;
+      // the wizard's fields: checked as typed, the hints updated in place
+      const wz = ev.target?.closest?.("input[data-wz]");
+      if (wz && this._add) {
+        const key = wz.dataset.wz;
+        if (key === "name") this._wzNameInput(wz.value);
+        else if (key === "ota_password") this._add.otaPassword = wz.value;
+        else if (this._add.custom) {
+          this._add.custom[key] = wz.value;
+          this._wzCustomStatus();
+        }
+      }
       // a threshold slider: its number follows while dragging, saved on release
       const th = ev.target?.closest?.("input[data-th]");
       if (th && this._edit?.draft) {
@@ -323,6 +347,12 @@ class LevoitEsphomePanel extends HTMLElement {
     });
     // an overview card is a link: Enter or Space opens the device
     this.shadowRoot.addEventListener("keydown", (ev) => {
+      // Enter in a wizard field: the next step
+      if (ev.key === "Enter" && this._add && ev.target?.closest?.("input[data-wz]")) {
+        ev.preventDefault();
+        this._wzNext();
+        return;
+      }
       const card = ev.target?.closest?.(".dcard");
       if (card && ev.target === card && (ev.key === "Enter" || ev.key === " ")) {
         ev.preventDefault();
@@ -361,6 +391,8 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!this._unsub && !this._subscribing) this._subscribe();
     if (!this._groupsUnsub && !this._groupsSubscribing) this._subscribeGroups();
     if (this._pageName && !this._page && !this._pageLoading && !this._pageError) this._loadPage();
+    if (this._view === "add" && this._add && !this._add.options && !this._add.loading && !this._add.error)
+      this._loadAddOptions();
     if (
       (this._page || this._view === "groupdetail") &&
       this._history &&
@@ -375,15 +407,19 @@ class LevoitEsphomePanel extends HTMLElement {
   // Routes under the panel: "" the device overview, "/config" updates and
   // configs, "/device/<name>" a device's page ("/<name>" from 0.6.x too),
   // "/groups" the groups, "/groups/<id>" a group's page, "/groups/<id>/edit"
-  // and "/groups/new[/<area_id>]" the editor.
+  // and "/groups/new[/<area_id>]" the editor, "/add[/<name>]" Add device.
   set route(route) {
     this._route = route;
     const parts = (route?.path || "").split("/").filter(Boolean).map(decodeURIComponent);
     let name = null;
     let groupKey = null;
     let detailId = null;
+    let addFor;
     if (parts[0] === "config") this._view = "config";
-    else if (parts[0] === "groups") {
+    else if (parts[0] === "add") {
+      this._view = "add";
+      addFor = parts[1] || null;
+    } else if (parts[0] === "groups") {
       const rest = parts.slice(1);
       if (!rest.length) this._view = "groups";
       else if (rest[0] === "new") groupKey = rest.join("/");
@@ -394,7 +430,9 @@ class LevoitEsphomePanel extends HTMLElement {
     } else if (parts[0] === "device" && parts[1]) name = parts[1];
     else if (parts[0]) name = parts[0];
     if (name) this._view = "device";
-    else if (parts[0] !== "config" && parts[0] !== "groups") this._view = "overview";
+    else if (!["config", "groups", "add"].includes(parts[0])) this._view = "overview";
+    if (addFor === undefined) this._add = null; // left the wizard: the next one starts afresh
+    else if (!this._add || this._add.forName !== addFor) this._startAdd(addFor);
     if (groupKey !== this._groupKey) {
       this._groupKey = groupKey;
       this._edit = null;
@@ -681,6 +719,55 @@ class LevoitEsphomePanel extends HTMLElement {
         this._page = null;
         this._render();
         this._loadPage();
+        break;
+      // Add device: the wizard
+      case "wz-model":
+        if (this._add.model !== target.dataset.model) {
+          this._add.model = target.dataset.model;
+          this._add.variant = null;
+          this._add.custom = null;
+          if (this._add.existing && this._add.existing !== this._add.forName) this._add.existing = undefined;
+        }
+        this._render();
+        break;
+      case "wz-variant":
+        await this._wzChooseVariant(target.dataset.file);
+        break;
+      case "wz-device": {
+        const chosen = target.dataset.name || null;
+        if (chosen !== this._add.existing) {
+          this._add.existing = chosen;
+          this._add.name = chosen || "";
+          this._add.nameCheck = null;
+          this._add.otaPassword = "";
+        }
+        this._render();
+        break;
+      }
+      case "wz-set":
+        this._add[target.dataset.field] = target.dataset.value;
+        this._render();
+        break;
+      case "wz-next":
+        await this._wzNext();
+        break;
+      case "wz-back":
+        this._wzBack();
+        break;
+      case "wz-step":
+        await this._wzEnter(target.dataset.step);
+        break;
+      case "wz-create":
+        await this._wzCreate();
+        break;
+      case "wz-retry":
+        this._startAdd(this._add?.forName);
+        break;
+      case "wz-reload":
+        await this._loadAddOptions();
+        break;
+      case "wz-restart":
+        this._startAdd(null);
         break;
     }
   }
@@ -1002,7 +1089,7 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _actions(d) {
     if (!d.configuration)
-      return `<button class="btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device → Device already in Home Assistant">Add config</button>`;
+      return `<button class="btn" data-action="navigate" data-path="${esc(this._addPath(d.name))}" title="Add device: a config for this device, updated over the air">Add config</button>`;
     const busy = this._busy.has(d.name) || d.building;
     const dis = busy ? "disabled" : "";
     return `<button class="btn" data-action="compile" data-name="${esc(d.name)}" ${dis}>Compile</button>
@@ -1087,7 +1174,7 @@ class LevoitEsphomePanel extends HTMLElement {
         <div class="big-icon">${icon("purifier")}</div>
         <p>No Levoit or Philips ESPHome device found yet.</p>
         <p class="muted">A device shows up when its Device Builder config loads the levoit or philips component, or when it reports the esp_version or model text sensor.</p>
-        <button class="btn primary" data-action="navigate" data-path="${INTEGRATION_PAGE}">Add device</button>
+        <button class="btn primary" data-action="navigate" data-path="${esc(this._addPath())}">Add device</button>
       </div>`;
     const updates = devices.filter((d) => d.update_available).length;
     const noConfig = devices.filter((d) => !d.configuration).length;
@@ -1165,13 +1252,14 @@ class LevoitEsphomePanel extends HTMLElement {
     const onGroups = this._view === "groups";
     const onEditor = this._view === "group";
     const onDetail = this._view === "groupdetail";
+    const onAdd = this._view === "add";
     const detail = onDetail ? this._detailGroup() : null;
     const pageTitle =
       this._page?.title || this._device(this._pageName)?.title || this._pageName || "";
     const updates = (this._data?.devices || []).filter((d) => d.update_available).length;
     const onDevices = !onConfig && !onGroups;
     const tabs =
-      onPage || onEditor || onDetail
+      onPage || onEditor || onDetail || onAdd
         ? ""
         : `<div class="tabs" role="tablist">
           <button class="tab${onDevices ? " on" : ""}" role="tab" aria-selected="${onDevices}" data-action="navigate" data-path="${esc(this._base)}">Devices</button>
@@ -1183,7 +1271,9 @@ class LevoitEsphomePanel extends HTMLElement {
     // the view first: the editor makes its draft, which the toolbar shows
     const view = onPage
       ? this._devicePage()
-      : onConfig
+      : onAdd
+        ? this._wizard()
+        : onConfig
         ? `${this._data && !this._error ? this._releases() : ""}${this._body()}`
         : onGroups
           ? this._groupsView()
@@ -1211,7 +1301,9 @@ class LevoitEsphomePanel extends HTMLElement {
         }${
           onPage
             ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}" aria-label="All devices" title="All devices">${icon("back")}</button>`
-            : onEditor && draft?.id
+            : onAdd
+              ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._base)}/config" aria-label="Updates and config" title="Updates &amp; config">${icon("back")}</button>`
+              : onEditor && draft?.id
               ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath(encodeURIComponent(draft.id)))}" aria-label="Back to the group" title="Back to the group">${icon("back")}</button>`
               : onEditor || onDetail
                 ? `<button class="icon-btn back" data-action="navigate" data-path="${esc(this._groupsPath())}" aria-label="All purifier groups" title="All purifier groups">${icon("back")}</button>`
@@ -1220,7 +1312,11 @@ class LevoitEsphomePanel extends HTMLElement {
         <div class="title">${
           onPage
             ? esc(pageTitle)
-            : onEditor
+            : onAdd
+              ? `Add device${
+                  this._add?.model && this._wzModel() ? `<div class="subtitle">${esc(this._wzModel().title)}</div>` : ""
+                }`
+              : onEditor
               ? `${esc(draft?.name?.trim() || (draft?.id ? "Purifier group" : "New group"))}<div class="subtitle">Purifier group</div>`
               : detail
                 ? `${esc(detail.name)}<div class="subtitle">Purifier group · ${detail.members.length} purifiers</div>`
@@ -1252,16 +1348,16 @@ class LevoitEsphomePanel extends HTMLElement {
             : ""
         }
         ${
-          builderUrl && !onPage && !onEditor && !onDetail
+          builderUrl && !onPage && !onEditor && !onDetail && !onAdd
             ? `<button class="tb-btn" data-action="navigate" data-path="${esc(builderUrl)}" title="Open the ESPHome Device Builder">${icon(
                 "builder",
               )}<span>Device Builder</span></button>`
             : ""
         }
         ${
-          onPage || onEditor || onDetail
+          onPage || onEditor || onDetail || onAdd
             ? ""
-            : `<button class="tb-btn" data-action="navigate" data-path="${INTEGRATION_PAGE}" title="Add device (on the integration page)">${icon(
+            : `<button class="tb-btn" data-action="navigate" data-path="${esc(this._addPath())}" title="Add a device: a Device Builder config from a template">${icon(
                 "plus",
               )}<span>Add device</span></button>`
         }
@@ -1293,6 +1389,602 @@ class LevoitEsphomePanel extends HTMLElement {
       for (const entityId of this._watched()) this._seen[entityId] = this._hass.states[entityId];
     }
     this._bindHistory();
+  }
+
+  // --- Add device: the wizard (route /levoit-esphome/add[/<name>]) --------------------
+  //
+  // The same steps as the integration page's Add device, over the
+  // levoit_esphome/onboarding/* commands: model, ESP, device (new, or one Home
+  // Assistant knows without a config), name and channel, what gets written,
+  // create. /add/<name> starts for that existing device.
+
+  _addPath(rest = "") {
+    return `${this._base}/add${rest ? `/${encodeURIComponent(rest)}` : ""}`;
+  }
+
+  _startAdd(forName) {
+    this._add = {
+      forName: forName || null, // an existing device, from the route
+      options: null, // levoit_esphome/onboarding/options
+      error: null,
+      loading: false,
+      step: null,
+      model: null,
+      variant: null, // a template file, or "custom"
+      custom: null, // {board, rx_pin, tx_pin, boards}, from the custom base's defaults
+      customLoading: false,
+      existing: forName || undefined, // the existing device's name; null: a new device
+      name: "",
+      nameCheck: null, // levoit_esphome/onboarding/check_name for the name as typed
+      channel: "stable",
+      otaPassword: "",
+      creating: false,
+      created: null, // levoit_esphome/onboarding/create
+      createError: null,
+    };
+    if (this._hass) this._loadAddOptions();
+    else this._render();
+  }
+
+  // the choices; also "check again" after the secrets were added (keeps the state)
+  async _loadAddOptions() {
+    const a = this._add;
+    if (!a || a.loading) return;
+    a.loading = true;
+    a.error = null;
+    this._render();
+    try {
+      const options = await this._hass.callWS({ type: "levoit_esphome/onboarding/options" });
+      if (this._add !== a) return;
+      a.options = options;
+      if (!a.step) {
+        if (a.forName) {
+          const device = options.existing.find((d) => d.name === a.forName);
+          if (!device) a.error = `${a.forName} is not a device without a config`;
+          else {
+            a.name = device.name;
+            if (device.model && options.models.some((m) => m.model === device.model)) a.model = device.model;
+          }
+        }
+        a.step = this._wzSteps()[0];
+      }
+    } catch (err) {
+      if (this._add === a) a.error = err?.message || String(err);
+    } finally {
+      if (this._add === a) {
+        a.loading = false;
+        this._render();
+      }
+    }
+  }
+
+  _wzSteps() {
+    const a = this._add;
+    const steps = [];
+    if (!(a.forName && a.model)) steps.push("model");
+    steps.push("esp");
+    if (!a.forName && a.options?.existing?.length) steps.push("device");
+    steps.push("name", "protection", "create");
+    return steps;
+  }
+
+  _wzModel() {
+    return this._add.options?.models.find((m) => m.model === this._add.model) || null;
+  }
+
+  _wzVariant() {
+    return this._wzModel()?.variants.find((v) => v.file === this._add.variant) || null;
+  }
+
+  // the template the config is made from: the chosen one, or the custom base
+  _wzTemplateFile() {
+    return this._add.variant === "custom" ? this._wzModel()?.custom_base : this._add.variant;
+  }
+
+  _wzExisting() {
+    return this._add.options?.existing.find((d) => d.name === this._add.existing) || null;
+  }
+
+  _wzName() {
+    return (this._add.existing || this._add.name).trim().toLowerCase();
+  }
+
+  _wzEspTitle() {
+    if (this._add.variant === "custom") return `Other ESP (${this._add.custom?.board || "own board"})`;
+    return this._wzVariant()?.title || "";
+  }
+
+  // board and pins of the user's own ESP, as onboarding.validate_custom checks them
+  _wzCustomErrors() {
+    const c = this._add.custom || {};
+    const errors = {};
+    const pin = (v) => /^(?:gpio)?0*\d{1,2}$/i.exec((v || "").trim());
+    const number = (m) => Number(/\d+$/.exec(m[0])[0]);
+    if (!/^[a-z0-9][a-z0-9_.-]*$/.test((c.board || "").trim().toLowerCase()))
+      errors.board = "Use an ESPHome board name: lowercase letters, digits, hyphens, underscores and dots.";
+    const rx = pin(c.rx_pin);
+    const tx = pin(c.tx_pin);
+    if (!rx) errors.rx_pin = "Enter a GPIO number, e.g. GPIO5.";
+    if (!tx) errors.tx_pin = "Enter a GPIO number, e.g. GPIO4.";
+    else if (rx && number(rx) === number(tx)) errors.tx_pin = "RX and TX must be different pins.";
+    return errors;
+  }
+
+  _wzCanProceed(step) {
+    const a = this._add;
+    switch (step) {
+      case "model":
+        return Boolean(a.model);
+      case "esp":
+        return Boolean(a.variant) && (a.variant !== "custom" || (a.custom && !Object.keys(this._wzCustomErrors()).length));
+      case "device":
+        return a.existing !== undefined;
+      case "name":
+        return a.existing ? true : Boolean(a.nameCheck?.ok && a.nameCheck.name === this._wzName());
+      case "protection":
+        return !(a.options?.missing_secrets || []).length;
+      default:
+        return false;
+    }
+  }
+
+  async _wzNext() {
+    const a = this._add;
+    const steps = this._wzSteps();
+    const i = steps.indexOf(a.step);
+    if (!this._wzCanProceed(a.step) || i < 0 || i + 1 >= steps.length) return;
+    await this._wzEnter(steps[i + 1]);
+  }
+
+  _wzBack() {
+    const steps = this._wzSteps();
+    const i = steps.indexOf(this._add.step);
+    if (i <= 0) this._navigate(`${this._base}/config`);
+    else this._wzEnter(steps[i - 1]);
+  }
+
+  async _wzEnter(step) {
+    const a = this._add;
+    a.step = step;
+    a.createError = null;
+    this._render();
+    if (step === "name" && !a.existing && !a.name) {
+      // the template's name, or a free one like it
+      const base = this._wzModel()?.variants.find((v) => v.file === this._wzTemplateFile());
+      a.name = base?.name || "";
+      await this._wzCheckName();
+    }
+  }
+
+  async _wzChooseVariant(file) {
+    const a = this._add;
+    a.variant = file;
+    if (file === "custom" && !a.custom) await this._wzLoadCustom();
+    else this._render();
+  }
+
+  async _wzLoadCustom() {
+    const a = this._add;
+    const template = this._wzModel()?.custom_base;
+    if (!template) return;
+    a.customLoading = true;
+    this._render();
+    try {
+      const d = await this._hass.callWS({ type: "levoit_esphome/onboarding/custom_defaults", template });
+      if (this._add === a) a.custom = { board: d.board, rx_pin: d.rx_pin, tx_pin: d.tx_pin, boards: d.boards };
+    } catch (err) {
+      if (this._add === a) {
+        a.custom = { board: "", rx_pin: "", tx_pin: "", boards: [] };
+        this._toast(`Template: ${err.message || err}`);
+      }
+    } finally {
+      if (this._add === a) {
+        a.customLoading = false;
+        this._render();
+      }
+    }
+  }
+
+  // the name as typed: checked against the Device Builder after a pause
+  _wzNameInput(value) {
+    const a = this._add;
+    a.name = value;
+    a.nameCheck = null;
+    clearTimeout(this._wzNameTimer);
+    this._wzNameTimer = setTimeout(() => this._wzCheckName(), 350);
+    this._wzNameStatus();
+  }
+
+  async _wzCheckName() {
+    const a = this._add;
+    if (!a) return;
+    const name = this._wzName();
+    if (!name) {
+      a.nameCheck = null;
+      this._wzNameStatus();
+      return;
+    }
+    try {
+      const result = await this._hass.callWS({ type: "levoit_esphome/onboarding/check_name", name });
+      if (this._add === a && this._wzName() === name) a.nameCheck = result;
+    } catch (err) {
+      if (this._add === a) a.nameCheck = { name, ok: false, error: "cannot_connect", message: err.message || String(err) };
+    }
+    if (this._add === a) this._wzNameStatus();
+  }
+
+  // the message under the name field and the Next button, in place: a re-render
+  // would take the focus from the field (it runs once the field is left)
+  _wzNameStatus() {
+    const root = this.shadowRoot;
+    const msg = root.querySelector("[data-wz-name-msg]");
+    if (msg) {
+      const { text, cls } = this._wzNameMessage();
+      msg.textContent = text;
+      msg.className = `hint wz-msg ${cls}`;
+    }
+    const next = root.querySelector('[data-action="wz-next"]');
+    if (next) next.disabled = !this._wzCanProceed("name");
+    this._render();
+  }
+
+  _wzNameMessage() {
+    const a = this._add;
+    const c = a.nameCheck;
+    const typed = this._wzName();
+    if (!typed) return { text: "Lowercase letters, digits and hyphens, at most 31 characters.", cls: "" };
+    if (!c || c.name !== typed) return { text: "Checking…", cls: "" };
+    if (c.ok) return { text: `${c.name}.yaml in the Device Builder; on the network as ${c.name}.local`, cls: "ok" };
+    const suggestion = c.suggestion && c.suggestion !== c.name ? ` Free: ${c.suggestion}` : "";
+    return { text: `${c.message}${suggestion}`, cls: "bad" };
+  }
+
+  // the custom form's hints and the Next button, in place (as the name)
+  _wzCustomStatus() {
+    const errors = this._wzCustomErrors();
+    for (const el of this.shadowRoot.querySelectorAll("[data-wz-msg]")) {
+      const key = el.dataset.wzMsg;
+      el.textContent = errors[key] || el.dataset.hint;
+      el.className = `hint${errors[key] ? " bad" : ""}`;
+      el.previousElementSibling?.classList.toggle("err", Boolean(errors[key]));
+    }
+    const next = this.shadowRoot.querySelector('[data-action="wz-next"]');
+    if (next) next.disabled = !this._wzCanProceed("esp");
+  }
+
+  async _wzCreate() {
+    const a = this._add;
+    if (a.creating || !this._wzCanProceed("protection")) return;
+    a.creating = true;
+    a.createError = null;
+    this._render();
+    const msg = {
+      type: "levoit_esphome/onboarding/create",
+      template: this._wzTemplateFile(),
+      name: this._wzName(),
+      channel: a.channel,
+      existing: Boolean(a.existing),
+    };
+    if (a.variant === "custom") msg.custom = { board: a.custom.board, rx_pin: a.custom.rx_pin, tx_pin: a.custom.tx_pin };
+    if (a.existing && a.otaPassword) msg.ota_password = a.otaPassword;
+    try {
+      a.created = await this._hass.callWS(msg);
+    } catch (err) {
+      a.createError = err?.message || String(err);
+    } finally {
+      a.creating = false;
+      this._render();
+    }
+  }
+
+  _wizard() {
+    const a = this._add;
+    if (!a) return "";
+    if (a.error)
+      return `<div class="card empty"><p class="bad">${esc(a.error)}</p>
+        <button class="btn" data-action="wz-retry">Try again</button></div>`;
+    if (!a.options || (a.loading && !a.step))
+      return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
+    if (a.created) return this._wzDone();
+    const steps = this._wzSteps();
+    const i = steps.indexOf(a.step);
+    const stepper = `<ol class="wz-steps">${steps
+      .map((s, n) => {
+        const label = `${n + 1}. ${WIZARD_STEPS[s]}`;
+        const cls = n < i ? "done" : n === i ? "on" : "";
+        return `<li class="${cls}">${
+          n < i ? `<button data-action="wz-step" data-step="${s}">${label}</button>` : `<span>${label}</span>`
+        }</li>`;
+      })
+      .join("")}</ol>`;
+    const screens = {
+      model: () => this._wzModelScreen(),
+      esp: () => this._wzEspScreen(),
+      device: () => this._wzDeviceScreen(),
+      name: () => this._wzNameScreen(),
+      protection: () => this._wzProtectionScreen(),
+      create: () => this._wzCreateScreen(),
+    };
+    const last = a.step === "create";
+    const nav = `<div class="wz-nav">
+      <button class="btn" data-action="wz-back" ${a.creating ? "disabled" : ""}>${i === 0 ? "Cancel" : "Back"}</button>
+      ${
+        last
+          ? `<button class="btn primary" data-action="wz-create" ${
+              a.creating || !this._wzCanProceed("protection") ? "disabled" : ""
+            }>${a.creating ? `<span class="spinner light"></span> Creating…` : "Create config"}</button>`
+          : `<button class="btn primary" data-action="wz-next" ${this._wzCanProceed(a.step) ? "" : "disabled"}>Next</button>`
+      }
+    </div>`;
+    return `<div class="wz">${stepper}<div class="card wz-card">${screens[a.step]()}</div>${nav}</div>`;
+  }
+
+  _wzHead(title, text) {
+    return `<div class="wz-head"><h2>${title}</h2><p class="hint">${text}</p></div>`;
+  }
+
+  _wzOption(action, data, on, tile, name, hint, disabled = false) {
+    return `<button class="wz-opt${on ? " on" : ""}" data-action="${action}" ${data} aria-pressed="${on}" ${
+      disabled ? "disabled" : ""
+    }>
+      <span class="dev-tile">${tile}</span>
+      <span class="wz-opt-text"><span class="wz-opt-name">${name}</span><span class="hint">${hint}</span></span>
+    </button>`;
+  }
+
+  _wzModelScreen() {
+    const a = this._add;
+    const cards = a.options.models
+      .map((m) =>
+        this._wzOption(
+          "wz-model",
+          `data-model="${esc(m.model)}"`,
+          m.model === a.model,
+          deviceImage(m.model),
+          esc(m.title),
+          `${esc(m.model)} · ${esc(m.variants.map((v) => v.title).join(", "))}`,
+        ),
+      )
+      .join("");
+    return `${this._wzHead(
+      "Which purifier?",
+      `The models with a template in tuct/levoit. Others (with their own hardware notes) are in the <a href="${DEVICES_URL}" target="_blank" rel="noreferrer">device folders</a>.`,
+    )}<div class="wz-grid">${cards}</div>`;
+  }
+
+  _wzEspScreen() {
+    const a = this._add;
+    const m = this._wzModel();
+    const folder = (m.custom_base || "").split("/")[1] || "";
+    const cards =
+      m.variants
+        .map((v) =>
+          this._wzOption(
+            "wz-variant",
+            `data-file="${esc(v.file)}"`,
+            a.variant === v.file,
+            icon("memory"),
+            esc(v.title),
+            `Board ${esc(v.board)} · a template config: follows tuct/levoit`,
+          ),
+        )
+        .join("") +
+      this._wzOption(
+        "wz-variant",
+        `data-file="custom"`,
+        a.variant === "custom",
+        icon("pencil"),
+        "Other ESP",
+        "Your own board and UART pins · a custom config: never rewritten",
+      );
+    let custom = "";
+    if (a.variant === "custom") {
+      const base = m.variants.find((v) => v.file === m.custom_base);
+      if (a.customLoading || !a.custom)
+        custom = `<div class="wz-custom"><div class="hint pad"><span class="spinner"></span> Reading the ${esc(
+          base?.title || "",
+        )} template…</div></div>`;
+      else {
+        const errors = this._wzCustomErrors();
+        const c = a.custom;
+        const field = (key, label, hint, extra = "") =>
+          `<label class="field">${label}<input class="inp${errors[key] ? " err" : ""}" type="text" data-wz="${key}" value="${esc(
+            c[key],
+          )}" ${extra} autocomplete="off" spellcheck="false"><span class="hint${errors[key] ? " bad" : ""}" data-wz-msg="${key}" data-hint="${esc(
+            hint,
+          )}">${esc(errors[key] || hint)}</span></label>`;
+        custom = `<div class="wz-custom">
+          <div class="hint pad">Made from the ${esc(base?.title || "")} config of tuct/levoit with your board and pins. Updates never rewrite it; they only build the newer component it pulls. They must match how the ESP is wired: <a href="${DEVICES_URL}${esc(
+            folder,
+          )}" target="_blank" rel="noreferrer">wiring notes</a>.</div>
+          <div class="wz-fields">
+            ${field("board", "ESP board", "ESPHome board name, e.g. seeed_xiao_esp32s3 or esp32-c6-devkitc-1", 'list="wz-boards"')}
+            <datalist id="wz-boards">${(c.boards || []).map((b) => `<option value="${esc(b)}">`).join("")}</datalist>
+            ${field("rx_pin", "RX pin", "The ESP pin wired to the MCU's TX, e.g. GPIO5")}
+            ${field("tx_pin", "TX pin", "The ESP pin wired to the MCU's RX, e.g. GPIO4")}
+          </div></div>`;
+      }
+    }
+    return `${this._wzHead(
+      `${esc(m.title)}: which ESP?`,
+      "A template config follows tuct/levoit: every update rewrites it from the newest template, keeping name, secrets and channel. Other ESP makes a config of your own for a board or pins without a template.",
+    )}<div class="wz-grid">${cards}</div>${custom}`;
+  }
+
+  _wzDeviceScreen() {
+    const a = this._add;
+    const m = this._wzModel();
+    const cards =
+      this._wzOption(
+        "wz-device",
+        'data-name=""',
+        a.existing === null,
+        icon("plus"),
+        "New device",
+        "A new name and new keys. Flashed once over USB, then updated over the air.",
+      ) +
+      a.options.existing
+        .map((d) => {
+          const other = Boolean(d.model && d.model !== m.model);
+          const hint = other
+            ? `reports ${esc(d.model)}, not a ${esc(m.title)}`
+            : d.model
+              ? esc(d.model)
+              : "model not reported (firmware before 1.7.1)";
+          return this._wzOption(
+            "wz-device",
+            `data-name="${esc(d.name)}"`,
+            a.existing === d.name,
+            deviceImage(d.model || m.model),
+            esc(d.title),
+            `${esc(d.name)} · ${hint}`,
+            other,
+          );
+        })
+        .join("");
+    return `${this._wzHead(
+      "A new device, or one Home Assistant knows?",
+      "A device that runs the firmware already but has no config in this Device Builder keeps its name and API key; the next update installs the new config over the air.",
+    )}<div class="wz-grid">${cards}</div>`;
+  }
+
+  _wzChannel() {
+    const a = this._add;
+    return `<div class="wz-field"><span class="field">Update channel</span>
+      <div class="segs" role="group" aria-label="Update channel">${[
+        ["stable", "Stable"],
+        ["main", "Main"],
+      ]
+        .map(
+          ([v, t]) =>
+            `<button class="seg${a.channel === v ? " on" : ""}" aria-pressed="${a.channel === v}" data-action="wz-set" data-field="channel" data-value="${v}">${t}</button>`,
+        )
+        .join("")}</div>
+      <span class="hint">Stable gets releases, main every merge.</span></div>`;
+  }
+
+  _wzNameScreen() {
+    const a = this._add;
+    const d = this._wzExisting();
+    if (d)
+      return `${this._wzHead(
+        esc(d.title),
+        "The device keeps its name, so Home Assistant keeps the device and its history.",
+      )}
+      <div class="wz-fields">
+        <label class="field">Name<input class="inp" type="text" value="${esc(d.name)}" readonly><span class="hint">Fixed: the device's ESPHome name</span></label>
+        <label class="field">OTA password<input class="inp" type="password" data-wz="ota_password" value="${esc(
+          a.otaPassword,
+        )}" autocomplete="new-password"><span class="hint">Home Assistant does not know it: the OTA password the device was built with, if it has one. Leave it empty if not.</span></label>
+      </div>${this._wzChannel()}`;
+    const { text, cls } = this._wzNameMessage();
+    return `${this._wzHead(
+      "Name and channel",
+      "The ESPHome name: the config file, the device's hostname and the names of its secrets come from it.",
+    )}
+      <div class="wz-fields">
+        <label class="field">Name<input class="inp${cls === "bad" ? " err" : ""}" type="text" data-wz="name" value="${esc(
+          a.name,
+        )}" autocomplete="off" spellcheck="false" maxlength="31"><span class="hint wz-msg ${cls}" data-wz-name-msg>${esc(
+          text,
+        )}</span></label>
+      </div>${this._wzChannel()}`;
+  }
+
+  _wzProtectionScreen() {
+    const a = this._add;
+    const o = a.options;
+    const d = this._wzExisting();
+    const name = this._wzName();
+    const secret = (what) => `<code>${esc(name.replace(/-/g, "_"))}_${what}</code>`;
+    const rows = [];
+    if (!d) rows.push(["API encryption", `A new key, stored in the Device Builder's secrets.yaml as ${secret("api_key")}.`]);
+    else if (d.api_key)
+      rows.push([
+        "API encryption",
+        `The key Home Assistant uses for the device, stored as ${secret("api_key")}, so Home Assistant keeps the device.`,
+      ]);
+    else rows.push(["API encryption", "None: Home Assistant has no key for this device."]);
+    if (!d)
+      rows.push([
+        "OTA updates",
+        o.ota_encryption
+          ? "Encrypted with the API key (<code>ota: encryption:</code>)."
+          : `With a password, stored as ${secret("ota_password")}: the Device Builder runs ESPHome ${esc(
+              o.esphome_version || "?",
+            )}, before 2026.9.0 brought OTA encryption.`,
+      ]);
+    else if (a.otaPassword)
+      rows.push([
+        "OTA updates",
+        `With your password, stored as ${secret(
+          "ota_password",
+        )}. The first update installs with it; from the update after, they are encrypted with the API key.`,
+      ]);
+    else if (d.api_key)
+      rows.push(["OTA updates", "No password. From the update after the first one, they are encrypted with the API key."]);
+    else rows.push(["OTA updates", "No password and no key: not protected."]);
+    const missing = o.missing_secrets || [];
+    rows.push([
+      "Wi-Fi",
+      missing.length
+        ? `<span class="bad">secrets.yaml has no ${esc(missing.join(", "))}.</span> Add ${
+            missing.length === 1 ? "it" : "them"
+          } in the Device Builder (Secrets), then <button class="btn text" data-action="wz-reload" ${
+            a.loading ? "disabled" : ""
+          }>check again</button>.`
+        : "From the shared <code>wifi_ssid</code>, <code>wifi_password</code> and <code>wifi_ap_password</code> secrets.",
+    ]);
+    rows.push([
+      "Config",
+      a.variant === "custom"
+        ? `<code>${esc(name)}.yaml</code>: a custom config for board ${esc(a.custom.board)}, RX ${esc(
+            a.custom.rx_pin,
+          )}, TX ${esc(a.custom.tx_pin)}, channel ${esc(a.channel)}. Never rewritten.`
+        : `<code>${esc(name)}.yaml</code> from <code>${esc(this._wzTemplateFile())}</code>, channel ${esc(
+            a.channel,
+          )}. Every update rewrites it from the newest template, keeping name, secrets and channel.`,
+    ]);
+    return `${this._wzHead(
+      "What gets written",
+      "Only secret names are read, never values; a secret that exists is never overwritten; the config is created, never replaced.",
+    )}<dl class="wz-dl">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+  }
+
+  _wzCreateScreen() {
+    const a = this._add;
+    const name = this._wzName();
+    const m = this._wzModel();
+    return `${this._wzHead(
+      "Create the config",
+      `${esc(m.title)} · ${esc(this._wzEspTitle())} · ${esc(name)} · ${esc(CHANNEL_LABELS[a.channel] || a.channel)}`,
+    )}
+      <p>Create <code>${esc(name)}.yaml</code> and its secrets in the ESPHome Device Builder now. ${
+        a.existing
+          ? "The next update of the device installs it over the air."
+          : "Then flash it once over USB from the Device Builder; after that, updates come over the air."
+      }</p>${a.createError ? `<p class="bad">${esc(a.createError)}</p>` : ""}`;
+  }
+
+  _wzDone() {
+    const c = this._add.created;
+    const builderUrl = c.builder_url || this._data?.builder_url;
+    const next = c.existing
+      ? `<p>${esc(c.name)} keeps its name and key. Its row on <b>Updates &amp; config</b> now offers <b>Update</b>: the next update builds this config and installs it over the air.</p>`
+      : `<p>Flash it once over USB: open the Device Builder, find <code>${esc(
+          c.configuration,
+        )}</code>, choose <b>Install</b>, then <b>Plug into this computer</b>. Until then it is listed as <i>Not flashed yet</i> on <b>Updates &amp; config</b>. As soon as the flashed ESP is on your Wi-Fi, the integration adds it to the ESPHome integration by itself.</p>`;
+    return `<div class="card empty wz-done"><div class="big-icon ok">${icon("check")}</div>
+      <h2>${esc(c.configuration)} created</h2>${next}
+      <div class="wz-nav center">
+        ${
+          builderUrl && !c.existing
+            ? `<button class="btn primary" data-action="navigate" data-path="${esc(builderUrl)}">Open Device Builder</button>`
+            : ""
+        }
+        <button class="btn${c.existing ? " primary" : ""}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</button>
+        <button class="btn" data-action="wz-restart">Add another device</button>
+      </div></div>`;
   }
 
   // --- overview: every device as a card, for using them --------------------------
@@ -4149,6 +4841,61 @@ details.section[open] > summary { padding-bottom: 8px; }
 @media (max-width: 420px) {
   .content { padding: 8px; }
   tr { grid-template-columns: 1fr; }
+}
+
+/* Add device: the wizard */
+.wz { max-width: 880px; margin: 0 auto; }
+.wz-steps { display: flex; flex-wrap: wrap; gap: 4px 0; list-style: none; margin: 0 4px 12px; padding: 0;
+  font-size: 13px; color: var(--secondary-text-color); }
+.wz-steps li { display: flex; align-items: center; }
+.wz-steps li::after { content: "›"; margin: 0 10px; opacity: 0.5; }
+.wz-steps li:last-child::after { content: none; }
+.wz-steps li.on { color: var(--lv-accent-text); font-weight: 500; }
+.wz-steps li.done { color: var(--primary-text-color); }
+.wz-steps button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
+  text-decoration: underline dotted; }
+.wz-card { padding: 4px 0 8px; }
+.wz-head { padding: 16px 20px 8px; }
+.wz-head h2 { font-size: 18px; }
+.wz-head .hint { font-size: 13px; margin: 6px 0 0; max-width: 680px; }
+.wz-head a, .wz-custom a { color: var(--lv-accent-text); }
+.wz-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 10px; padding: 8px 20px 16px; }
+.wz-opt { display: flex; align-items: center; gap: 12px; padding: 12px; font: inherit; text-align: left; cursor: pointer;
+  border-radius: 12px; border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+.wz-opt:hover:not(:disabled) { border-color: var(--primary-color); }
+.wz-opt.on { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 6%, transparent); }
+.wz-opt.on .dev-tile { background: color-mix(in srgb, var(--primary-color) 16%, transparent); }
+.wz-opt:disabled { opacity: 0.5; cursor: default; }
+.wz-opt .dev-tile svg:not(.dev-img) { width: 26px; height: 26px; fill: var(--secondary-text-color); }
+.wz-opt.on .dev-tile svg:not(.dev-img) { fill: var(--lv-accent-text); }
+.wz-opt.on .dev-img { stroke: var(--lv-accent-text); }
+.wz-opt-text { display: flex; flex-direction: column; min-width: 0; }
+.wz-opt-name { font-size: 15px; font-weight: 500; }
+.wz-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 8px 20px 12px; }
+.wz-fields .hint { line-height: 1.35; }
+.wz-field { padding: 8px 20px 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.wz-custom { border-top: 1px solid var(--divider-color); margin-top: 4px; }
+.wz-custom .hint.pad { padding: 12px 20px 0; font-size: 13px; }
+.inp.err { border-color: var(--error-color, #db4437); }
+.inp[readonly] { opacity: 0.7; }
+.wz-msg.ok { color: var(--success-color, #43a047); }
+.wz-msg.bad, .hint.bad { color: var(--error-color, #db4437); }
+.wz-dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; margin: 0; padding: 8px 20px 16px; font-size: 14px; }
+.wz-dl dt { font-weight: 500; }
+.wz-dl dd { margin: 0; color: var(--secondary-text-color); line-height: 1.4; }
+.wz-dl .btn.text { height: auto; padding: 0; margin: 0; font-size: inherit; text-decoration: underline; }
+.wz code { font-family: ui-monospace, monospace; font-size: 13px; background: var(--lv-tile); padding: 1px 5px; border-radius: 4px; }
+.wz-card > p { margin: 8px 20px 12px; font-size: 14px; line-height: 1.45; }
+.wz-nav { display: flex; justify-content: space-between; gap: 8px; margin: 12px 4px; }
+.wz-nav.center { justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.wz-nav .btn { margin: 0; }
+.wz-done h2 { margin: 12px 0 4px; }
+.wz-done p { text-align: left; line-height: 1.45; }
+.big-icon.ok svg { color: var(--success-color, #43a047); }
+@media (max-width: 600px) {
+  .wz-dl { grid-template-columns: 1fr; gap: 2px 0; }
+  .wz-dl dd { margin-bottom: 10px; }
 }
 `;
 
