@@ -473,8 +473,17 @@ The sidebar page's **Add device** (and **Add config** on the row of a device
 without one) does the same as a guided page, one screen per step: the model,
 the ESP, a new device or one Home Assistant knows, name and channel, what
 gets written (keys, OTA protection, the Wi-Fi secrets, the config), then
-Create. The name is checked against the Device Builder as you type, and the
-last screen says what to do next. Both routes make the same config.
+Create. The name is checked against the Device Builder as you type. Both
+routes make the same config. The guided page then carries on:
+
+* **New device:** it compiles the config right away, with the build's steps
+  live, so a problem shows before the flash; then it says how to flash it
+  over USB (with a button that opens the Device Builder in a new tab) and
+  waits until the device is on the network and in Home Assistant, which
+  ends on its device page. Leaving the page is fine: the config is listed as
+  *Not flashed yet* and added once the device connects
+* **Existing device:** **Install over the air** compiles and uploads it, as
+  *Update* does, and ends on its device page
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
