@@ -471,10 +471,12 @@ pins, and the config is made from the model's builder file with those.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
-* **New device:** a name is suggested; a new API encryption key and OTA
-  password are generated and stored in the Device Builder's `secrets.yaml` as
-  `<name>_api_key` / `<name>_ota_password`. Flash it once over USB from the
-  Device Builder; after that, updates come over the air. As soon as the
+* **New device:** a name is suggested; a new API encryption key is
+  generated and stored in the Device Builder's `secrets.yaml` as
+  `<name>_api_key`, and OTA updates are encrypted with it (a Device Builder
+  older than ESPHome 2026.9.0 gets an OTA password instead, as
+  `<name>_ota_password`). Flash it once over USB from the Device Builder;
+  after that, updates come over the air. As soon as the
   flashed ESP is on the network (every 30 s it looks for `<name>.local`), the
   integration adds it to the ESPHome integration with the key from the Device
   Builder, so there is no discovered device to confirm. If the ESP needs
@@ -501,17 +503,33 @@ through its `ref:`.
 
 #### Encrypted native OTA
 
-Template refreshes preserve the native ESPHome OTA encryption key and API
-key, whether inline or referenced by `!secret`. If `ota.encryption` is left
-empty, OTA continues to use the API encryption key. An explicit OTA key must
-resolve to the same value as a configured API key. The integration inspects the
-YAML without loading packages or looking up secret values. Refresh supports a
-standalone template with the native API, one native OTA transport, and an
-upstream Main or Stable source. Other layouts stop before writing or building.
-Key rotation (`old_key`) and migration that permits a plaintext upload
-(`allow_plaintext_upload`) also require a custom config. Remove the template
-marker to manage that file manually. Use a Device Builder version that
-supports native OTA encryption for an encrypted device.
+New configs encrypt OTA updates with the device's API key (`ota: encryption:`
+without a key of its own). Template refreshes preserve the native ESPHome OTA
+encryption key and API key, whether inline or referenced by `!secret`. If
+`ota.encryption` is left empty, OTA continues to use the API encryption key.
+An explicit OTA key must resolve to the same value as a configured API key.
+The integration inspects the YAML without loading packages or looking up
+secret values. Refresh supports a standalone template with the native API,
+one native OTA transport, and an upstream Main or Stable source. Other layouts
+stop before writing or building. Key rotation (`old_key`) and migration that
+permits a plaintext upload (`allow_plaintext_upload`) also require a custom
+config. Remove the template marker to manage that file manually. Use a Device
+Builder version that supports native OTA encryption for an encrypted device.
+
+**From an OTA password to encryption.** A template config made before this
+version has `password: !secret <name>_ota_password`. It migrates over two
+updates, as the [ESPHome documentation](https://esphome.io/components/ota/esphome/)
+describes: the next update installs with the password as before, and the
+firmware it installs (ESPHome 2026.9.0 or newer, with an API key) offers
+encryption; right after that upload the integration swaps the password line
+for `encryption:`, a text change, and the row says *OTA encrypted from the
+next update on*. The update after that is encrypted. Nothing to do; the
+`<name>_ota_password` secret stays in `secrets.yaml`, unused (the integration
+never deletes a secret). Should an encrypted upload be refused because the
+device does not offer encryption, the password line comes back while the
+secret exists, and the row says so. A custom config is not touched. ESPHome
+removes the plain password path in 2027.3.0: update every device once before
+then.
 
 ### How it works
 

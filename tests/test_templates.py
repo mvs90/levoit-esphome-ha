@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import re
 
@@ -18,11 +19,14 @@ from custom_components.levoit_esphome.templates import (
     config_values,
     new_api_key,
     normalize_pin,
+    ota_encryption_from_password,
+    ota_password_from_encryption,
     parse_templates,
     render,
     render_custom,
     secret_key,
     suggest_name,
+    supports_ota_encryption,
     template_of,
     valid_board,
     valid_name,
@@ -325,3 +329,37 @@ def test_refresh_does_not_enable_a_native_api_that_was_removed() -> None:
     assert without_api != text
     with pytest.raises(TemplateError, match="without the native API"):
         config_values(without_api)
+
+
+def test_supports_ota_encryption() -> None:
+    """ESPHome 2026.9.0 brought it; an unknown version counts as new enough."""
+    assert supports_ota_encryption("2026.9.0")
+    assert supports_ota_encryption("2026.11.0")
+    assert supports_ota_encryption("2027.1.0b1")
+    assert not supports_ota_encryption("2026.8.2")
+    assert not supports_ota_encryption("2025.12.0")
+    assert supports_ota_encryption(None)
+    assert supports_ota_encryption("dev")
+
+
+def test_ota_password_and_encryption_swap() -> None:
+    """The OTA line swapped each way, text only; a config without the line is refused."""
+    with_password = render(BUILDER, EVEREST_C3, VALUES)
+    encrypted = ota_encryption_from_password(with_password)
+    assert encrypted == with_password.replace(
+        "    password: !secret bedroom_air_ota_password\n", "    encryption:\n"
+    )
+    assert config_values(encrypted) == replace(VALUES, ota_password=None, ota_uses_api_key=True)
+    assert ota_password_from_encryption(encrypted, "bedroom_air_ota_password") == with_password
+    with pytest.raises(TemplateError, match="ota password line"):
+        ota_encryption_from_password(encrypted)
+    with pytest.raises(TemplateError, match="ota encryption"):
+        ota_password_from_encryption(with_password, "x")
+    # an explicit key is not inherited encryption: left alone
+    explicit = render(
+        BUILDER,
+        EVEREST_C3,
+        replace(VALUES, ota_password=None, ota_encryption_key=Value(secret="k")),
+    )
+    with pytest.raises(TemplateError, match="ota encryption"):
+        ota_password_from_encryption(explicit, "x")

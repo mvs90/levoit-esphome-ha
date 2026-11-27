@@ -117,7 +117,13 @@ def _device_dict(
         "build_step": coordinator.build_step(device.name),
         "last_build": None
         if last is None
-        else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
+        else {
+            "ok": last.ok,
+            "upload": last.upload,
+            "at": _iso(last.at),
+            "error": last.error,
+            "note": last.note,
+        },
         "has_build_log": device.name in coordinator.build_logs,
         "build": coordinator.build_summary(device.name),
         "controls": controls,
@@ -140,7 +146,13 @@ def _pending_dict(coordinator: LevoitEsphomeCoordinator, config: PendingConfig) 
         "build_step": coordinator.build_step(config.name),
         "last_build": None
         if last is None
-        else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
+        else {
+            "ok": last.ok,
+            "upload": last.upload,
+            "at": _iso(last.at),
+            "error": last.error,
+            "note": last.note,
+        },
         "has_build_log": config.name in coordinator.build_logs,
         "build": coordinator.build_summary(config.name),
     }

@@ -278,3 +278,17 @@ def test_kept_lines() -> None:
     assert log.lines[-1] == ""
     assert log.summary()["tail"] == log.lines[-BUILD_LOG_TAIL:]
     assert log.reason() == f"line {BUILD_LOG_LINES + 9}"
+
+
+def test_esphome_version_and_refusal() -> None:
+    """The output's first line names the ESPHome at work; a refused encrypted upload is flagged."""
+    log = BuildLog(upload=True)
+    assert log.esphome_version is None and not log.encryption_refused
+    log.add("\x1b[32mINFO ESPHome 2026.11.0\x1b[0m")
+    log.add("INFO ESPHome 2025.1.0")  # a later mention does not replace it
+    assert log.esphome_version == "2026.11.0"
+    log.add("ERROR An OTA encryption key is configured but the device did not offer encryption")
+    assert log.encryption_refused
+    other = BuildLog(upload=True)
+    other.add("ERROR Refusing to send the image in plaintext. The running firmware predates ...")
+    assert other.encryption_refused

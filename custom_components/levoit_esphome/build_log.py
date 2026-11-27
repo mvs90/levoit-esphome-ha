@@ -89,6 +89,12 @@ _UPLOADING = re.compile(r"^INFO Uploading .*\((\d+) bytes\)")
 _UPLOAD_PERCENT = re.compile(r"Uploading: \[[= ]*\]\s*(\d+)%")
 _UPLOAD_TOOK = re.compile(r"^INFO Upload took ([\d.]+) seconds")
 _UPLOADED = re.compile(r"^INFO (?:OTA successful|Successfully uploaded program)")
+# the first line of a compile or upload: the ESPHome that builds and uploads
+_ESPHOME_VERSION = re.compile(r"^INFO ESPHome (\d+\.\d+\.\d+\S*)")
+# the uploader with `ota: encryption:` against a firmware that cannot encrypt
+_ENCRYPTION_REFUSED = re.compile(
+    r"did not offer (?:OTA )?encryption|Refusing to send the image in plaintext"
+)
 
 STEP_FAILED_DETAIL = 160  # characters of the reason shown in the failed step
 
@@ -134,6 +140,9 @@ class BuildLog:
         self._sizes: dict[str, float] = {}
         self._upload_seconds: float | None = None
         self.finished = False
+        self.esphome_version: str | None = None  # "2026.11.0", from the output's first line
+        self.encryption_refused = False  # the upload wanted encryption, the device had none
+        self.note: str | None = None  # what the coordinator did after the build, for the row
 
     @callback
     def add(self, line: str) -> None:
@@ -260,6 +269,10 @@ class BuildLog:
         return " · ".join(parts) if parts else None
 
     def _read(self, text: str) -> None:
+        if self.esphome_version is None and (match := _ESPHOME_VERSION.match(text)):
+            self.esphome_version = match.group(1)
+        if _ENCRYPTION_REFUSED.search(text):
+            self.encryption_refused = True
         if match := _NINJA.match(text):
             self._read_ninja(int(match.group(1)), int(match.group(2)), match.group(3))
         elif match := _IMAGE_SIZE.match(text):
