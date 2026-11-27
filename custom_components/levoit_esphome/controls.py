@@ -118,32 +118,27 @@ DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 _LV_TARGET_PRESET = "number.humidity_target_preset"
-_LV_TARGET_NAMES = ("Target Humidity Preset", "Zielfeuchte Vorgabe")
+_LV_TARGET_NAME = "Target Humidity Preset"
 
 # Where a model names an entity differently; tried before DEFAULT_NAMES.
 MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
     "LV600S": {
         "fan.fan": ("Humidifier", "LV600S Fan"),
-        "text_sensor.reported_mode": ("Operating Mode Status", "Betriebsmodus Status"),
-        "number.humidity_target": (*_LV_TARGET_NAMES, "Target Humidity", "Zielfeuchte"),
-        "sensor.mist_level": ("Mist Level", "Nebelstufe"),
-        "number.timer": ("Timer (min)", "Timer Minuten"),
-        "number.warm_level": ("Warm Level", "Warmnebelstufe"),
-        "sensor.humidity": ("Humidity", "Luftfeuchtigkeit"),
-        "sensor.temperature": ("Temperature", "Temperatur"),
-        "text_sensor.timer_duration_remaining": (
-            "Timer Remaining",
-            "Timer Restzeit",
-            "Timer Remaining Seconds",
-        ),
-        "text_sensor.timer_duration_initial": ("Timer Duration", "Timer Dauer"),
-        "binary_sensor.water_tank_empty": ("Water Tank Empty", "Wassermangel"),
-        "binary_sensor.tank_removed": ("Tank Removed", "Tank entfernt"),
-        "binary_sensor.humidifying": ("Humidifying", "Befeuchtet"),
-        "binary_sensor.heating_enabled": ("Heating Enabled", "Waerme aktiv"),
-        "binary_sensor.mcu_connection": ("MCU Connection", "MCU Verbindung"),
-        "binary_sensor.mcu_fault": ("MCU Fault", "Geraetefehler"),
-        "text_sensor.error_message": ("Error", "Fehlermeldung"),
+        "text_sensor.reported_mode": ("Operating Mode Status",),
+        "number.humidity_target": (_LV_TARGET_NAME, "Target Humidity"),
+        "sensor.mist_level": ("Mist Level",),
+        "number.timer": ("Timer (min)",),
+        "number.warm_level": ("Warm Level",),
+        "sensor.humidity": ("Humidity",),
+        "sensor.temperature": ("Temperature",),
+        "text_sensor.timer_duration_remaining": ("Timer Remaining", "Timer Remaining Seconds"),
+        "text_sensor.timer_duration_initial": ("Timer Duration",),
+        "binary_sensor.water_tank_empty": ("Water Tank Empty",),
+        "binary_sensor.tank_removed": ("Tank Removed",),
+        "binary_sensor.humidifying": ("Humidifying",),
+        "binary_sensor.heating_enabled": ("Heating Enabled",),
+        "binary_sensor.mcu_connection": ("MCU Connection",),
+        "binary_sensor.mcu_fault": ("MCU Fault",),
     },
     # The Eleva's "AQI" is the 0-500 index; its 1-4 level is "Air Quality Level".
     "ELEVA300X": {
@@ -266,7 +261,7 @@ def lv600s_stores_target(
     if entry is None or entry.original_name is None:
         return False
     name = _norm(entry.original_name)
-    candidates = (*_LV_TARGET_NAMES, configured.get(_LV_TARGET_PRESET, ""))
+    candidates = (_LV_TARGET_NAME, configured.get(_LV_TARGET_PRESET, ""))
     return any(
         name == _norm(candidate) or name.endswith(f" {_norm(candidate)}")
         for candidate in candidates
