@@ -46,4 +46,4 @@ class GroupActiveSensor(LevoitGroupEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         """Level above 0."""
-        return self.group is not None and self.group_state["level"] > 0
+        return self.purifier_group is not None and self.group_state["level"] > 0
