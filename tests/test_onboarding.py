@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -141,6 +142,18 @@ async def _setup(hass: HomeAssistant) -> MockConfigEntry:
     return entry
 
 
+@pytest.fixture
+def frontend_served() -> Generator[None]:
+    """The frontend folder counts as served.
+
+    Creating a device sets the entry up again. With the test web server running
+    (hass_ws_client), that would register the folder on its router, which aiohttp
+    froze at start; Home Assistant's own server never freezes it.
+    """
+    with patch("custom_components.levoit_esphome.panel._async_serve_frontend", AsyncMock()):
+        yield
+
+
 async def _call(client: Any, message: dict[str, Any]) -> dict[str, Any]:
     """Send a command; its result, skipping subscription events."""
     await client.send_json_auto_id(message)
@@ -236,7 +249,7 @@ async def test_custom_defaults_and_check_name(
     assert result["result"]["suggestion"] == "hall-air"
 
 
-@pytest.mark.usefixtures("esphome_devices")
+@pytest.mark.usefixtures("esphome_devices", "frontend_served")
 async def test_create_new_device(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -299,7 +312,7 @@ async def test_create_new_device(
     assert result["error"] == {"code": "name_taken", "message": onb.MESSAGES["name_taken"]}
 
 
-@pytest.mark.usefixtures("esphome_devices")
+@pytest.mark.usefixtures("esphome_devices", "frontend_served")
 async def test_create_custom_device(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -335,6 +348,7 @@ async def test_create_custom_device(
     assert subentry.data["custom"] is True
 
 
+@pytest.mark.usefixtures("frontend_served")
 async def test_create_existing_device(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
