@@ -22,8 +22,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import entity_registry as er
 
 ESPHOME_DOMAIN = "esphome"
 
@@ -116,13 +117,16 @@ DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
     "text_sensor.model": ("Model",),
 }
 
+_LV_TARGET_PRESET = "number.humidity_target_preset"
+_LV_TARGET_NAMES = ("Target Humidity Preset", "Zielfeuchte Vorgabe")
+
 # Where a model names an entity differently; tried before DEFAULT_NAMES.
 MODEL_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
     "LV600S": {
         "switch.power": ("Humidifier", "Luftbefeuchter", "Power", "Ein"),
         "select.humidifier_mode": ("Operating Mode", "Betriebsmodus"),
         "text_sensor.humidifier_mode_status": ("Operating Mode Status", "Betriebsmodus Status"),
-        "number.humidity_target": ("Target Humidity", "Zielfeuchte"),
+        "number.humidity_target": (*_LV_TARGET_NAMES, "Target Humidity", "Zielfeuchte"),
         "number.mist_level": ("Mist Level", "Nebelstufe"),
         "number.timer": ("Timer (min)", "Timer Minuten"),
         "number.warm_level": ("Warm Level", "Warmnebelstufe"),
@@ -208,6 +212,7 @@ def config_names(config: Mapping[str, Any]) -> dict[str, str]:
             "humidifier_display": "switch.display",
             "humidifier_mode": "select.humidifier_mode",
             "humidifier_target": "number.humidity_target",
+            "humidifier_target_preset": _LV_TARGET_PRESET,
             "humidifier_mist": "number.mist_level",
             "humidifier_warm": "number.warm_level",
             "humidifier_timer": "number.timer",
@@ -229,6 +234,8 @@ def _norm(name: str) -> str:
 
 
 def _candidates(key: str, model: str | None, configured: Mapping[str, str]) -> Iterable[str]:
+    if model == "LV600S" and key == "number.humidity_target" and _LV_TARGET_PRESET in configured:
+        yield configured[_LV_TARGET_PRESET]
     if key in configured:
         yield configured[key]
     yield from MODEL_NAMES.get(model or "", {}).get(key, ())
@@ -236,10 +243,20 @@ def _candidates(key: str, model: str | None, configured: Mapping[str, str]) -> I
         yield from DEFAULT_NAMES.get(key, ())
 
 
-def lv600s_stores_target(hass: HomeAssistant, device_id: str) -> bool:
-    """Identify the owner firmware profiles that store the setpoint on the ESP."""
-    device = dr.async_get(hass).async_get(device_id)
-    return bool(device and "-target-preset" in (device.sw_version or "").partition(" ")[0])
+def lv600s_stores_target(
+    hass: HomeAssistant, entity_id: str | None, configured: Mapping[str, str]
+) -> bool:
+    """Recognize the preset control by its public name or configured template ID."""
+    entry = er.async_get(hass).async_get(entity_id) if entity_id else None
+    if entry is None or entry.original_name is None:
+        return False
+    name = _norm(entry.original_name)
+    candidates = (*_LV_TARGET_NAMES, configured.get(_LV_TARGET_PRESET, ""))
+    return any(
+        name == _norm(candidate) or name.endswith(f" {_norm(candidate)}")
+        for candidate in candidates
+        if candidate
+    )
 
 
 def match_controls(
@@ -256,7 +273,6 @@ def match_controls(
     """
     configured = configured or {}
     entities: list[tuple[str, str, str, str]] = []
-    formatted_lv_timer = model == "LV600S" and lv600s_stores_target(hass, device_id)
     for entry in er.async_entries_for_device(er.async_get(hass), device_id):
         if entry.platform != ESPHOME_DOMAIN or entry.disabled_by is not None:
             continue
@@ -278,20 +294,21 @@ def match_controls(
     found: dict[str, str] = {}
     used: set[str] = set()
 
-    def match(key: str, *, suffix: bool) -> None:
+    def match(
+        key: str, *, suffix: bool, source: str | None = None, available_only: bool = False
+    ) -> None:
         domain = PLATFORM_DOMAINS[key.split(".", 1)[0]]
         for name in _candidates(key, model, configured):
             wanted = _norm(name)
             for entity_domain, entity_name, entity_id, unique_id in entities:
                 if entity_domain != domain or entity_id in used:
                     continue
-                if (
-                    formatted_lv_timer
-                    and key == "sensor.timer_remaining_seconds"
-                    and unique_id.split("/", 3)[2:3] == ["sensor"]
-                ):
-                    # An old numeric Timer Restzeit can still be in the registry.
+                if source and unique_id.split("/", 3)[2:3] != [source]:
                     continue
+                if available_only:
+                    state = hass.states.get(entity_id)
+                    if state is None or state.state == STATE_UNAVAILABLE:
+                        continue
                 # suffix: older configs without friendly_name put the device
                 # name in front ("bedroom Auto Mode")
                 if entity_name == wanted or (suffix and entity_name.endswith(f" {wanted}")):
@@ -300,7 +317,20 @@ def match_controls(
                     return
 
     for key in keys:
-        match(key, suffix=False)
+        if model == "LV600S" and key == "sensor.timer_remaining_seconds" and key not in configured:
+            # Prefer a reporting text timer; the registry can retain old sensors.
+            for source, available_only in (
+                ("text_sensor", True),
+                ("sensor", True),
+                ("text_sensor", False),
+            ):
+                match(key, suffix=False, source=source, available_only=available_only)
+                if key not in found:
+                    match(key, suffix=True, source=source, available_only=available_only)
+                if key in found:
+                    break
+        if key not in found:
+            match(key, suffix=False)
     for key in keys:
         if key not in found:
             match(key, suffix=True)

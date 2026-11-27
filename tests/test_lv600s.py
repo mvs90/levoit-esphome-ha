@@ -6,11 +6,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.levoit_esphome.controls import config_names, match_controls, page_supported
+from custom_components.levoit_esphome.controls import (
+    config_names,
+    lv600s_stores_target,
+    match_controls,
+    page_supported,
+)
 from custom_components.levoit_esphome.versions import component_model, component_source
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import entity_registry as er
 
 from .conftest import MAC, add_esphome_device
 from .test_controls import _add_entities
@@ -24,6 +29,9 @@ def test_lv600s_source_model_and_names() -> None:
             {"source": "github://tuct/levoit@main", "components": ["lv600s_humidifier"]}
         ],
         "switch": [{"platform": "template", "id": "humidifier_power", "name": "Mist power"}],
+        "number": [
+            {"platform": "template", "id": "humidifier_target_preset", "name": "Desired humidity"}
+        ],
         "api": {"encryption": {"key": "private-do-not-retain"}},
     }
     assert component_model(config) == "LV600S"
@@ -31,6 +39,7 @@ def test_lv600s_source_model_and_names() -> None:
     assert config_names(config) == {
         "sensor.humidity": "Room humidity",
         "switch.power": "Mist power",
+        "number.humidity_target_preset": "Desired humidity",
     }
     assert page_supported("LV600S", {"lv600s_humidifier"}, {})
     # A local/pinned owner build must never be offered an automatic upstream rewrite.
@@ -96,10 +105,19 @@ async def test_existing_owner_control_names(hass: HomeAssistant) -> None:
     registry = er.async_get(hass)
     registry.async_update_entity(numeric, new_unique_id=f"{MAC}/0/sensor/Timer Restzeit")
     registry.async_update_entity(formatted, new_unique_id=f"{MAC}/0/text_sensor/Timer Remaining")
-    dr.async_get(hass).async_update_device(
-        device_id, sw_version="1.2.07-target-preset (ESPHome 2026.11.1)"
-    )
     assert match_controls(hass, device_id, "LV600S")["sensor.timer_remaining_seconds"] == formatted
+    hass.states.async_set(numeric, "60")
+    hass.states.async_set(formatted, "unavailable")
+    assert match_controls(hass, device_id, "LV600S")["sensor.timer_remaining_seconds"] == numeric
+    hass.states.async_set(formatted, "Unknown")
+    assert match_controls(hass, device_id, "LV600S")["sensor.timer_remaining_seconds"] == formatted
+    assert not lv600s_stores_target(hass, ids["number.target"], {})
+    configured = {"number.humidity_target_preset": "Zielfeuchte"}
+    assert lv600s_stores_target(hass, ids["number.target"], configured)
+    assert (
+        match_controls(hass, device_id, "LV600S", configured)["number.humidity_target"]
+        == ids["number.target"]
+    )
 
 
 @pytest.mark.usefixtures("patch_sources")
@@ -192,7 +210,10 @@ async def test_native_lv600s_humidifier(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.usefixtures("patch_sources")
-async def test_native_lv600s_forwards_presets_without_changing_mode(hass: HomeAssistant) -> None:
+@pytest.mark.parametrize("power", ["on", "off"])
+async def test_native_lv600s_forwards_presets_without_changing_mode(
+    hass: HomeAssistant, power: str
+) -> None:
     hass.config.components.add("esphome")
     add_esphome_device(hass, "living-humidifier", MAC, "Humidifier", None, model="LV600S")
     ids = _add_entities(
@@ -201,15 +222,11 @@ async def test_native_lv600s_forwards_presets_without_changing_mode(hass: HomeAs
         {
             "switch.power": "Ein",
             "select.mode": "Betriebsmodus",
-            "number.target": "Zielfeuchte",
+            "number.target": "Zielfeuchte Vorgabe",
             "binary_sensor.empty": "Wassermangel",
         },
     )
-    device_id = er.async_get(hass).async_get(ids["switch.power"]).device_id
-    dr.async_get(hass).async_update_device(
-        device_id, sw_version="1.2.07-target-preset (ESPHome 2026.11.1)"
-    )
-    hass.states.async_set(ids["switch.power"], "on")
+    hass.states.async_set(ids["switch.power"], power)
     hass.states.async_set(ids["select.mode"], "Manuell", {"options": ["Manuell", "Auto", "Schlaf"]})
     hass.states.async_set(ids["binary_sensor.empty"], "off")
     await _setup(hass)
@@ -226,6 +243,7 @@ async def test_native_lv600s_forwards_presets_without_changing_mode(hass: HomeAs
     )
     await hass.async_block_till_done()
     assert calls == [58]
+    assert hass.states.get(ids["switch.power"]).state == power
     assert hass.states.get(ids["select.mode"]).state == "Manuell"
     assert hass.states.get(entity.entity_id).attributes["humidity"] == 58
 

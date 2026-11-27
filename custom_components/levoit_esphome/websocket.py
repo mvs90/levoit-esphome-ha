@@ -379,7 +379,9 @@ def ws_device_controls(
             "supported": supported,
             "from_config": bool(device.control_names),
             "target_humidity_preset": device.model == "LV600S"
-            and lv600s_stores_target(hass, device.esphome_device_id),
+            and lv600s_stores_target(
+                hass, controls.get("number.humidity_target"), device.control_names
+            ),
             "controls": controls,
         },
     )

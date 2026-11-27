@@ -681,32 +681,43 @@ die Luftreiniger und zeigt bei bekanntem Timerstart einen Fortschrittsbalken.
 Zielfeuchte und Display stehen unter Konfiguration.
 
 
-With the tested `1.2.09-target-preset-startup` firmware, the ESPHome mist, warm
-mist and timer numbers allow presets in standby. The timer card shows the
+With the [LV600S firmware](https://github.com/tuct/levoit/pull/152), the ESPHome
+mist, warm mist and timer numbers allow presets in standby. The timer card shows the
 queued duration and starts counting at power-on. Setting Timer (min) to zero
-cancels a queued or running timer. With no active timer, both formatted timer
-sensors report `Off` once the MCU status arrives. Active mist uses a blue
+cancels a queued or running timer. A confirmed inactive timer and standby
+without a timer report display `Off`. In operation, missing timer feedback is
+shown as unavailable. Active mist uses a blue
 `mdi:scent` and active warmth an orange `mdi:heat-wave`. Their off icons are
 grey. The remaining entity defaults are in the
-[firmware guide](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/README.md#controls).
+[firmware contribution](https://github.com/tuct/levoit/pull/152).
 
-Mit der getesteten Firmware `1.2.09-target-preset-startup` lassen sich Nebel,
+Mit der [LV600S-Firmware](https://github.com/tuct/levoit/pull/152) lassen sich Nebel,
 Warmnebel und der Timer über die ESPHome-Zahlen im Standby vormerken. Auf der
 Timerkarte steht bis zum Einschalten die vorgemerkte Dauer. `0` löscht einen
-vorgemerkten oder laufenden Timer. Ohne aktiven Timer zeigen beide Textsensoren
-nach der ersten MCU-Rückmeldung `Off`. Bei aktivem Nebel erscheint
+vorgemerkten oder laufenden Timer. Bei bestätigtem Timer-Aus und im Standby
+ohne Timer-Rückmeldung steht `Off`. Fehlende Timerdaten im Betrieb erscheinen
+als nicht verfügbar. Bei aktivem Nebel erscheint
 `mdi:scent` blau, bei aktiver Wärme `mdi:heat-wave` orange. Die Aus-Symbole
 sind grau.
+
+The preset control is advertised as **Target Humidity Preset** or
+**Zielfeuchte Vorgabe**. In a Device Builder configuration, the template number
+ID `humidifier_target_preset` also identifies it when a custom name is used.
+The older **Target Humidity** / **Zielfeuchte** control uses confirmed Auto
+mode before applying a target.
+
+Die speicherbare Vorgabe ist als **Target Humidity Preset** oder **Zielfeuchte
+Vorgabe** erkennbar. Für eigene Namen in Device Builder dient die Template-ID
+`humidifier_target_preset`. Der ältere Regler **Target Humidity** /
+**Zielfeuchte** übernimmt Werte nach bestätigtem Wechsel auf Auto.
 
 Use an existing LV600S ESPHome configuration to add the device. Preserve its
 ESPHome identity, keys and partition table. The panel discovers the device
 through its ESPHome entry; a stable Add Device template requires a firmware release.
 
-Live verification on the EU unit used HA integration 0.6.7 and the secure owner
-profile. This contribution branch is based on upstream 0.6.8. The HA and
-frontend tests cover the contribution on that base.
-An isolated HA Core 2026.10.4 instance also connected to the real LV600S on
-`1.2.03-queue-review`. It matched 20 native ESPHome entities, read live water
-and MCU status, and verified blocked ON and confirmed OFF with an empty tank.
-The Device Builder listing was simulated for this check.
-[Device and dependency review](https://github.com/mvs90/levoit/blob/codex/owner-test/devices/levoit-lv600s/RELEASE-REVIEW.md)
+Live verification of the earlier panel revision used an assembled EU LV600S
+with MCU 1.0.56. An isolated HA Core 2026.10.4 instance matched 20 native
+ESPHome entities, received water and MCU status, and recorded that ON was
+blocked and OFF confirmed with an empty tank. The Device Builder listing for
+that check was simulated. The current preset discovery is covered by the
+automated tests.

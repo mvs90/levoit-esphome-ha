@@ -268,6 +268,8 @@ class LV600SHumidifier(LevoitEsphomeEntity, HumidifierEntity):
                     translation_domain=DOMAIN, translation_key="lv600s_unready"
                 )
             device = self.device
-            if device is None or not lv600s_stores_target(self.hass, device.esphome_device_id):
+            if device is None or not lv600s_stores_target(
+                self.hass, self._sources[_TARGET], device.control_names
+            ):
                 await self._set_mode(MODE_AUTO)
             await self._call(_TARGET, "set_value", value=humidity)
