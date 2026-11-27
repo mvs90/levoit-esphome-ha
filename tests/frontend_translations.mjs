@@ -355,3 +355,49 @@ test("Automations show air sensors only for purifiers and edit each type indepen
   assert.match(legacy, /value="median"/);
   assert.match(legacy, /value="min"/);
 });
+
+test("the humidity editor uses humidity sensors and keeps its rules separate", () => {
+  const panel = component("levoit-esphome-panel");
+  const humidifier = {
+    entity_id: "fan.humidifier", title: "Humidifier", humidity: "sensor.device_humidity", target: "number.target",
+  };
+  Object.assign(panel, {
+    _automation: true,
+    _groupKey: "new",
+    _hass: {
+      locale: { language: "de" },
+      states: {
+        "sensor.room_humidity": { state: "45", attributes: { device_class: "humidity", friendly_name: "Room sensor" } },
+        "sensor.temperature": { state: "20", attributes: { device_class: "temperature" } },
+        "number.target": { state: "58" },
+      },
+    },
+    _groups: { groups: [], automations: [], purifiers: [], humidifiers: [humidifier] },
+    _schedulePreview: () => {},
+  });
+  assert.doesNotMatch(panel._groupEditor(), /Luftfeuchtigkeitssensoren|Nebelstufen/);
+  panel._setDraft("humidifiers", [humidifier.entity_id]);
+  const editor = panel._groupEditor();
+  assert.match(editor, /Luftfeuchtigkeitssensoren[\s\S]+Nebelstufen[\s\S]+Wann die Regelung eingreift[\s\S]+Wenn die Zielfeuchte erreicht ist/);
+  assert.match(editor, /sensor\.room_humidity[\s\S]+Room sensor · 45 %/);
+  assert.match(editor, /sensor\.device_humidity/);
+  assert.match(editor, /58 %/);
+  assert.doesNotMatch(editor, /sensor\.temperature|Luftqualitätssensoren/);
+  assert.equal(panel._draftPayload().humidity_control.enabled, false);
+  panel._setDraft("humidity_control.sensor", "sensor.room_humidity");
+  panel._setDraft("humidity_control.high_mist", 2);
+  panel._setDraft("humidity_control.stop_minutes", 4);
+  assert.equal(panel._humidityControlError(), "");
+  panel._setDraft("humidity_control.start_below", 15);
+  assert.match(panel._humidityControlError(), /aufsteigend/);
+  panel._setDraft("humidity_control.start_below", 2);
+  panel._setDraft("humidity_control.enabled", true);
+  const { humidity_control: settings } = panel._draftPayload();
+  assert.equal(settings.sensor, "sensor.room_humidity");
+  assert.equal(settings.high_mist, 2);
+  assert.equal(settings.stop_minutes, 4);
+  assert.equal(settings.enabled, true);
+  panel._setDraft("humidifiers", []);
+  assert.equal(panel._draftPayload().humidity_control.enabled, false);
+  assert.doesNotMatch(panel._groupEditor(), /Luftfeuchtigkeitssensoren/);
+});

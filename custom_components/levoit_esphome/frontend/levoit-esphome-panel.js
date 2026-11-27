@@ -234,6 +234,10 @@ const GROUP_DEFAULTS = {
   member_speeds: {},
 };
 const GROUP_LEVELS = [1, 2, 3, 4];
+const HUMIDITY_CONTROL_DEFAULTS = {
+  enabled: false, sensor: null, start_below: 2, medium_below: 5, high_below: 10,
+  low_mist: 1, medium_mist: 2, high_mist: 3, stop_minutes: 0, turn_on: true,
+};
 const SENSOR_TYPES = ["pm1", "pm25", "pm10", "aqi"];
 // the PM types have thresholds (where levels 2-4 start); the AQI level is the level
 const THRESHOLD_TYPES = ["pm1", "pm25", "pm10"];
@@ -995,7 +999,7 @@ class LevoitEsphomePanel extends HTMLElement {
         if (t.type === "number") {
           if (value === "") return;
           value = Number(value);
-        } else if (field === "area_id") value = value || null;
+        } else if (field === "area_id" || field === "humidity_control.sensor") value = value || null;
         if (t.tagName === "SELECT") t.blur();
         this._setDraft(field, value);
         return;
@@ -1391,7 +1395,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const draft = onEditor ? this._edit?.draft : null;
     const invalid =
       !draft || !this._validGroupMembers(this._draftMembers().length, draft.humidifiers?.length || 0)
-      || Boolean(this._thresholdError()) || this._edit.saving;
+      || Boolean(this._thresholdError() || this._humidityControlError()) || this._edit.saving;
     // the theme's light or dark mode: a few colours of our own follow it
     this.toggleAttribute("dark", Boolean(this._hass?.themes?.darkMode));
     const haDevice = onPage && this._page?.device_id ? `/config/devices/device/${this._page.device_id}` : null;
@@ -2621,6 +2625,7 @@ class LevoitEsphomePanel extends HTMLElement {
               g.state?.level,
               g.state?.reason,
               g.humidifiers,
+              g.humidity_control?.sensor,
               (g.state?.members || []).map((m) => [m.entity_id, m.in_control, m.paused_until]),
             ]),
           );
@@ -2672,7 +2677,8 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _humidityEntities(group) {
-    return this._groupHumidifiers(group).flatMap(({ entity_id, target, humidity }) => [entity_id, target, humidity].filter(Boolean));
+    return [group.humidity_control?.sensor, ...this._groupHumidifiers(group)
+      .flatMap(({ entity_id, target, humidity }) => [entity_id, target, humidity])].filter(Boolean);
   }
 
   _humidityValue(entityId) {
@@ -3038,6 +3044,14 @@ class LevoitEsphomePanel extends HTMLElement {
         dot: "cadr",
       });
     const humidifiers = this._groupHumidifiers(g);
+    if (humidifiers.length && g.humidity_control?.sensor) {
+      const sensor = g.humidity_control.sensor;
+      tiles.push({
+        label: this._t("Reference humidity"),
+        value: this._humidityValue(sensor),
+        note: this._hass?.states?.[sensor]?.attributes?.friendly_name || sensor,
+      });
+    }
     for (const device of humidifiers) {
       tiles.push({
         label: this._t("Target humidity"),
@@ -3170,6 +3184,7 @@ class LevoitEsphomePanel extends HTMLElement {
       const { state, entities, ...rest } = g;
       draft = JSON.parse(JSON.stringify(rest));
     }
+    if (this._automation) draft.humidity_control = { ...HUMIDITY_CONTROL_DEFAULTS, ...draft.humidity_control };
     this._edit = { draft, addOpen: false, saving: false, preview: null, previewError: null, previewSeq: 0 };
     this._schedulePreview(0);
   }
@@ -3187,6 +3202,7 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._automation && field === "members" && !this._draftMembers().length) {
       this._edit.addOpen = false;
     }
+    if (field === "humidifiers" && !value.length && d.humidity_control) d.humidity_control.enabled = false;
     if (field === "area_id" && !d.name.trim()) d.name = this._areaName(value);
     this._schedulePreview();
     this._render();
@@ -3341,9 +3357,9 @@ class LevoitEsphomePanel extends HTMLElement {
     )}" data-action="ed-set" data-field="${field}" data-value="${!on}"><span></span></button>`;
   }
 
-  _edNumber(field, label, { min = 0, step = "1" } = {}) {
+  _edNumber(field, label, { min = 0, max, step = "1" } = {}) {
     const value = field.split(".").reduce((o, k) => o?.[k], this._edit.draft);
-    return `<input class="num" type="number" min="${min}" step="${step}" value="${esc(value)}" data-ed-field="${field}" aria-label="${esc(
+    return `<input class="num" type="number" min="${min}"${max == null ? "" : ` max="${max}"`} step="${step}" value="${esc(value)}" data-ed-field="${field}" aria-label="${esc(
       label,
     )}">`;
   }
@@ -3357,6 +3373,72 @@ class LevoitEsphomePanel extends HTMLElement {
           )}</button>`,
       )
       .join("")}</div>`;
+  }
+
+  _humidityControlError() {
+    const settings = this._edit.draft.humidity_control;
+    if (!this._edit.draft.humidifiers?.length || !settings) return "";
+    const { start_below: start, medium_below: medium, high_below: high, stop_minutes: stop } = settings;
+    if (![start, medium, high, stop].every(Number.isInteger) || start < 1 || start > 30
+        || medium < 1 || medium > 40 || high < 1 || high > 50 || stop < 0 || stop > 30) {
+      return this._t("Enter a whole number within the range for each humidity rule.");
+    }
+    return start > medium || medium > high
+      ? this._t("Humidity thresholds must rise from start to high mist.")
+      : "";
+  }
+
+  _humidityControlEditor() {
+    const settings = this._edit.draft.humidity_control;
+    const members = this._groupHumidifiers(this._edit.draft);
+    const known = new Set((this._groups.humidifiers || []).map((device) => device.humidity).filter(Boolean));
+    const states = this._hass?.states || {};
+    const ids = new Set(Object.keys(states).filter((id) =>
+      id.startsWith("sensor.") && states[id].attributes?.device_class === "humidity"
+    ));
+    for (const id of known) ids.add(id);
+    if (settings.sensor) ids.add(settings.sensor);
+    const name = (id) => states[id]?.attributes?.friendly_name || id;
+    const option = (id, label) => `<option value="${esc(id || "")}"${id === settings.sensor ? " selected" : ""}>${esc(label)}</option>`;
+    const sensorLabel = this._t("Reference humidity sensor");
+    const choices = [...ids].sort((a, b) => name(a).localeCompare(name(b)))
+      .map((id) => option(id, this._t("{sensor} · {value}", { sensor: name(id), value: this._humidityValue(id) })));
+    const sensor = `<select class="inp humidity-sensor" data-ed-field="humidity_control.sensor" aria-label="${esc(sensorLabel)}">
+      ${option(null, this._t("Use each humidifier’s sensor"))}${choices.join("")}</select>`;
+    const enable = this._t("Humidity control");
+    const start = this._t("Start this far below the target");
+    const turnOn = this._t("Turn humidifiers on when needed");
+    const stop = this._t("Minutes at or above the target");
+    const number = (field, label, min, max, unit) => `<span class="num-unit">${this._edNumber(`humidity_control.${field}`, label, { min, max })}<span class="hint">${esc(unit)}</span></span>`;
+    const levels = [["1", "1"], ["2", "2"], ["3", "3"]];
+    const mist = (field, label, hint) => this._setting(label, hint,
+      this._edSegs(`humidity_control.${field}`, levels, String(settings[field]), label));
+    const points = this._t("percentage points");
+    const medium = this._t("Use medium mist this far below the target");
+    const high = this._t("Use high mist this far below the target");
+    const targets = members.map(({ title, target }) => this._setting(title, this._t("Target humidity"),
+      `<span class="readout">${esc(this._humidityValue(target))}</span>`));
+    const problem = this._humidityControlError();
+    return `${this._section(this._t("Humidity sensors"), [
+      this._setting(enable, this._t("Enable humidity control for the selected humidifiers."), this._edSwitch("humidity_control.enabled", enable)),
+      this._setting(sensorLabel, this._t("Choose a shared room sensor or use the reading from each humidifier."), sensor),
+      ...targets,
+    ], this._t("Each humidifier uses the target set on its device page."))}
+    ${this._section(this._t("Mist levels"), [
+      mist("low_mist", this._t("Near the target"), this._t("Lowest humidity deficit")),
+      mist("medium_mist", this._t("Below the target"), ""),
+      mist("high_mist", this._t("Far below the target"), ""),
+    ], this._t("Levels 1–3 map to the low, middle and high settings of each device."))}
+    ${this._section(this._t("When to start humidifying"), [
+      this._setting(start, this._t("Once started, humidification continues until the target is reached."), number("start_below", start, 1, 30, points)),
+      this._setting(medium, "", number("medium_below", medium, 1, 40, points)),
+      this._setting(high, "", number("high_below", high, 1, 50, points)),
+      this._setting(turnOn, this._t("Leave humidifiers that are off alone if disabled."), this._edSwitch("humidity_control.turn_on", turnOn)),
+      problem ? `<div class="err-line">${esc(problem)}</div>` : "",
+    ])}
+    ${this._section(this._t("When the target humidity is reached"), [
+      this._setting(stop, this._t("Set 0 to turn off immediately. A delay keeps the humidifier on low mist while humidity stays at or above the target."), number("stop_minutes", stop, 0, 30, "min")),
+    ])}`;
   }
 
   _groupSensorEditor(autoOnly) {
@@ -3679,7 +3761,7 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
 
     return `<div class="ged">
-      <div class="ged-main">${general}${devices}${purifierControls ? this._groupSensorEditor(autoOnly) + speed + stepIn + clean : ""}</div>
+      <div class="ged-main">${general}${devices}${purifierControls ? this._groupSensorEditor(autoOnly) + speed + stepIn + clean : ""}${selectedHumidifiers.size ? this._humidityControlEditor() : ""}</div>
       ${purifierControls ? `<aside class="ged-aside" aria-label="${this._text("Live preview")}">${this._rightNow()}
         <div class="hint now-note">${this._text("The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.")}</div>
       </aside>` : ""}
@@ -5337,6 +5419,7 @@ details.section[open] > summary { padding-bottom: 8px; }
 .stype-with-picker .add-wrap { display: contents; }
 .stype-with-picker .add-wrap > .btn { margin-left: auto; }
 .stype-with-picker .menu { position: static; flex-basis: 100%; width: auto; box-shadow: none; }
+.humidity-sensor { max-width: min(320px, 100%); text-overflow: ellipsis; }
 .menu { position: absolute; top: 56px; left: 20px; z-index: 3; width: min(380px, calc(100% - 40px)); max-height: 320px;
   overflow: auto; padding: 6px; box-sizing: border-box; border-radius: 12px; background: var(--card-background-color, #fff);
   border: 1px solid var(--divider-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); }

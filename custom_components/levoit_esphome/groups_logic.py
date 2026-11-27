@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from itertools import pairwise
 from statistics import fmean, median
 from typing import Any
@@ -110,6 +110,30 @@ DEFAULT_MEMBER_SPEEDS = MemberSpeeds()
 
 
 @dataclass(frozen=True)
+class HumidityControl:
+    """Optional humidity control for the humidifiers in an automation."""
+
+    enabled: bool = False
+    sensor: str | None = None  # otherwise each humidifier uses its own reading
+    start_below: int = 2
+    medium_below: int = 5
+    high_below: int = 10
+    low_mist: int = 1
+    medium_mist: int = 2
+    high_mist: int = 3
+    stop_minutes: int = 0
+    turn_on: bool = True
+
+    def mist(self, deficit: float) -> int:
+        """Mist level while humidification is running, by distance to the target."""
+        if deficit >= self.high_below:
+            return self.high_mist
+        if deficit >= self.medium_below:
+            return self.medium_mist
+        return self.low_mist
+
+
+@dataclass(frozen=True)
 class GroupConfig:
     """One purifier group, as saved."""
 
@@ -136,6 +160,7 @@ class GroupConfig:
     # per member: its lowest and highest step (absent: speed 1 to its fastest)
     member_speeds: Mapping[str, MemberSpeeds] = field(default_factory=dict)
     humidifiers: tuple[str, ...] = ()
+    humidity_control: HumidityControl = HumidityControl()
     kind: str = GROUP_PURIFIER
     source_group_id: str | None = None
 
@@ -157,6 +182,7 @@ class GroupConfig:
                 {
                     "kind": self.kind,
                     "humidifiers": list(self.humidifiers),
+                    "humidity_control": asdict(self.humidity_control),
                     "source_group_id": self.source_group_id,
                 }
                 if self.kind == GROUP_AUTOMATION
@@ -214,6 +240,35 @@ def _choice(data: Mapping[str, Any], key: str, default: str, choices: Iterable[s
     if value not in choices:
         raise GroupError(ERR_INVALID, f"{key} must be one of {', '.join(choices)}")
     return value
+
+
+def _humidity_control(data: Any, has_members: bool) -> HumidityControl:
+    if data is None:
+        return HumidityControl()
+    if not isinstance(data, Mapping):
+        raise GroupError(ERR_INVALID, "humidity_control must be an object")
+    sensor = data.get("sensor")
+    if sensor is not None and (
+        not isinstance(sensor, str) or not sensor.startswith("sensor.") or len(sensor) <= 7
+    ):
+        raise GroupError(ERR_INVALID, "Pick a humidity sensor entity")
+    start = _int(data, "start_below", HumidityControl.start_below, 1, 30)
+    medium = _int(data, "medium_below", HumidityControl.medium_below, 1, 40)
+    high = _int(data, "high_below", HumidityControl.high_below, 1, 50)
+    if not start <= medium <= high:
+        raise GroupError(ERR_THRESHOLDS, "Humidity thresholds must rise from start to high mist")
+    return HumidityControl(
+        enabled=_bool(data, "enabled", False) and has_members,
+        sensor=sensor,
+        start_below=start,
+        medium_below=medium,
+        high_below=high,
+        low_mist=_int(data, "low_mist", HumidityControl.low_mist, 1, 3),
+        medium_mist=_int(data, "medium_mist", HumidityControl.medium_mist, 1, 3),
+        high_mist=_int(data, "high_mist", HumidityControl.high_mist, 1, 3),
+        stop_minutes=_int(data, "stop_minutes", HumidityControl.stop_minutes, 0, 30),
+        turn_on=_bool(data, "turn_on", True),
+    )
 
 
 def _thresholds(data: Any) -> dict[str, tuple[float, ...]]:
@@ -375,6 +430,9 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
         manual_level=_int(data, "manual_level", 1, 1, MAX_LEVEL),
         member_speeds=_member_speeds(data, members),
         humidifiers=humidifiers,
+        humidity_control=_humidity_control(data.get("humidity_control"), bool(humidifiers))
+        if kind == GROUP_AUTOMATION
+        else HumidityControl(),
         kind=kind,
         source_group_id=source_group_id,
     )

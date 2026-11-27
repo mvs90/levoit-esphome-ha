@@ -906,6 +906,7 @@ async def test_cards_for_any_user(
 
 def _humidifier(hass: HomeAssistant, model: str, mac: str, suffix: str) -> str:
     """Add a Levoit humidifier with the corresponding stock target entity name."""
+    hass.config.components.add("esphome")
     fan = f"fan.{suffix}"
     target = f"number.{suffix}_target"
     humidity = f"sensor.{suffix}_humidity"
@@ -1019,6 +1020,106 @@ async def test_automation_accepts_a_single_member_only_in_its_own_tab(
     assert humidity_only["members"] == []
     assert purifier_only["members"] == ["fan.bedroom"]
     assert all(entity_id == "fan.bedroom" for _, entity_id, _ in calls)
+
+
+@pytest.mark.usefixtures("patch_sources")
+@pytest.mark.parametrize(("model", "speeds"), [("LV600S", 9), ("SUPERIOR6000S", 3)])
+async def test_humidity_control_uses_reference_stages_and_hysteresis(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, model: str, speeds: int
+) -> None:
+    """A humidity-only automation runs independently of purifier group control."""
+    calls = await _fake_fans(hass)
+    fan = _humidifier(hass, model, "de:ad:be:ef:00:04", "mist")
+    hass.states.async_set(fan, "off", {"percentage_step": 100 / speeds})
+    attrs = {"device_class": "humidity", "unit_of_measurement": "%"}
+    sensor = "sensor.room_humidity"
+    hass.states.async_set(sensor, "40", attrs)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    settings = {"enabled": True, "sensor": sensor}
+    group = await _save(client, kind="automation", humidifiers=[fan], humidity_control=settings)
+    await _settle(hass)
+    assert group["enabled"] is False  # purifier control is separate
+    assert group["humidity_control"]["sensor"] == sensor
+    assert group["state"]["humidity"] == [
+        {"entity_id": fan, "sensor": sensor, "value": 40, "target": 58}
+    ]
+    assert calls == [("turn_on", fan, {"percentage": 100})]
+
+    for value in (52, 57, 58):
+        hass.states.async_set(sensor, str(value), attrs)
+        await _settle(hass)
+    assert calls[1:] == [
+        ("turn_on", fan, {"percentage": 100 * ((speeds + 1) // 2) // speeds}),
+        ("turn_on", fan, {"percentage": 100 // speeds}),
+        ("turn_off", fan, {}),
+    ]
+
+    calls.clear()
+    hass.states.async_set("sensor.mist_humidity", "30", attrs)
+    hass.states.async_set(sensor, "57", attrs)
+    await _settle(hass)
+    assert not calls  # ignore the built-in reading and wait for the start threshold
+    hass.states.async_set(sensor, "56", attrs)
+    await _settle(hass)
+    assert calls == [("turn_on", fan, {"percentage": 100 // speeds})]
+    hass.states.async_set(sensor, "unavailable", attrs)
+    await _settle(hass)
+    assert calls[-1] == ("turn_off", fan, {})
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_humidity_control_waits_for_tank_and_holds_at_target(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, freezer: FrozenDateTimeFactory
+) -> None:
+    calls = await _fake_fans(hass)
+    mac = "de:ad:be:ef:00:04"
+    fan = _humidifier(hass, "LV600S", mac, "mist")
+    water = "binary_sensor.mist_water_empty"
+    connection = "binary_sensor.mist_mcu_connection"
+    humidity = "sensor.mist_humidity"
+    _add_entities(hass, mac, {water: "Water Tank Empty", connection: "MCU Connection"})
+    hass.states.async_set(water, "on")
+    hass.states.async_set(connection, "off")
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await _save(
+        client,
+        kind="automation",
+        humidifiers=[fan],
+        humidity_control={"enabled": True, "stop_minutes": 2},
+    )
+    await _settle(hass)
+    assert not calls
+    hass.states.async_set(water, "off")
+    await _settle(hass)
+    assert not calls
+    hass.states.async_set(connection, "on")
+    await _settle(hass)
+    assert calls == [("turn_on", fan, {"percentage": 100})]
+
+    hass.states.async_set(humidity, "58")
+    await _settle(hass)
+    assert calls[-1] == ("turn_on", fan, {"percentage": 11})
+    await _later(hass, freezer, 1)
+    assert len(calls) == 2
+    hass.states.async_set(humidity, "57")  # falling below target restarts the delay
+    await _settle(hass)
+    hass.states.async_set(humidity, "58")
+    await _settle(hass)
+    await _later(hass, freezer, 1)
+    assert len(calls) == 2
+    await _later(hass, freezer, 1)
+    assert calls[-1] == ("turn_off", fan, {})
+
+    hass.states.async_set(humidity, "45")
+    await _settle(hass)
+    assert calls[-1] == ("turn_on", fan, {"percentage": 100})
+    hass.states.async_set(fan, "off", hass.states.get(fan).attributes, context=Context())
+    await _settle(hass)
+    assert hass.states.get(fan).state == "off"
+    await _later(hass, freezer, 30)
+    assert hass.states.get(fan).state == "on"
 
 
 @pytest.mark.usefixtures("patch_sources")

@@ -79,6 +79,7 @@ from .groups_logic import (
     GroupError,
     GroupSensor,
     History,
+    HumidityControl,
     LevelKeeper,
     Reading,
     Step,
@@ -175,6 +176,11 @@ def _number(state: State | None) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _humidity_percent(state: State | None) -> float | None:
+    value = _number(state)
+    return value if value is not None and 0 <= value <= 100 else None
+
+
 def _fan_view(state: State) -> tuple[Any, ...]:
     """What a group sets on a member: power, mode and speed."""
     return (
@@ -245,7 +251,7 @@ def step_of(hass: HomeAssistant, config: GroupConfig, member: str, level: int) -
 
 @dataclass(frozen=True)
 class LevoitHumidifier:
-    """A group member whose humidity is displayed."""
+    """A humidifier and the Home Assistant entities used to control it."""
 
     entity_id: str
     name: str
@@ -254,6 +260,41 @@ class LevoitHumidifier:
     area_id: str | None
     target: str | None
     humidity: str | None
+    required_on: tuple[str, ...] = ()
+    required_off: tuple[str, ...] = ()
+
+
+@dataclass
+class HumidityRun:
+    """Per-device humidity hysteresis and the latest command awaiting feedback."""
+
+    engaged: bool = False
+    at_target_since: float | None = None
+    paused_until: float = 0
+    command: Step | None = None
+    sent_at: float = 0
+
+    def mist(
+        self, settings: HumidityControl, deficit: float | None, is_on: bool, now: float
+    ) -> int | None:
+        """Return None to leave the fan alone or 0 to stop humidification."""
+        if deficit is None:
+            self.at_target_since = None
+            return 0 if self.engaged and is_on else None
+        if deficit <= 0:
+            if not is_on:
+                self.engaged = False
+                self.at_target_since = None
+                return None
+            if self.at_target_since is None:
+                self.at_target_since = now
+            if now - self.at_target_since >= settings.stop_minutes * 60:
+                return 0
+            return settings.low_mist
+        self.at_target_since = None
+        if (self.engaged and is_on and self.command != STEP_OFF) or deficit >= settings.start_below:
+            return settings.mist(deficit)
+        return None
 
 
 class GroupManager:
@@ -447,8 +488,56 @@ class GroupManager:
                 area_id=entry.area_id if entry else None,
                 target=controls.get("number.humidity_target"),
                 humidity=controls.get("sensor.humidity"),
+                required_on=tuple(
+                    controls[key] for key in ("binary_sensor.mcu_connection",) if key in controls
+                ),
+                required_off=tuple(
+                    controls[key]
+                    for key in (
+                        "binary_sensor.water_tank_empty",
+                        "binary_sensor.tank_removed",
+                        "binary_sensor.mcu_fault",
+                    )
+                    if key in controls
+                ),
             )
         return humidifiers
+
+    @callback
+    def humidity_readings(
+        self, config: GroupConfig, devices: dict[str, LevoitHumidifier] | None = None
+    ) -> list[dict[str, Any]]:
+        """The selected reference reading and each device's own target."""
+        if not config.humidifiers:
+            return []
+        if devices is None:
+            devices = self.levoit_humidifiers()
+        readings = []
+        for member in config.humidifiers:
+            if (device := devices.get(member)) is None:
+                continue
+            sensor = config.humidity_control.sensor or device.humidity
+            sensor_state = self.hass.states.get(sensor) if sensor else None
+            if (
+                config.humidity_control.sensor
+                and sensor_state is not None
+                and (
+                    sensor_state.attributes.get("device_class") != "humidity"
+                    and not any(humidifier.humidity == sensor for humidifier in devices.values())
+                )
+            ):
+                sensor_state = None
+            readings.append(
+                {
+                    "entity_id": member,
+                    "sensor": sensor,
+                    "value": _humidity_percent(sensor_state),
+                    "target": _humidity_percent(self.hass.states.get(device.target))
+                    if device.target
+                    else None,
+                }
+            )
+        return readings
 
     @callback
     def cadr_sensors(self, config: GroupConfig) -> tuple[str, ...]:
@@ -497,7 +586,12 @@ class GroupManager:
         if prior is not None:
             if data.get("kind", prior.kind) != prior.kind:
                 raise GroupError(ERR_MEMBERS, "A saved group cannot change tabs")
-            data = {"humidifiers": prior.humidifiers, **data, "kind": prior.kind}
+            data = {
+                "humidifiers": prior.humidifiers,
+                "humidity_control": prior.as_dict().get("humidity_control"),
+                **data,
+                "kind": prior.kind,
+            }
         config = parse_config({**data, "source_group_id": prior.source_group_id if prior else None})
         fans = self.levoit_fans()
         if config.kind == GROUP_AUTOMATION:
@@ -546,17 +640,18 @@ class GroupManager:
 
     async def _async_apply(self, config: GroupConfig) -> None:
         old = self.groups.get(config.id)
-        if config.enabled:
-            for other in self.groups.values():
-                if (
-                    other.enabled
-                    and other.kind != config.kind
-                    and set(other.members).intersection(config.members)
-                ):
-                    raise GroupError(
-                        ERR_MEMBERS,
-                        f"Disable group control in {other.name} before enabling this group",
-                    )
+        controlled = set(config.members if config.enabled else ())
+        if config.humidity_control.enabled:
+            controlled.update(config.humidifiers)
+        for other in self.groups.values():
+            if other.kind != config.kind and (
+                (other.enabled and controlled.intersection(other.members))
+                or (other.humidity_control.enabled and controlled.intersection(other.humidifiers))
+            ):
+                raise GroupError(
+                    ERR_MEMBERS,
+                    f"Disable group control in {other.name} before enabling this group",
+                )
         self.groups[config.id] = config
         if (runner := self._runners.get(config.id)) is not None:
             await runner.async_update_config(config)
@@ -626,6 +721,8 @@ class GroupManager:
         cadr = runner.cadr_sensors if runner is not None else ()
         numbers = [v for e in cadr if (v := _number(self.hass.states.get(e))) is not None]
         state["cadr"] = {"value": sum(numbers) if numbers else None, "sensors": list(cadr)}
+        if config.kind == GROUP_AUTOMATION:
+            state["humidity"] = self.humidity_readings(config)
         return state
 
     @staticmethod
@@ -657,6 +754,11 @@ class GroupManager:
         values = {r.entity_id: r.value for r in readings}
         return {
             "level": level,
+            **(
+                {"humidity": self.humidity_readings(config)}
+                if config.kind == GROUP_AUTOMATION
+                else {}
+            ),
             "reason": describe(self.hass, config, result),
             "worst": result.worst.top if result.worst else None,
             "worst_type": result.worst.type if result.worst else None,
@@ -746,6 +848,7 @@ class GroupRunner:
         self.evaluation: Evaluation | None = None
         self.paused_until: dict[str, float] = {}
         self._targets: dict[str, Step] = {}  # step set per member the group runs
+        self._humidity: dict[str, HumidityRun] = {}
         self.cadr_sensors: tuple[str, ...] = ()  # its purifiers' CADR, for the total
         self._own: deque[str] = deque(maxlen=64)  # context ids of our calls
         self._lock = asyncio.Lock()
@@ -771,8 +874,24 @@ class GroupRunner:
             *(s.entity_id for s in self.config.sensors),
             *self.cadr_sensors,
         ]
+        if self.config.humidity_control.enabled:
+            devices = self.manager.levoit_humidifiers()
+            for member in self.config.humidifiers:
+                if device := devices.get(member):
+                    entities.extend(
+                        entity
+                        for entity in (
+                            member,
+                            device.target,
+                            self.config.humidity_control.sensor or device.humidity,
+                            *device.required_on,
+                            *device.required_off,
+                        )
+                        if entity
+                    )
         self._unsubs.insert(
-            0, async_track_state_change_event(self.hass, entities, self._state_changed)
+            0,
+            async_track_state_change_event(self.hass, set(entities), self._state_changed),
         )
 
     @callback
@@ -806,9 +925,32 @@ class GroupRunner:
 
     @callback
     def _state_changed(self, event: Event[EventStateChangedData]) -> None:
-        if event.data["entity_id"] in self.config.members:
+        member = event.data["entity_id"]
+        if member in self.config.members:
             self._member_changed(event)
+        elif (run := self._humidity.get(member)) is not None:
+            self._humidity_changed(event, run)
         self._schedule()
+
+    @callback
+    def _humidity_changed(self, event: Event[EventStateChangedData], run: HumidityRun) -> None:
+        old, new = event.data["old_state"], event.data["new_state"]
+        if (
+            run.command is not None
+            and self.config.respect_manual
+            and old is not None
+            and old.state not in OFFLINE
+            and new is not None
+            and new.state not in OFFLINE
+            and event.context.id not in self._own
+            and _fan_view(old) != _fan_view(new)
+            and _at_step(old, run.command)
+            and not _at_step(new, run.command)
+        ):
+            run.paused_until = _now() + self.config.manual_pause_min * 60
+            run.command = None
+            run.engaged = False
+            run.at_target_since = None
 
     @callback
     def _member_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -838,16 +980,34 @@ class GroupRunner:
         async with self._lock:
             old = self.config
             self.config = config
-            if config.kind == GROUP_AUTOMATION and old == replace(
-                config, humidifiers=old.humidifiers
-            ):
-                return
+            humidity_changed = (
+                old.humidifiers != config.humidifiers
+                or old.humidity_control != config.humidity_control
+            )
+            if humidity_changed:
+                if not config.humidity_control.enabled:
+                    self._humidity.clear()
+                for member in set(self._humidity) - set(config.humidifiers):
+                    del self._humidity[member]
+                if old.humidity_control != config.humidity_control:
+                    for run in self._humidity.values():
+                        run.at_target_since = None
+                if not (
+                    old.humidity_control.enabled or config.humidity_control.enabled
+                ) and old == replace(
+                    config, humidifiers=old.humidifiers, humidity_control=old.humidity_control
+                ):
+                    return
             self._release([m for m in self._targets if m not in config.members])
             for member in set(self.paused_until) - set(config.members):
                 del self.paused_until[member]
             if old.mode == MODE_MANUAL and config.mode == MODE_AUTO:
                 self.keeper.since = None  # step down without waiting
-            if set(old.members) != set(config.members) or old.sensors != config.sensors:
+            if (
+                humidity_changed
+                or set(old.members) != set(config.members)
+                or old.sensors != config.sensors
+            ):
                 self._track()
         self._schedule()
 
@@ -898,7 +1058,60 @@ class GroupRunner:
             else:
                 for member in config.members:
                     await self._async_set(member, level)
+            if config.humidity_control.enabled and not now_level:
+                await self._async_humidify(now)
         self.manager.async_notify(config.id)
+
+    async def _async_humidify(self, now: float) -> None:
+        config = self.config
+        settings = config.humidity_control
+        devices = self.manager.levoit_humidifiers()
+        for reading in self.manager.humidity_readings(config, devices):
+            member = reading["entity_id"]
+            fan = self.hass.states.get(member)
+            if self._stopped or fan is None or fan.state in OFFLINE:
+                continue
+            device = devices[member]
+            run = self._humidity.setdefault(member, HumidityRun())
+            if now < run.paused_until:
+                continue
+            is_on = fan.state == STATE_ON
+            value, target = reading["value"], reading["target"]
+            deficit = target - value if target is not None and value is not None else None
+            mist = run.mist(settings, deficit, is_on, now)
+            if mist is None or (mist and not is_on and not settings.turn_on):
+                continue
+            if mist:
+                connected = all(
+                    self.hass.states.is_state(key, STATE_ON) for key in device.required_on
+                )
+                ready = all(
+                    self.hass.states.is_state(key, STATE_OFF) for key in device.required_off
+                )
+                if not (connected and ready):
+                    run.engaged = False
+                    continue
+                step: Step = 1 + round((mist - 1) * (_fan_speeds(fan) - 1) / 2)
+                run.engaged = True
+            else:
+                step = STEP_OFF
+            if _at_step(fan, step):
+                run.command = step
+                continue
+            if step == run.command and now - run.sent_at < TICK.total_seconds():
+                continue
+            run.command = step
+            run.sent_at = now
+            if step == STEP_OFF:
+                await self._async_call(SERVICE_TURN_OFF, {ATTR_ENTITY_ID: member})
+            else:
+                await self._async_call(
+                    SERVICE_TURN_ON,
+                    {
+                        ATTR_ENTITY_ID: member,
+                        ATTR_PERCENTAGE: ranged_value_to_percentage((1, _fan_speeds(fan)), step),
+                    },
+                )
 
     async def _async_set(self, member: str, level: int) -> None:
         """Put a member at its step for the level: Off, Sleep, or Manual at a speed."""
@@ -951,7 +1164,7 @@ class GroupRunner:
             )
         except HomeAssistantError as err:
             _LOGGER.warning(
-                "Purifier group %s: %s on %s failed: %s",
+                "Group %s: %s on %s failed: %s",
                 self.config.name,
                 service,
                 data[ATTR_ENTITY_ID],
