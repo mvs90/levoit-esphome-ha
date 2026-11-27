@@ -2670,7 +2670,7 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _humidityEntities(group) {
-    return this._groupHumidifiers(group).flatMap(({ target, humidity }) => [target, humidity].filter(Boolean));
+    return this._groupHumidifiers(group).flatMap(({ entity_id, target, humidity }) => [entity_id, target, humidity].filter(Boolean));
   }
 
   _humidityValue(entityId) {
@@ -3034,7 +3034,8 @@ class LevoitEsphomePanel extends HTMLElement {
         note: this._t("Total of {count}", { count: st.cadr.sensors.length }),
         dot: "cadr",
       });
-    for (const device of this._groupHumidifiers(g)) {
+    const humidifiers = this._groupHumidifiers(g);
+    for (const device of humidifiers) {
       tiles.push({
         label: this._t("Target humidity"),
         value: this._humidityValue(device.target),
@@ -3072,47 +3073,48 @@ class LevoitEsphomePanel extends HTMLElement {
       ? `<div class="hint gd-note">${this._text("Values are the group's combined readings, as set per sensor type in the editor; CADR is the total of its purifiers (right axis); the strip shows the group's level.")}</div>`
       : "";
 
-    // the purifiers
     const levelOf = st.air_quality_levels || {};
     let online = 0;
     let running = 0;
-    const rows = g.members
-      .map((m) => {
-        const p = this._purifier(m);
-        const d = p ? this._device(p.name) : null;
-        const member = (st.members || []).find((x) => x.entity_id === m);
-        const offline = this._offline(m);
-        const isOn = this._hass?.states?.[m]?.state === "on";
-        if (!offline) online += 1;
-        if (isOn) running += 1;
-        const pill = offline ? "warn" : on && member?.in_control ? "act" : isOn ? "watch" : "paused";
-        const chips = (p?.sensors || [])
-          .map((s) => {
-            const lvl = levelOf[s.entity_id];
-            return `<span class="chip gd-chip"><i class="gd-dot${lvl ? ` q${lvl}` : ""}"></i>${esc(
-              SENSOR_TYPE_INFO[s.type]?.label || s.type,
-            )} <b>${esc(this._sensorValue(s.entity_id, s.type))}</b></span>`;
-          })
-          .join("");
-        const name = p?.title || m;
-        const link = p?.name
-          ? `<a class="gd-name" href="${esc(this._devicePath(p.name))}" data-action="navigate" data-path="${esc(
-              this._devicePath(p.name),
-            )}">${esc(name)}</a>`
-          : `<span class="gd-name">${esc(name)}</span>`;
-        return `<div class="gd-row">
-          <span class="dev-tile">${deviceImage(p?.model)}</span>
-          <div class="gd-who">${link}<div class="gd-meta"><span class="pill ${pill}"><i></i>${esc(
-            this._memberState(m, member),
-          )}</span><span class="hint">${esc(p?.model || "")}</span></div></div>
-          <div class="gd-chips">${chips}</div>
-          <div class="gd-filter">${d ? this._filter(d) : ""}</div>
-        </div>`;
-      })
-      .join("");
-    const purifiers = `<div class="card gd-card gd-wide">
-      <div class="gd-head"><h2>${this._text("Purifiers")}</h2><span class="hint">${this._text("{online} online · {running} running", { online, running })}</span></div>
-      ${rows}
+    const deviceRow = (entityId, device, { member, humidifier = false, chips = "", filter = "" } = {}) => {
+      const offline = this._offline(entityId);
+      const isOn = this._hass?.states?.[entityId]?.state === "on";
+      if (!offline) online += 1;
+      if (isOn) running += 1;
+      const pill = offline ? "warn" : on && member?.in_control ? "act" : isOn ? "watch" : "paused";
+      const status = humidifier
+        ? this._t(offline ? "Offline" : isOn ? "On" : "Off")
+        : this._memberState(entityId, member);
+      const name = device?.title || entityId;
+      const path = device?.name ? this._devicePath(device.name) : null;
+      const link = path
+        ? `<a class="gd-name" href="${esc(path)}" data-action="navigate" data-path="${esc(path)}">${esc(name)}</a>`
+        : `<span class="gd-name">${esc(name)}</span>`;
+      return `<div class="gd-row">
+        <span class="dev-tile">${deviceImage(device?.model)}</span>
+        <div class="gd-who">${link}<div class="gd-meta"><span class="pill ${pill}"><i></i>${esc(status)}</span>
+          <span class="hint">${esc(device?.model || "")}</span></div></div>
+        <div class="gd-chips">${chips}</div>
+        <div class="gd-filter">${filter}</div>
+      </div>`;
+    };
+    const purifierRows = g.members.map((entityId) => {
+      const purifier = this._purifier(entityId);
+      const device = purifier ? this._device(purifier.name) : null;
+      const member = (st.members || []).find((item) => item.entity_id === entityId);
+      const chips = (purifier?.sensors || []).map((s) => {
+        const level = levelOf[s.entity_id];
+        return `<span class="chip gd-chip"><i class="gd-dot${level ? ` q${level}` : ""}"></i>${esc(
+          SENSOR_TYPE_INFO[s.type]?.label || s.type,
+        )} <b>${esc(this._sensorValue(s.entity_id, s.type))}</b></span>`;
+      }).join("");
+      return deviceRow(entityId, purifier, { member, chips, filter: device ? this._filter(device) : "" });
+    });
+    const humidifierRows = humidifiers
+      .map((device) => deviceRow(device.entity_id, device, { humidifier: true }));
+    const devices = `<div class="card gd-card gd-wide">
+      <div class="gd-head"><h2>${this._text(this._automation ? "Devices" : "Purifiers")}</h2><span class="hint">${this._text("{online} online · {running} running", { online, running })}</span></div>
+      ${purifierRows.join("")}${humidifierRows.join("")}
     </div>`;
 
     // sensors added in the editor, not part of a purifier
@@ -3133,7 +3135,7 @@ class LevoitEsphomePanel extends HTMLElement {
             .join("")}
         </div>`
       : "";
-    return `<div class="gd">${controls}${history}${historyNote}<div class="gd-cols">${humidityOnly ? "" : purifiers}${extras}</div></div>`;
+    return `<div class="gd">${controls}${history}${historyNote}<div class="gd-cols">${devices}${extras}</div></div>`;
   }
 
   // --- group editor ----------------------------------------------------------------
@@ -3407,68 +3409,62 @@ class LevoitEsphomePanel extends HTMLElement {
       ${purifierControls ? this._setting(this._t("Group control"), this._t("When off, the purifiers are left alone"), this._edSwitch("enabled", this._t("Group control"))) : ""}
     </div>`;
 
-    // Purifiers
     const chosen = new Set(this._draftMembers());
-    const rows = this._groupPurifiers()
-      .map((p) => {
-        const other = p.group_id && p.group_id !== d.id;
-        const tags = [];
-        if (other) {
-          const group = this._listedGroups().find((g) => g.id === p.group_id);
-          tags.push(["", group ? this._t("In {group}", { group: group.name }) : this._t("In a group")]);
-        } else if (d.area_id && p.area_id === d.area_id) tags.push(["sug", this._t("In this room")]);
-        else if (p.area_id) tags.push(["", this._areaName(p.area_id)]);
-        if (this._offline(p.entity_id)) tags.push(["err", this._t("Offline")]);
-        const sub = this._t("{model} · {count} speeds{suffix}", { model: p.model || "Levoit", count: p.speeds, suffix: p.sensors.length ? "" : this._t(" · no air sensor") });
-        return `<label class="mem${other ? " dis" : ""}">
-          <input type="checkbox" data-member="${esc(p.entity_id)}" ${chosen.has(p.entity_id) ? "checked" : ""} ${
-            other ? "disabled" : ""
-          } aria-label="${esc(p.title)}">
-          <span class="dev-tile">${deviceImage(p.model)}</span>
-          <span class="mem-text"><span class="mem-name">${esc(p.title)}</span><span class="hint">${esc(sub)}</span></span>
-          <span class="tags">${tags
-            .filter(([, label]) => label)
-            .map(([kind, label]) => `<span class="tag ${kind}">${esc(label)}</span>`)
-            .join("")}</span>
-        </label>`;
-      })
-      .join("");
-    const count = chosen.size;
-    const total = count + (d.humidifiers?.length || 0);
-    const validMembers = this._validGroupMembers(count, total - count);
-    const purifiers = `<div class="card section">
-      <div class="sec-head"><div><h2>${this._text("Purifiers")}</h2><div class="hint">${this._text("Purifiers in {room} are suggested; you can add any purifier.", { room: this._areaName(d.area_id) || this._t("the group's room") })}</div></div>
+    const selectedHumidifiers = new Set(d.humidifiers || []);
+    const knownHumidifiers = this._automation ? this._groups.humidifiers || [] : [];
+    const knownIds = new Set(knownHumidifiers.map((device) => device.entity_id));
+    const humidifiers = this._automation ? [
+      ...knownHumidifiers,
+      ...this._groupHumidifiers(d).filter((device) => !knownIds.has(device.entity_id)),
+    ] : [];
+    const rows = [
+      ...this._groupPurifiers().map((device) => ({ device, humidifier: false })),
+      ...humidifiers.map((device) => ({ device, humidifier: true })),
+    ].map(({ device, humidifier }) => {
+      const other = device.group_id && device.group_id !== d.id;
+      const tags = [];
+      if (other) {
+        const group = this._listedGroups().find((g) => g.id === device.group_id);
+        tags.push(["", group ? this._t("In {group}", { group: group.name }) : this._t("In a group")]);
+      } else if (d.area_id && device.area_id === d.area_id) tags.push(["sug", this._t("In this room")]);
+      else if (device.area_id) tags.push(["", this._areaName(device.area_id)]);
+      if (this._offline(device.entity_id)) tags.push(["err", this._t("Offline")]);
+      const selected = (humidifier ? selectedHumidifiers : chosen).has(device.entity_id);
+      const description = humidifier
+        ? `${this._t("Target humidity")} ${this._humidityValue(device.target)}`
+        : this._t("{model} · {count} speeds{suffix}", {
+          model: device.model || "Levoit",
+          count: device.speeds,
+          suffix: device.sensors.length ? "" : this._t(" · no air sensor"),
+        });
+      return `<label class="mem${other ? " dis" : ""}">
+        <input type="checkbox" data-member="${esc(device.entity_id)}" ${humidifier ? "data-humidifier" : ""} ${
+          selected ? "checked" : ""
+        } ${other ? "disabled" : ""} aria-label="${esc(device.title)}">
+        <span class="dev-tile">${deviceImage(device.model)}</span>
+        <span class="mem-text"><span class="mem-name">${esc(device.title)}</span><span class="hint">${esc(description)}</span></span>
+        <span class="tags">${tags
+          .filter(([, label]) => label)
+          .map(([kind, label]) => `<span class="tag ${kind}">${esc(label)}</span>`)
+          .join("")}</span>
+      </label>`;
+    }).join("");
+    const validMembers = this._validGroupMembers(chosen.size, selectedHumidifiers.size);
+    const devices = `<div class="card section">
+      <div class="sec-head"><div><h2>${this._text(this._automation ? "Devices" : "Purifiers")}</h2>${
+        this._automation ? "" : `<div class="hint">${this._text("Purifiers in {room} are suggested; you can add any purifier.", {
+          room: this._areaName(d.area_id) || this._t("the group's room"),
+        })}</div>`
+      }</div>
         <span class="tag ${validMembers ? "sug" : "err"}">${this._text("{count} selected{hint}", {
-          count: total,
+          count: chosen.size + selectedHumidifiers.size,
           hint: validMembers ? "" : this._t(this._automation ? " · pick at least 1" : " · pick at least 2"),
         })}</span></div>
       ${rows}
-      <div class="mem dis"><input type="checkbox" disabled aria-label="${this._text("Other fans")}"><span class="dev-tile">${icon(
+      ${this._automation ? "" : `<div class="mem dis"><input type="checkbox" disabled aria-label="${this._text("Other fans")}"><span class="dev-tile">${icon(
         "fan",
-      )}</span><span class="mem-text"><span class="mem-name">${this._text("Other fans")}</span><span class="hint">${this._text("Any Home Assistant fan entity")}</span></span><span class="tags"><span class="tag">${this._text("Coming later")}</span></span></div>
+      )}</span><span class="mem-text"><span class="mem-name">${this._text("Other fans")}</span><span class="hint">${this._text("Any Home Assistant fan entity")}</span></span><span class="tags"><span class="tag">${this._text("Coming later")}</span></span></div>`}
     </div>`;
-
-    const selectedHumidifiers = new Set(d.humidifiers || []);
-    const knownHumidifiers = this._automation ? this._groups.humidifiers || [] : [];
-    const humidifierRows = [
-      ...knownHumidifiers,
-      ...this._groupHumidifiers(d).filter((device) => !knownHumidifiers.some((known) => known.entity_id === device.entity_id)),
-    ].map((device) => {
-      const other = device.group_id && device.group_id !== d.id;
-      const group = other ? this._listedGroups().find((g) => g.id === device.group_id) : null;
-      return `<label class="mem${other ? " dis" : ""}">
-        <input type="checkbox" data-member="${esc(device.entity_id)}" data-humidifier ${
-          selectedHumidifiers.has(device.entity_id) ? "checked" : ""
-        } ${other ? "disabled" : ""} aria-label="${esc(device.title)}">
-        <span class="dev-tile">${deviceImage(device.model)}</span>
-        <span class="mem-text"><span class="mem-name">${esc(device.title)}</span>
-          <span class="hint">${this._text("Target humidity")} ${esc(this._humidityValue(device.target))}</span></span>
-        ${other ? `<span class="tag">${group ? this._text("In {group}", { group: group.name }) : this._text("In a group")}</span>` : ""}
-      </label>`;
-    });
-    const humidifiers = this._section(
-      this._t("Humidifiers"), humidifierRows, this._t("Show their target and current humidity in the group."),
-    );
 
     // Air quality sensors
     const shown = this._draftSensors();
@@ -3660,7 +3656,7 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
 
     return `<div class="ged">
-      <div class="ged-main">${general}${purifiers}${humidifiers}${sensors}${purifierControls ? speed + stepIn + clean : ""}</div>
+      <div class="ged-main">${general}${devices}${sensors}${purifierControls ? speed + stepIn + clean : ""}</div>
       ${purifierControls ? `<aside class="ged-aside" aria-label="${this._text("Live preview")}">${this._rightNow()}
         <div class="hint now-note">${this._text("The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.")}</div>
       </aside>` : ""}

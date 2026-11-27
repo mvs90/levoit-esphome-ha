@@ -205,6 +205,7 @@ test("mixed group shows the individual humidifier targets alongside air quality"
   assert.match(detail, /Zielfeuchte/);
   assert.match(detail, /Istfeuchte: 43 %/);
   assert.match(detail, /62,5 %/);
+  assert.match(detail, /<h2>Geräte<\/h2>[\s\S]+fan\.fixture[\s\S]+Fixture &lt;one&gt;/);
   assert.equal(panel._pageStatesChanged(), false);
   states["number.target"] = { state: "71" };
   assert.equal(panel._pageStatesChanged(), true);
@@ -251,4 +252,33 @@ test("Automations and Purifier groups use separate routes and member rules", () 
   assert.equal(panel._validGroupMembers(1, 0), true);
   panel.route = { path: "/automations/copy", prefix: "/levoit-esphome" };
   assert.equal(panel._detailGroup(), copy);
+});
+
+test("the Automations editor lists both device types in the same section", () => {
+  const panel = component("levoit-esphome-panel");
+  Object.assign(panel, {
+    _automation: true,
+    _groupKey: "new",
+    _hass: { locale: { language: "de" }, states: {} },
+    _groups: {
+      groups: [],
+      automations: [],
+      purifiers: [{ entity_id: entity, title: "Purifier example", speeds: 4, sensors: [] }],
+      humidifiers: [{ entity_id: "fan.humidifier", title: "Humidifier example" }],
+    },
+    _schedulePreview: () => {},
+  });
+  const editor = panel._groupEditor();
+  const [, rows] = editor.split("<h2>Geräte</h2>");
+  const [choices] = rows.split('<div class="card section">');
+  assert.match(choices, /Purifier example/);
+  assert.match(choices, /data-member="fan\.humidifier" data-humidifier/);
+  assert.match(choices, /Humidifier example/);
+  assert.doesNotMatch(editor, /<h2>Luftbefeuchter<\/h2>/);
+
+  panel._automation = false;
+  panel._edit = null;
+  const legacy = panel._groupEditor();
+  assert.match(legacy, /<h2>Luftreiniger<\/h2>/);
+  assert.doesNotMatch(legacy, /Humidifier example/);
 });
