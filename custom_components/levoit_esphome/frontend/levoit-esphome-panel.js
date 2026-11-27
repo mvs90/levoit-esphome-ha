@@ -3440,7 +3440,7 @@ class LevoitEsphomePanel extends HTMLElement {
           <button class="btn" data-action="close-log">Close</button>
         </div>
         ${this._stepsList(d?.build)}
-        <pre>${lines.length ? lines.map(esc).join("\n") : "No output yet."}</pre>
+        <pre class="${full ? "full" : "tail"}">${lines.length ? lines.map(esc).join("\n") : "No output yet."}</pre>
       </div>
     </div>`;
   }
@@ -3608,7 +3608,10 @@ select:disabled { opacity: 0.6; }
 .log-head span { flex: 1; }
 .log pre { margin: 0; padding: 12px 16px; overflow: auto; font-size: 12px; line-height: 1.45;
   font-family: var(--code-font-family, ui-monospace, Menlo, Consolas, monospace);
-  white-space: pre-wrap; word-break: break-word; }
+  white-space: pre-wrap; word-break: break-word; box-sizing: border-box; }
+/* a fixed height, so the dialog does not jump as the lines come and go */
+.log pre.tail { height: min(300px, 45vh); }
+.log pre.full { height: min(640px, 65vh); }
 /* the build's steps: mark, name, what it does or how it ended */
 .steps { list-style: none; margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--divider-color);
   display: grid; grid-template-columns: 20px auto minmax(0, 1fr); gap: 6px 12px; align-items: center;

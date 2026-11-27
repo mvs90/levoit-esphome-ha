@@ -165,10 +165,11 @@ def test_upload_steps() -> None:
     assert _steps(log)[STEP_RESULT]["detail"] == SIZES
     _feed(log, lines, "Uploading /data")
     assert _steps(log)[STEP_UPLOAD]["detail"] == "801 KB"
+    _feed(log, lines, "Auth successful")
+    assert _steps(log)[STEP_UPLOAD]["detail"] == "Auth successful"
     _feed(log, lines, "50%")
-    upload = _steps(log)[STEP_UPLOAD]
-    assert upload["percent"] == 50
-    assert upload["detail"] == "Auth successful"
+    # the bar replaces the INFO text next to it
+    assert _steps(log)[STEP_UPLOAD] == {"key": STEP_UPLOAD, "state": "running", "percent": 50}
     assert log.percent() == 85 + 8  # 85 + 15 * 0.5, rounded
     # only the last part of a line drawn with \r is kept
     assert log.lines[-1] == "Uploading: [=====     ] 50%"

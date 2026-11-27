@@ -274,7 +274,10 @@ class BuildLog:
         elif match := _UPLOADING.match(text):
             self._enter(STEP_UPLOAD).detail = _kb(int(match.group(1)))
         elif match := _UPLOAD_PERCENT.search(text):
-            self._enter(STEP_UPLOAD).percent = int(match.group(1))
+            # the bar says it all; the INFO line before it would stay next to it
+            step = self._enter(STEP_UPLOAD)
+            step.percent = int(match.group(1))
+            step.detail = None
         elif match := _UPLOAD_TOOK.match(text):
             self._upload_seconds = float(match.group(1))
             step = self._enter(STEP_UPLOAD)
