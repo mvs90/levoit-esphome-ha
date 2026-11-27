@@ -168,7 +168,7 @@ editor, *Add card* lists them as **Levoit purifier**, **Levoit group** and
 ```yaml
 type: custom:levoit-purifier-card
 entity: fan.levoit_core600s_c3_fan   # the purifier's fan
-show: [pm25, aqi, cadr, filter, group]   # default: all
+show: [pm25, aqi, cadr, filter, group]   # no key: all; a new card lists them
 controls: [speed, mode]                  # default: both
 grid_options:
   columns: 12   # 6 = medium / small, 3 = compact
@@ -191,7 +191,7 @@ one switches to Manual.
 ```yaml
 type: custom:levoit-group-card
 entity: fan.living_room   # the group's fan (or group: <its id>)
-show: [pm25, aqi, cadr, members]   # default: all
+show: [pm25, aqi, cadr, members]   # no key: all; a new card lists them
 controls: [mode, level]            # default: both
 grid_options:
   columns: 12   # 6 = medium / small, 3 = compact
