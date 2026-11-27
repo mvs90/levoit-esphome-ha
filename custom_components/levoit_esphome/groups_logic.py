@@ -116,23 +116,31 @@ class HumidityControl:
     enabled: bool = False
     mode: str = MODE_AUTO
     manual_level: int = 1
-    sensor: str | None = None  # otherwise each humidifier uses its own reading
+    sensors: tuple[str, ...] = ()  # otherwise each humidifier uses its own reading
+    combine: str = COMBINE_MIN
+    target: int | None = None  # otherwise each humidifier uses its own target
     start_below: int = 2
     medium_below: int = 5
     high_below: int = 10
     low_mist: int = 1
     medium_mist: int = 2
     high_mist: int = 3
+    member_mist: Mapping[str, tuple[int, int, int]] = field(default_factory=dict)
     stop_minutes: int = 0
     turn_on: bool = True
 
-    def mist(self, deficit: float) -> int:
+    def mist_levels(self, member: str) -> tuple[int, int, int]:
+        """The low, medium and high bands as this member runs them."""
+        return self.member_mist.get(member, (self.low_mist, self.medium_mist, self.high_mist))
+
+    def mist(self, deficit: float, member: str) -> int:
         """Mist level while humidification is running, by distance to the target."""
+        low, medium, high = self.mist_levels(member)
         if deficit >= self.high_below:
-            return self.high_mist
+            return high
         if deficit >= self.medium_below:
-            return self.medium_mist
-        return self.low_mist
+            return medium
+        return low
 
 
 @dataclass(frozen=True)
@@ -162,7 +170,7 @@ class GroupConfig:
     # per member: its lowest and highest step (absent: speed 1 to its fastest)
     member_speeds: Mapping[str, MemberSpeeds] = field(default_factory=dict)
     humidifiers: tuple[str, ...] = ()
-    humidity_control: HumidityControl = HumidityControl()
+    humidity_control: HumidityControl = field(default_factory=HumidityControl)
     kind: str = GROUP_PURIFIER
     source_group_id: str | None = None
 
@@ -244,32 +252,54 @@ def _choice(data: Mapping[str, Any], key: str, default: str, choices: Iterable[s
     return value
 
 
-def _humidity_control(data: Any, has_members: bool) -> HumidityControl:
+def _humidity_control(data: Any, members: tuple[str, ...]) -> HumidityControl:
     if data is None:
         return HumidityControl()
     if not isinstance(data, Mapping):
         raise GroupError(ERR_INVALID, "humidity_control must be an object")
-    sensor = data.get("sensor")
-    if sensor is not None and (
-        not isinstance(sensor, str) or not sensor.startswith("sensor.") or len(sensor) <= 7
-    ):
-        raise GroupError(ERR_INVALID, "Pick a humidity sensor entity")
+    previous = data.get("sensor")
+    sensors = _entity_ids(
+        data.get("sensors", [previous] if previous is not None else ()), "humidity_control.sensors"
+    )
+    if any(not sensor.startswith("sensor.") or len(sensor) <= 7 for sensor in sensors):
+        raise GroupError(ERR_INVALID, "Pick humidity sensor entities")
+    target = _int(data, "target", 55, 40, 80) if data.get("target") is not None else None
     start = _int(data, "start_below", HumidityControl.start_below, 1, 30)
     medium = _int(data, "medium_below", HumidityControl.medium_below, 1, 40)
     high = _int(data, "high_below", HumidityControl.high_below, 1, 50)
     if not start <= medium <= high:
         raise GroupError(ERR_THRESHOLDS, "Humidity thresholds must rise from start to high mist")
+    if target is not None and high > target:
+        raise GroupError(ERR_THRESHOLDS, "Humidity thresholds must be at or above 0%")
+    raw_mist = data.get("member_mist", {})
+    if not isinstance(raw_mist, Mapping):
+        raise GroupError(ERR_INVALID, "Mist levels must be per humidifier")
+    member_mist = {}
+    for member in members:
+        if member not in raw_mist:
+            continue
+        levels = raw_mist[member]
+        if (
+            not isinstance(levels, (list, tuple))
+            or len(levels) != 3
+            or any(type(level) is not int or not 1 <= level <= 3 for level in levels)
+        ):
+            raise GroupError(ERR_INVALID, f"{member} needs three mist levels from 1 to 3")
+        member_mist[member] = tuple(levels)
     return HumidityControl(
-        enabled=_bool(data, "enabled", False) and has_members,
+        enabled=_bool(data, "enabled", False) and bool(members),
         mode=_choice(data, "mode", MODE_AUTO, (MODE_AUTO, MODE_MANUAL)),
         manual_level=_int(data, "manual_level", HumidityControl.manual_level, 1, 3),
-        sensor=sensor,
+        sensors=sensors,
+        combine=_choice(data, "combine", COMBINE_MIN, COMBINES),
+        target=target,
         start_below=start,
         medium_below=medium,
         high_below=high,
         low_mist=_int(data, "low_mist", HumidityControl.low_mist, 1, 3),
         medium_mist=_int(data, "medium_mist", HumidityControl.medium_mist, 1, 3),
         high_mist=_int(data, "high_mist", HumidityControl.high_mist, 1, 3),
+        member_mist=member_mist,
         stop_minutes=_int(data, "stop_minutes", HumidityControl.stop_minutes, 0, 30),
         turn_on=_bool(data, "turn_on", True),
     )
@@ -434,7 +464,7 @@ def parse_config(data: Mapping[str, Any], *, check_members: bool = True) -> Grou
         manual_level=_int(data, "manual_level", 1, 1, MAX_LEVEL),
         member_speeds=_member_speeds(data, members),
         humidifiers=humidifiers,
-        humidity_control=_humidity_control(data.get("humidity_control"), bool(humidifiers))
+        humidity_control=_humidity_control(data.get("humidity_control"), humidifiers)
         if kind == GROUP_AUTOMATION
         else HumidityControl(),
         kind=kind,

@@ -368,6 +368,7 @@ test("the humidity editor uses humidity sensors and keeps its rules separate", (
       locale: { language: "de" },
       states: {
         "sensor.room_humidity": { state: "45", attributes: { device_class: "humidity", friendly_name: "Room sensor" } },
+        "sensor.other_humidity": { state: "55", attributes: { device_class: "humidity", friendly_name: "Other sensor" } },
         "sensor.temperature": { state: "20", attributes: { device_class: "temperature" } },
         "number.target": { state: "58" },
       },
@@ -388,26 +389,41 @@ test("the humidity editor uses humidity sensors and keeps its rules separate", (
   assert.match(editor, /58 %/);
   assert.doesNotMatch(editor, /sensor\.temperature|Luftqualitätssensoren/);
   assert.equal(panel._draftPayload().humidity_control.enabled, false);
-  panel._setDraft("humidity_control.sensor", "sensor.room_humidity");
-  panel._setDraft("humidity_control.high_mist", 2);
+  panel._setDraft("humidity_control.sensors", ["sensor.room_humidity", "sensor.other_humidity"]);
+  assert.match(panel._groupEditor(), /value="min" selected>Trockenster Sensor/);
+  panel._setDraft("humidity_control.combine", "avg");
+  panel._setDraft("humidity_control.member_mist", { [humidifier.entity_id]: [1, 3, 2] });
   panel._setDraft("humidity_control.stop_minutes", 4);
   assert.equal(panel._humidityControlError(), "");
   panel._setDraft("humidity_control.start_below", 15);
   assert.match(panel._humidityControlError(), /aufsteigend/);
   panel._setDraft("humidity_control.start_below", 2);
+  assert.deepEqual(panel._humidityPoints(panel._edit.draft.humidity_control), [2, 5, 10]);
+  panel._setDraft("humidity_control.target", 58);
+  assert.deepEqual(panel._humidityPoints(panel._edit.draft.humidity_control), [48, 53, 56, 58]);
+  const moved = panel._humidityAt(3, 60);
+  assert.deepEqual(panel._humidityPoints(moved), [48, 53, 56, 60]);
+  assert.deepEqual(panel._humidityPoints(panel._humidityAt(0, 99)), [53, 53, 56, 58]);
+  assert.deepEqual(panel._humidityPoints(panel._humidityAt(3, 0)), [48, 53, 56, 57]);
+  panel._setDraft("humidity_control", moved);
   panel._setDraft("humidity_control.enabled", true);
   panel._setDraft("humidity_control.mode", "manual");
   panel._setDraft("humidity_control.manual_level", 2);
   panel._edit.preview = {
-    members: [], sensors: [], humidity: [{ entity_id: humidifier.entity_id, sensor: "sensor.room_humidity", value: 45, target: 58, mist: 2, status: "in_control" }],
+    members: [], sensors: [], humidity: [{ entity_id: humidifier.entity_id, target: 60, value: 50, mist: 2, status: "in_control",
+      sensors: [{ entity_id: "sensor.room_humidity", value: 45 }, { entity_id: "sensor.other_humidity", value: 55 }] }],
   };
   const manual = panel._groupEditor();
   assert.match(manual, /data-field="humidity_control.manual_level" data-value="2"/);
-  assert.match(manual, /Ist 45 % · Ziel 58 %/);
+  assert.match(manual, /Ist 50 % · Ziel 60 %/);
+  assert.match(manual, /Mittelwert aus 2|Durchschnitt aus 2|Mittelwert von 2|Durchschnitt von 2/i);
   assert.match(manual, /Nebelstufe 2/);
+  assert.match(manual, /data-humidity-point="3"[^>]*[\s\S]+aria-label="Zielfeuchte"/);
   const { humidity_control: settings } = panel._draftPayload();
-  assert.equal(settings.sensor, "sensor.room_humidity");
-  assert.equal(settings.high_mist, 2);
+  assert.deepEqual(settings.sensors, ["sensor.room_humidity", "sensor.other_humidity"]);
+  assert.equal(settings.combine, "avg");
+  assert.equal(settings.target, 60);
+  assert.deepEqual(settings.member_mist[humidifier.entity_id], [1, 3, 2]);
   assert.equal(settings.stop_minutes, 4);
   assert.equal(settings.enabled, true);
   assert.equal(settings.mode, "manual");

@@ -1040,9 +1040,15 @@ async def test_humidity_control_uses_reference_stages_and_hysteresis(
     group = await _save(client, kind="automation", humidifiers=[fan], humidity_control=settings)
     await _settle(hass)
     assert group["enabled"] is False  # purifier control is separate
-    assert group["humidity_control"]["sensor"] == sensor
+    assert group["humidity_control"]["sensors"] == [sensor]  # legacy single-sensor setting
     assert group["state"]["humidity"] == [
-        {"entity_id": fan, "sensor": sensor, "value": 40, "target": 58}
+        {
+            "entity_id": fan,
+            "sensor": sensor,
+            "sensors": [{"entity_id": sensor, "value": 40}],
+            "value": 40,
+            "target": 58,
+        }
     ]
     assert calls == [("turn_on", fan, {"percentage": 100})]
 
@@ -1120,6 +1126,57 @@ async def test_humidity_control_waits_for_tank_and_holds_at_target(
     assert hass.states.get(fan).state == "off"
     await _later(hass, freezer, 30)
     assert hass.states.get(fan).state == "on"
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_humidity_combines_sensors_and_maps_each_member(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    calls = await _fake_fans(hass)
+    first = _humidifier(hass, "LV600S", "de:ad:be:ef:00:04", "mist")
+    second = _humidifier(hass, "SUPERIOR6000S", "de:ad:be:ef:00:05", "superior")
+    attrs = {"device_class": "humidity", "unit_of_measurement": "%"}
+    sensors = ["sensor.room_humidity", "sensor.hall_humidity"]
+    hass.states.async_set(sensors[0], "40", attrs)
+    hass.states.async_set(sensors[1], "70", attrs)
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    options = {
+        "enabled": True,
+        "sensors": sensors,
+        "target": 60,
+        "combine": "avg",
+        "member_mist": {first: [1, 2, 3], second: [1, 3, 2]},
+    }
+    config = {"kind": "automation", "humidifiers": [first, second], "humidity_control": options}
+    group = await _save(client, **config)
+    await _settle(hass)
+    assert [(r["value"], r["target"]) for r in group["state"]["humidity"]] == [(55, 60)] * 2
+    assert calls == [
+        ("turn_on", first, {"percentage": 55}),
+        ("turn_on", second, {"percentage": 100}),
+    ]
+    assert hass.states.get("number.mist_target").state == "58"
+
+    hass.states.async_set(sensors[1], "unavailable", attrs)
+    await _settle(hass)
+    assert calls[-2:] == [
+        ("turn_on", first, {"percentage": 100}),
+        ("turn_on", second, {"percentage": 55}),
+    ]
+    hass.states.async_set(sensors[1], "70", attrs)
+    await _settle(hass)
+    options["combine"] = "max"
+    await _save(client, id=group["id"], **config)
+    await _settle(hass)
+    assert calls[-2:] == [("turn_off", first, {}), ("turn_off", second, {})]
+
+    options.update(sensors=[], target=None, enabled=False)
+    fallback = await _save(client, id=group["id"], **config)
+    assert [(r["sensor"], r["target"]) for r in fallback["state"]["humidity"]] == [
+        ("sensor.mist_humidity", 58),
+        ("sensor.superior_humidity", 58),
+    ]
 
 
 @pytest.mark.usefixtures("patch_sources")

@@ -84,6 +84,7 @@ from .groups_logic import (
     Reading,
     Step,
     air_quality,
+    combine,
     evaluate,
     member_step,
     merge_sensors,
@@ -275,7 +276,13 @@ class HumidityRun:
     sent_at: float = 0
 
     def mist(
-        self, settings: HumidityControl, deficit: float | None, is_on: bool, now: float
+        self,
+        settings: HumidityControl,
+        deficit: float | None,
+        is_on: bool,
+        now: float,
+        *,
+        member: str,
     ) -> int | None:
         """Return None to leave the fan alone or 0 to stop humidification."""
         if deficit is None:
@@ -290,10 +297,10 @@ class HumidityRun:
                 self.at_target_since = now
             if now - self.at_target_since >= settings.stop_minutes * 60:
                 return 0
-            return settings.low_mist
+            return settings.mist_levels(member)[0]
         self.at_target_since = None
         if (self.engaged and is_on and self.command != STEP_OFF) or deficit >= settings.start_below:
-            return settings.mist(deficit)
+            return settings.mist(deficit, member)
         return None
 
 
@@ -321,7 +328,7 @@ def _humidity_plan(
         run.at_target_since = None
         mist = settings.manual_level
     else:
-        mist = run.mist(settings, deficit, is_on, now)
+        mist = run.mist(settings, deficit, is_on, now, member=device.entity_id)
         if deficit is None:
             return mist, STATUS_NO_SENSORS
         if mist is None:
@@ -548,34 +555,43 @@ class GroupManager:
     def humidity_readings(
         self, config: GroupConfig, devices: dict[str, LevoitHumidifier] | None = None
     ) -> list[dict[str, Any]]:
-        """The selected reference reading and each device's own target."""
+        """The combined reading and effective target for each humidifier."""
         if not config.humidifiers:
             return []
         if devices is None:
             devices = self.levoit_humidifiers()
+        settings = config.humidity_control
+        built_in = {device.humidity for device in devices.values()}
+        samples = []
+        for sensor in settings.sensors:
+            state = self.hass.states.get(sensor)
+            valid = state is not None and (
+                sensor in built_in or state.attributes.get("device_class") == "humidity"
+            )
+            samples.append(
+                {"entity_id": sensor, "value": _humidity_percent(state) if valid else None}
+            )
+        numbers = [sample["value"] for sample in samples if sample["value"] is not None]
+        combined = combine(numbers, settings.combine) if numbers else None
         readings = []
         for member in config.humidifiers:
             if (device := devices.get(member)) is None:
                 continue
-            sensor = config.humidity_control.sensor or device.humidity
-            sensor_state = self.hass.states.get(sensor) if sensor else None
-            if (
-                config.humidity_control.sensor
-                and sensor_state is not None
-                and (
-                    sensor_state.attributes.get("device_class") != "humidity"
-                    and not any(humidifier.humidity == sensor for humidifier in devices.values())
-                )
-            ):
-                sensor_state = None
+            value = combined
+            sources = samples
+            if not samples and device.humidity:
+                value = _humidity_percent(self.hass.states.get(device.humidity))
+                sources = [{"entity_id": device.humidity, "value": value}]
+            target = settings.target
+            if target is None and device.target:
+                target = _humidity_percent(self.hass.states.get(device.target))
             readings.append(
                 {
                     "entity_id": member,
-                    "sensor": sensor,
-                    "value": _humidity_percent(sensor_state),
-                    "target": _humidity_percent(self.hass.states.get(device.target))
-                    if device.target
-                    else None,
+                    "sensor": sources[0]["entity_id"] if len(sources) == 1 else None,
+                    "sensors": sources,
+                    "value": value,
+                    "target": target,
                 }
             )
         return readings
@@ -944,6 +960,8 @@ class GroupRunner:
         ]
         if self.config.humidity_control.enabled:
             devices = self.manager.levoit_humidifiers()
+            sensors = self.config.humidity_control.sensors
+            entities.extend(sensors)
             for member in self.config.humidifiers:
                 if device := devices.get(member):
                     entities.extend(
@@ -951,7 +969,7 @@ class GroupRunner:
                         for entity in (
                             member,
                             device.target,
-                            self.config.humidity_control.sensor or device.humidity,
+                            None if sensors else device.humidity,
                             *device.required_on,
                             *device.required_off,
                         )
