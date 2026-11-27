@@ -491,6 +491,20 @@ changes. Without it the config is **custom**, like one made with *Other ESP*:
 it is never rewritten, and updates only build the newer component it pulls
 through its `ref:`.
 
+#### Encrypted native OTA
+
+Template refreshes preserve the native ESPHome OTA encryption key and API
+key, whether inline or referenced by `!secret`. If `ota.encryption` is left
+empty, OTA continues to use the API encryption key. An explicit OTA key must
+resolve to the same value as a configured API key. The integration inspects the
+YAML without loading packages or looking up secret values. Refresh supports a
+standalone template with the native API, one native OTA transport, and an
+upstream Main or Stable source. Other layouts stop before writing or building.
+Key rotation (`old_key`) and migration that permits a plaintext upload
+(`allow_plaintext_upload`) also require a custom config. Remove the template
+marker to manage that file manually. Use a Device Builder version that
+supports native OTA encryption for an encrypted device.
+
 ### How it works
 
 * Devices: every ESPHome device whose Device Builder config loads `levoit` or
@@ -528,8 +542,8 @@ finished firmware over Wi-Fi.
    compile fails, nothing is uploaded.
 3. **Upload over Wi-Fi:** the Device Builder connects to the purifier's ESP
    with ESPHome's own OTA protocol (TCP port 3232), finds it by its name
-   (`<name>.local`, mDNS), authenticates with the OTA password from
-   `secrets.yaml` (`<name>_ota_password`), and sends the firmware. The ESP
+   (`<name>.local`, mDNS), authenticates with the configured OTA encryption key
+   or legacy password, and sends the firmware. The ESP
    writes it into its **second app partition** while the current firmware keeps
    running, checks it (SHA-256), switches the boot partition to it and restarts.
    A connection that drops halfway leaves the old firmware running.
