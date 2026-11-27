@@ -252,6 +252,12 @@ The sidebar page's third tab has:
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.8" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
 
+A running build, in the row and under **Log**: the steps, the compile counter
+with the file being built, then the upload with its bar.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/build-log.png?v=0.7.1" width="720" alt="A running build: the device row says Compile 111 / 117 with a bar; the Log dialog shows Setup done with ESP-IDF 5.5.6, Compile running at 111 of 117 on main.cpp, Link and image, Result and Upload queued, and the last lines of the output">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/build-log-upload.png?v=0.7.1" width="720" alt="The same build uploading: Setup, Compile with 107 files, Link and image with a 900 KB image and Result with RAM 30.3 % and Flash 50.2 % done, Upload at 74 % with its bar, and the upload's progress lines">
+
 ### Extra ESP or original ESP
 
 Most of these purifiers have an ESP32 for Wi-Fi and a separate MCU that runs
