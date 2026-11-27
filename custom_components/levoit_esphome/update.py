@@ -135,7 +135,7 @@ class LevoitFirmwareUpdate(LevoitEsphomeEntity, UpdateEntity):
 
     @property
     def update_percentage(self) -> int | None:
-        """Rough progress by step: config 5 %, compile 10 %, upload 85 %."""
+        """By step (config 5 %, compile 10 %, upload 85 %) and the build's own counters."""
         return self.coordinator.build_progress(self._device_name)
 
     async def async_install(self, version: str | None, backup: bool, **kwargs: Any) -> None:

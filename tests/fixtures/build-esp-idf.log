@@ -1,0 +1,46 @@
+INFO ESPHome 2026.11.0
+INFO Reading configuration /config/esphome/bedroom-purifier.yaml...
+INFO Generating C++ source...
+INFO Detected timezone 'Europe/Berlin'
+INFO Compiling app... Build path: /data/build/bedroom-purifier
+INFO Checking ESP-IDF 5.5.6 framework ...
+INFO Checking ESP-IDF 5.5.6 framework installation ...
+INFO Checking ESP-IDF 5.5.6 Python environment ...
+INFO Build configuration is up to date
+
+[0/2] Re-checking globbed directories...
+[1/1065] Building C object esp-idf/esp_system/CMakeFiles/__idf_esp_system.dir/esp_err.c.obj
+[2/1065] Building CXX object esp-idf/src/CMakeFiles/__idf_src.dir/esphome/components/esp32/atexit_stubs.cpp.obj
+[3/1065] Building CXX object esp-idf/src/CMakeFiles/__idf_src.dir/esphome/components/api/api_buffer.cpp.obj
+[4/1065] Performing build step for 'bootloader'
+[1/97] Building C object esp-idf/bootloader_support/CMakeFiles/__idf_bootloader_support.dir/src/bootloader_common.c.obj
+[96/97] Linking CXX executable bootloader.elf
+[97/97] Generating binary image from built executable
+Bootloader binary size 0x6550 bytes. 0xab0 bytes (10%) free.
+[5/1065] No install step for 'bootloader'
+[6/1065] Completed 'bootloader'
+[7/1065] Building CXX object esp-idf/src/CMakeFiles/__idf_src.dir/esphome/components/levoit/levoit_device.cpp.obj
+[8/1065] Building ASM object esp-idf/xtensa/CMakeFiles/__idf_xtensa.dir/xtensa_context.S.obj
+[1062/1065] Building CXX object esp-idf/src/CMakeFiles/__idf_src.dir/src/main.cpp.obj
+[1063/1065] Linking C static library esp-idf\src\libsrc.a
+[1064/1065] Linking CXX executable bedroom-purifier.elf
+[1064/1065] cmd.exe /C "cd /D /data/build/bedroom-purifier/build && cmake -P run_size_tool.cmake"
+┌───────────────────────┬──────────────┬──────────┬────────────────┬───────────────┐
+│ Memory Type/Section   │ Used [bytes] │ Used [%] │ Remain [bytes] │ Total [bytes] │
+│ DRAM                  │        52732 │    29.17 │         128004 │        180736 │
+└───────────────────────┴──────────────┴──────────┴────────────────┴───────────────┘
+Total image size: 820227 bytes (.bin may be padded larger)
+[1065/1065] Generating binary image from built executable
+esptool.py v4.14.0
+Creating esp32 image...
+Merged 2 ELF sections
+Successfully created esp32 image.
+Generated /data/build/bedroom-purifier/build/bedroom-purifier.bin
+bedroom-purifier.bin binary size 0xc8470 bytes. Smallest app partition is 0x1c0000 bytes. 0xf7b90 bytes (55%) free.
+RAM:   [===       ]  29.2% (used 52732 bytes from 180736 bytes)
+Flash: [====      ]  44.7% (used 820227 bytes from 1835008 bytes)
+INFO Creating factory.bin...
+INFO Created: /data/build/bedroom-purifier/build/firmware.factory.bin
+INFO Created: /data/build/bedroom-purifier/build/firmware.ota.bin
+INFO Build Info: config_hash=0x22ccd729 build_time_str=2026-11-27 14:35:03 +0100
+INFO Successfully compiled program.

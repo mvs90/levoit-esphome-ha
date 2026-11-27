@@ -5,7 +5,8 @@
 * levoit_esphome/build: compile, or compile and upload (like the buttons)
 * levoit_esphome/set_channel: like the Update channel select
 * levoit_esphome/check: read the latest versions from GitHub now
-* levoit_esphome/build_log: the output of a device's last (or running) build
+* levoit_esphome/build_log: the whole kept output of a device's last (or
+  running) build; its steps and newest lines come with every device
 * levoit_esphome/device_controls: which entity is which setting, for the
   device page
 
@@ -118,6 +119,7 @@ def _device_dict(
         if last is None
         else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
         "has_build_log": device.name in coordinator.build_logs,
+        "build": coordinator.build_summary(device.name),
         "controls": controls,
         "supported": page_supported(device.model, device.components, controls),
     }
@@ -140,6 +142,7 @@ def _pending_dict(coordinator: LevoitEsphomeCoordinator, config: PendingConfig) 
         if last is None
         else {"ok": last.ok, "upload": last.upload, "at": _iso(last.at), "error": last.error},
         "has_build_log": config.name in coordinator.build_logs,
+        "build": coordinator.build_summary(config.name),
     }
 
 
@@ -337,14 +340,18 @@ async def ws_check(
 def ws_build_log(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """The output of the device's last (or running) build, newest lines last."""
+    """The whole kept output of the device's last (or running) build, newest last."""
     if (found := _device(hass, connection, msg, pending_ok=True)) is None:
         return
     coordinator, device = found
     log = coordinator.build_logs.get(device.name)
     connection.send_result(
         msg["id"],
-        {"lines": log.lines if log else [], "building": coordinator.is_building(device.name)},
+        {
+            "lines": log.lines if log else [],
+            "building": coordinator.is_building(device.name),
+            "build": log.summary() if log else None,
+        },
     )
 
 

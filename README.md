@@ -241,7 +241,9 @@ The sidebar page's third tab has:
   component version, filter %, ESPHome version, status and the last build
 * the latest releases on top, with **Update all** (one device after the other)
 * **Compile** and **Compile and upload** (*Update* when one is out), with the
-  result per device, and the output of the last build under **Log**
+  build's step and progress live per device (the compile counter, the upload
+  bar), the result, and under **Log** the steps with the last lines or the
+  full output
 * the channel of a device without a config or with a template config
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
@@ -561,10 +563,16 @@ What the upload needs, and what goes wrong otherwise:
 | The new firmware starts on this hardware (right board) | The ESP doesn't come back and needs a USB reflash. The configs don't enable ESPHome's `safe_mode`, so there is no automatic fallback |
 
 The Device Builder streams the compile and upload output to the integration and
-keeps none of it itself. The integration keeps the last 400 lines of each
-device's last build: **Log** on the sidebar page shows them, also while a build
-runs. When a build fails, its error message names the reason (the last error
-line), and the last 40 lines go into Home Assistant's log (*Settings → System →
+keeps none of it itself; it reports no progress of its own. The integration
+reads the output into steps, *setup, compile, link and image, result, upload*,
+each queued, running or done: for an ESP-IDF build the compile step counts the
+files (`312 / 1065`, from the build tool's counter) and the upload step shows
+its bar, the result step the Flash and RAM used. The device's row shows the
+running step; **Log** shows all steps with the last 15 lines, or on request the
+whole kept output (the last 400 lines), following a running build. The update
+entity's progress bar follows the same counters. When a build fails, the
+running step shows the reason (the last error line), the error message names
+it, and the last 40 lines go into Home Assistant's log (*Settings → System →
 Logs*).
 
 ## Requirements
