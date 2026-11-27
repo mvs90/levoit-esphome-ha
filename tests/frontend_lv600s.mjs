@@ -130,7 +130,7 @@ test("a queued LV600S timer can be cleared in standby with an empty tank", () =>
   assert.match(html, /<button class="opt" disabled[^>]*data-entity="number.timer"/);
 });
 
-test("the LV600S card shows warm mist off in standby and keeps the saved level in the picker", () => {
+test("LV600S shows warm mist off in standby and keeps the saved level in the picker", () => {
   const { panel, card, fan, states } = fixture();
   const warmth = states["number.warm_level"];
   warmth.state = "3.0";
@@ -139,6 +139,9 @@ test("the LV600S card shows warm mist off in standby and keeps the saved level i
   const standby = panel._deviceCard(card);
   assert.match(standby, /icon="mdi:thermometer-off"/);
   assert.doesNotMatch(button(standby, "Warm mist: Off"), /disabled/);
+  const standbyDetail = panel._devicePage();
+  assert.match(button(standbyDetail, "Warm mist Off"), /aria-pressed="true"/);
+  assert.match(button(standbyDetail, "Warm mist 3"), /aria-pressed="false"/);
   panel._lv600sWarmPicker = warmth.entity_id;
   assert.match(button(panel._deviceCard(card), "Warm mist 3"), /aria-pressed="true"/);
 
@@ -150,6 +153,7 @@ test("the LV600S card shows warm mist off in standby and keeps the saved level i
   const running = panel._deviceCard(card);
   assert.match(running, /icon="mdi:heat-wave"/);
   assert.match(button(running, "Warm mist: 3"), /aria-expanded="false"/);
+  assert.match(button(panel._devicePage(), "Warm mist 3"), /aria-pressed="true"/);
   assert.equal(warmth.state, "3.0");
 });
 

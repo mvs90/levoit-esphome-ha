@@ -1495,9 +1495,10 @@ class LevoitEsphomePanel extends HTMLElement {
       : (effective ? "mdi:scent" : "mdi:scent-off");
     const tone = effective && !disabled ? (warm ? " heating" : " humidifying") : "";
     const levelIcon = `<ha-icon class="lv-level-icon${tone}" icon="${glyph}" aria-hidden="true" title="${label}"></ha-icon>`;
+    const displayedLevel = warm && standby && !compact ? 0 : selected;
     const buttons = levels.map((value, index) => {
       const level = warm ? value : index + 1;
-      const chosen = level === selected;
+      const chosen = level === displayedLevel;
       const text = level === 0 ? "Off" : level;
       const service = warm ? this._svc("number", "set_value", entity.entity_id, { value })
         : this._svc("fan", "set_percentage", entity.entity_id, { percentage: value });
