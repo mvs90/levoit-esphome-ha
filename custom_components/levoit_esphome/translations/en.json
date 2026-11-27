@@ -25,19 +25,6 @@
     }
   },
   "entity": {
-    "humidifier": {
-      "lv600s": {
-        "state_attributes": {
-          "mode": {
-            "state": { "manual": "Manual" }
-          },
-          "reported_mode": {
-            "name": "Reported mode",
-            "state": { "original_auto": "Auto (Original)", "unknown": "Unknown" }
-          }
-        }
-      }
-    },
     "button": {
       "compile": {
         "name": "Compile firmware"
@@ -129,12 +116,6 @@
     }
   },
   "exceptions": {
-    "lv600s_unready": {
-      "message": "The LV600S is not ready for this action. Check the connection, water tank and device status."
-    },
-    "lv600s_no_confirmation": {
-      "message": "The LV600S did not confirm the requested state."
-    },
     "no_configuration": {
       "message": "This device has no config in the ESPHome Device Builder."
     },

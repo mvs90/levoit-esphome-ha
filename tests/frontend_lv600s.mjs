@@ -481,6 +481,40 @@ assert.deepEqual(configDisabled(), [false, false]);
 assert.equal(previewPanel._lv600sPreviews.size, 0);
 console.log('LV600S rollbacks, delayed confirmation and dependent controls passed');
 
+// The remaining controls dispatch directly to the same ESPHome entities as the panel displays.
+previewService.length = 0;
+const targetSlider = {
+  type: 'range', value: '58', dataset: { number: 'number.humidity_target' }, blur() {},
+};
+const changeTarget = { target: { closest: selector => selector === 'input[data-number]' ? targetSlider : null } };
+await previewPanel._onChange(changeTarget);
+
+const clickService = async (markup) => {
+  const dataset = Object.fromEntries([...markup.matchAll(/data-(action|domain|service|entity|args)="([^"]*)"/g)]
+    .map(([, key, value]) => [key, value.replaceAll('&quot;', '"')]));
+  const button = { dataset, closest: () => null };
+  await previewPanel._onClick({ target: { closest: selector => selector === '[data-action]' ? button : null } });
+};
+const displayButton = previewPanel._devicePage().match(/<button[^>]*data-entity="switch.display"[^>]*>/)[0];
+await clickService(displayButton);
+await clickService(action(timer, '30 min'));
+await clickService(action(timer, 'Cancel'));
+assert.deepEqual(previewService, [
+  ['number', 'set_value', { entity_id: 'number.humidity_target', value: 58 }],
+  ['switch', 'turn_off', { entity_id: 'switch.display' }],
+  ['number', 'set_value', { entity_id: 'number.timer', value: 30 }],
+  ['number', 'set_value', { entity_id: 'number.timer', value: 0 }],
+]);
+
+previewService.length = 0;
+previewPanel._page.target_humidity_preset = true;
+setPreviewState('switch.power', 'off');
+setPreviewState('text_sensor.humidifier_mode_status', 'Manual');
+assert.deepEqual(configDisabled(), [false, true]);
+await previewPanel._onChange(changeTarget);
+assert.deepEqual(previewService, [['number', 'set_value', { entity_id: 'number.humidity_target', value: 58 }]]);
+console.log('LV600S target, display and timer controls dispatch directly to ESPHome entities');
+
 const requests = [];
 panel._render = () => {};
 panel._pageName = card.name;

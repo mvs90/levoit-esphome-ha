@@ -635,9 +635,8 @@ The LV600S (`lv600s_humidifier`, model `LV600S`) uses its existing ESPHome devic
 entry. Humidity, temperature, tank status, power, modes, mist, warm level and
 timer map to ESPHome entities. The panel labels the target-humidity mode Auto
 and shows Auto (Original) and Unknown only under the reported device status.
-The linked Levoit device exposes a Home Assistant `humidifier` entity backed
-by the ESPHome power, mode, humidity and target entities. Auxiliary LV600S fans
-are excluded from purifier group discovery.
+The panel reads and controls these ESPHome entities directly. Auxiliary LV600S
+fans are excluded from purifier group discovery.
 
 **English.** The LV600S card shows the tank state next to the model, in the
 same position as the filter indicator on purifiers. A drop shows whether water

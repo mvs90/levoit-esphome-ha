@@ -78,16 +78,14 @@ def async_add_per_device(
 
     @callback
     def _add_new() -> None:
+        new = [name for name in coordinator.data.devices if name not in known]
+        if not new:
+            return
+        known.update(new)
         # each device with the "Add device" sub-entry of its config, if any
-        for name in coordinator.data.devices:
-            if name in known:
-                continue
-            entities = list(factory(coordinator, name))
-            if not entities:
-                continue
-            known.add(name)
+        for name in new:
             async_add_entities(
-                entities,
+                factory(coordinator, name),
                 config_subentry_id=subentry_for(coordinator.config_entry, name),
             )
 

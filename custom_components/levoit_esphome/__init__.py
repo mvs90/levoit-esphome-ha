@@ -30,7 +30,6 @@ PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.FAN,
-    Platform.HUMIDIFIER,
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
