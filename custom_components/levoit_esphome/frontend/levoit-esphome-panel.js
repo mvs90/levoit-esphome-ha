@@ -37,6 +37,10 @@ const WIZARD_STEPS = {
   name: "Name",
   protection: "Protection",
   create: "Create",
+  build: "Compile",
+  flash: "Flash",
+  connect: "Connect",
+  install: "Install",
 };
 const DEVICES_URL = "https://github.com/tuct/levoit/tree/main/devices/";
 const CHANNEL_LABELS = {
@@ -536,6 +540,7 @@ class LevoitEsphomePanel extends HTMLElement {
       this._unsub = this._hass.connection.subscribeMessage(
         (data) => {
           this._data = data;
+          if (this._add?.created) this._wzTick();
           this._error = null;
           // devices changed (one came online, a config was read): find the
           // open device page's entities again
@@ -768,6 +773,12 @@ class LevoitEsphomePanel extends HTMLElement {
         break;
       case "wz-restart":
         this._startAdd(null);
+        break;
+      case "wz-compile":
+        await this._wzBuild(false);
+        break;
+      case "wz-install":
+        await this._wzBuild(true);
         break;
     }
   }
@@ -1421,6 +1432,12 @@ class LevoitEsphomePanel extends HTMLElement {
       creating: false,
       created: null, // levoit_esphome/onboarding/create
       createError: null,
+      // after Create: the compile (new) or the install over the air (existing)
+      buildStarted: false,
+      building: false,
+      buildOk: false,
+      buildError: null,
+      finished: false, // installed (existing), or connected (new)
     };
     if (this._hass) this._loadAddOptions();
     else this._render();
@@ -1465,6 +1482,8 @@ class LevoitEsphomePanel extends HTMLElement {
     steps.push("esp");
     if (!a.forName && a.options?.existing?.length) steps.push("device");
     steps.push("name", "protection", "create");
+    if (a.existing) steps.push("install");
+    else steps.push("build", "flash", "connect");
     return steps;
   }
 
@@ -1523,6 +1542,10 @@ class LevoitEsphomePanel extends HTMLElement {
         return a.existing ? true : Boolean(a.nameCheck?.ok && a.nameCheck.name === this._wzName());
       case "protection":
         return !(a.options?.missing_secrets || []).length;
+      case "build":
+        return a.buildOk;
+      case "flash":
+        return true;
       default:
         return false;
     }
@@ -1669,10 +1692,67 @@ class LevoitEsphomePanel extends HTMLElement {
     if (a.existing && a.otaPassword) msg.ota_password = a.otaPassword;
     try {
       a.created = await this._hass.callWS(msg);
+      a.step = a.created.existing ? "install" : "build";
+      this._wzTick();
     } catch (err) {
       a.createError = err?.message || String(err);
     } finally {
       a.creating = false;
+      this._render();
+    }
+  }
+
+  // The created config as the snapshot lists it: a new one as pending until
+  // its ESP connects, an existing device with its configuration. The entry is
+  // set up again after Create, so it takes a moment to show up.
+  _wzTarget() {
+    const name = this._add?.created?.name;
+    if (!name || !this._data) return null;
+    const device = this._data.devices.find((d) => d.name === name);
+    if (this._add.created.existing) return device?.configuration ? device : null;
+    return device || (this._data.pending || []).find((p) => p.name === name) || null;
+  }
+
+  _wzConnected() {
+    const name = this._add?.created?.name;
+    return Boolean(name && this._data?.devices.some((d) => d.name === name));
+  }
+
+  // after every snapshot: compile a new config once it is listed; done once
+  // the flashed device is there (no render here: the caller renders)
+  _wzTick() {
+    const a = this._add;
+    if (!a?.created || a.finished) return;
+    if (a.created.existing) return;
+    if (a.step === "build" && !a.buildStarted && this._wzTarget()) this._wzBuild(false);
+    if ((a.step === "flash" || a.step === "connect") && this._wzConnected()) {
+      a.step = "connect";
+      a.finished = true;
+    }
+  }
+
+  // compile (new), or compile and upload over the air (existing), as the
+  // Updates & config buttons do; answers when the build is done
+  async _wzBuild(upload) {
+    const a = this._add;
+    const name = a.created.name;
+    a.buildStarted = true;
+    a.building = true;
+    a.buildOk = false;
+    a.buildError = null;
+    this._busy.add(name);
+    this._render();
+    try {
+      await this._hass.callWS({ type: "levoit_esphome/build", name, upload });
+      if (this._add === a) {
+        a.buildOk = true;
+        if (upload) a.finished = true;
+      }
+    } catch (err) {
+      if (this._add === a) a.buildError = err?.message || String(err);
+    } finally {
+      this._busy.delete(name);
+      if (this._add === a) a.building = false;
       this._render();
     }
   }
@@ -1685,15 +1765,18 @@ class LevoitEsphomePanel extends HTMLElement {
         <button class="btn" data-action="wz-retry">Try again</button></div>`;
     if (!a.options || (a.loading && !a.step))
       return `<div class="card empty"><span class="spinner"></span> Loading…</div>`;
-    if (a.created) return this._wzDone();
+    if (a.finished) return this._wzDone();
     const steps = this._wzSteps();
     const i = steps.indexOf(a.step);
     const stepper = `<ol class="wz-steps">${steps
       .map((s, n) => {
         const label = `${n + 1}. ${WIZARD_STEPS[s]}`;
         const cls = n < i ? "done" : n === i ? "on" : "";
+        // before Create, a done step can be opened again; after it, the config exists
         return `<li class="${cls}">${
-          n < i ? `<button data-action="wz-step" data-step="${s}">${label}</button>` : `<span>${label}</span>`
+          n < i && !a.created
+            ? `<button data-action="wz-step" data-step="${s}">${label}</button>`
+            : `<span>${label}</span>`
         }</li>`;
       })
       .join("")}</ol>`;
@@ -1704,7 +1787,13 @@ class LevoitEsphomePanel extends HTMLElement {
       name: () => this._wzNameScreen(),
       protection: () => this._wzProtectionScreen(),
       create: () => this._wzCreateScreen(),
+      build: () => this._wzBuildScreen(),
+      flash: () => this._wzFlashScreen(),
+      connect: () => this._wzConnectScreen(),
+      install: () => this._wzInstallScreen(),
     };
+    if (a.created)
+      return `<div class="wz">${stepper}<div class="card wz-card">${screens[a.step]()}</div>${this._wzAfterNav()}</div>`;
     const last = a.step === "create";
     const nav = `<div class="wz-nav">
       <button class="btn" data-action="wz-back" ${a.creating ? "disabled" : ""}>${i === 0 ? "Cancel" : "Back"}</button>
@@ -1961,28 +2050,136 @@ class LevoitEsphomePanel extends HTMLElement {
     )}
       <p>Create <code>${esc(name)}.yaml</code> and its secrets in the ESPHome Device Builder now. ${
         a.existing
-          ? "The next update of the device installs it over the air."
-          : "Then flash it once over USB from the Device Builder; after that, updates come over the air."
+          ? "Then install it over the air, here or later with Update."
+          : "Then it is compiled here, and you flash it once over USB from the Device Builder; after that, updates come over the air."
       }</p>${a.createError ? `<p class="bad">${esc(a.createError)}</p>` : ""}`;
+  }
+
+  // the buttons under the steps after Create: no way back, the config exists
+  _wzAfterNav() {
+    const a = this._add;
+    const leave = `<button class="btn" data-action="navigate" data-path="${esc(this._base)}/config" title="The integration carries on: a new config is listed as Not flashed yet until its ESP connects">Updates &amp; config</button>`;
+    let main = "";
+    if (a.step === "build")
+      main = a.buildError
+        ? `<button class="btn primary" data-action="wz-compile" ${a.building ? "disabled" : ""}>Compile again</button>`
+        : `<button class="btn primary" data-action="wz-next" ${this._wzCanProceed("build") ? "" : "disabled"}>Next</button>`;
+    else if (a.step === "flash")
+      main = `<button class="btn primary" data-action="wz-next">It is flashed</button>`;
+    else if (a.step === "install")
+      main = `<button class="btn primary" data-action="wz-install" ${
+        a.building || !this._wzTarget() ? "disabled" : ""
+      }>${a.building ? `<span class="spinner light"></span> Installing…` : a.buildError ? "Try again" : "Install over the air"}</button>`;
+    return `<div class="wz-nav">${leave}${main}</div>`;
+  }
+
+  // the running or last build of the created config: its steps, or what it waits for
+  _wzBuildStatus(upload) {
+    const a = this._add;
+    const name = a.created.name;
+    const d = this._wzTarget();
+    if (!d)
+      return `<p class="muted"><span class="spinner"></span> Waiting for the Device Builder to list <code>${esc(
+        a.created.configuration,
+      )}</code>…</p>`;
+    if (!a.buildStarted) return "";
+    const steps = d.build && (a.building || a.buildOk || a.buildError) ? this._stepsList(d.build) : "";
+    const log = d.has_build_log
+      ? `<button class="btn" data-action="log" data-name="${esc(name)}">${a.building ? "Show the output" : "Log"}</button>`
+      : "";
+    let line = "";
+    if (a.building && !steps) line = `<p class="muted"><span class="spinner"></span> Starting the build…</p>`;
+    else if (a.buildOk) line = `<p class="ok">${upload ? "Compiled and uploaded." : "Compiled."}</p>`;
+    else if (a.buildError) line = `<p class="bad">${esc(a.buildError)}</p>`;
+    return `<div class="wz-build">${steps}${line}${log ? `<div class="wz-actions">${log}</div>` : ""}</div>`;
+  }
+
+  _wzBuildScreen() {
+    const a = this._add;
+    return `${this._wzHead(
+      `Compile ${esc(a.created.configuration)}`,
+      "The Device Builder builds the firmware once now, so a problem shows up before the flash. The first build of a new ESP takes a few minutes; the flash after it is quick, it reuses this build.",
+    )}${this._wzBuildStatus(false)}`;
+  }
+
+  _wzFlashScreen() {
+    const a = this._add;
+    const c = a.created;
+    const builderUrl = c.builder_url || this._data?.builder_url;
+    const variant = this._wzVariant();
+    const folder = (this._wzTemplateFile() || "").split("/")[1] || "";
+    const wiring = folder
+      ? `<a href="${DEVICES_URL}${esc(folder)}" target="_blank" rel="noreferrer">wiring and flashing notes</a>`
+      : "wiring and flashing notes";
+    const how =
+      variant?.variant === "original"
+        ? `The original ESP is flashed with a USB-serial adapter wired to the module; the ${wiring} show where.`
+        : `Connect the ESP to this computer with a USB data cable; the ${wiring} have the details.`;
+    return `${this._wzHead(
+      "Flash it over USB",
+      "A new ESP gets its first firmware over USB; every update after that comes over the air. The ESPHome Device Builder flashes it from the browser: Chrome or Edge, with Home Assistant opened over HTTPS or on this computer.",
+    )}
+      <ol class="wz-howto">
+        <li>${how}</li>
+        <li>Open the Device Builder, find <code>${esc(c.configuration)}</code>, choose <b>Install</b>, then <b>Plug into this computer</b>, and pick the serial port. The compile from the step before makes this quick.</li>
+        <li>When it is done, put the ESP back in the purifier and power it on. It joins your Wi-Fi.</li>
+      </ol>
+      <div class="wz-actions">${
+        builderUrl
+          ? `<a class="btn primary" href="${esc(builderUrl)}" target="_blank" rel="noreferrer">Open Device Builder</a>`
+          : ""
+      }</div>
+      <p class="muted"><span class="spinner"></span> Looking for <code>${esc(c.name)}.local</code>: this page goes on by itself once the device is there.</p>`;
+  }
+
+  _wzConnectScreen() {
+    const c = this._add.created;
+    return `${this._wzHead(
+      `Waiting for ${esc(c.name)}`,
+      "The integration looks for the device every 30 seconds and adds it to Home Assistant's ESPHome integration with its key: there is no discovered device to confirm.",
+    )}
+      <p class="muted"><span class="spinner"></span> Looking for <code>${esc(c.name)}.local</code>…</p>
+      <ul class="wz-howto">
+        <li>Not there after a minute or two? It must be powered and on the same network as Home Assistant.</li>
+        <li>When it cannot join the Wi-Fi of the <code>wifi_ssid</code> secret, it opens a hotspot of its own (password: the <code>wifi_ap_password</code> secret) to set the Wi-Fi.</li>
+        <li>Its log in the Device Builder (<b>Logs</b>, over USB) shows what it does.</li>
+      </ul>
+      <p class="hint">You can leave this page: until it connects it is listed as <i>Not flashed yet</i> on Updates &amp; config, and it is added as soon as it is there.</p>`;
+  }
+
+  _wzInstallScreen() {
+    const a = this._add;
+    const c = a.created;
+    const d = this._wzExisting();
+    const title = d?.title || c.name;
+    let first = "";
+    if (a.otaPassword) first = "This upload uses the OTA password you entered. Right after it, the config switches to OTA encrypted with the API key, for the updates after.";
+    else if (d?.api_key) first = "This upload goes without an OTA password. Right after it, the config switches to OTA encrypted with the API key, for the updates after.";
+    return `${this._wzHead(
+      `Install on ${esc(title)}`,
+      `Compiles <code>${esc(c.configuration)}</code> in the Device Builder and uploads it over the air, as Update does. ${
+        c.custom ? "" : "The template config is refreshed from the newest template first."
+      }`,
+    )}${first ? `<p>${esc(first)}</p>` : ""}${
+      !a.buildStarted && this._wzTarget()
+        ? `<p class="hint wz-pad">The device restarts at the end; it is back after a few seconds. You can also leave this and install it later with Update.</p>`
+        : ""
+    }${this._wzBuildStatus(true)}`;
   }
 
   _wzDone() {
     const c = this._add.created;
-    const builderUrl = c.builder_url || this._data?.builder_url;
-    const next = c.existing
-      ? `<p>${esc(c.name)} keeps its name and key. Its row on <b>Updates &amp; config</b> now offers <b>Update</b>: the next update builds this config and installs it over the air.</p>`
-      : `<p>Flash it once over USB: open the Device Builder, find <code>${esc(
+    const path = this._devicePath(c.name);
+    const text = c.existing
+      ? `<p>${esc(c.name)} runs <code>${esc(c.configuration)}</code> now. Updates come over the air from here on: in Home Assistant's Updates and on Updates &amp; config.</p>`
+      : `<p>${esc(c.name)} is on the network and in Home Assistant, with <code>${esc(
           c.configuration,
-        )}</code>, choose <b>Install</b>, then <b>Plug into this computer</b>. Until then it is listed as <i>Not flashed yet</i> on <b>Updates &amp; config</b>. As soon as the flashed ESP is on your Wi-Fi, the integration adds it to the ESPHome integration by itself.</p>`;
+        )}</code>. Updates come over the air from here on.</p>`;
     return `<div class="card empty wz-done"><div class="big-icon ok">${icon("check")}</div>
-      <h2>${esc(c.configuration)} created</h2>${next}
+      <h2>${c.existing ? `${esc(c.name)} installed` : `${esc(c.name)} is online`}</h2>${text}
       <div class="wz-nav center">
-        ${
-          builderUrl && !c.existing
-            ? `<button class="btn primary" data-action="navigate" data-path="${esc(builderUrl)}">Open Device Builder</button>`
-            : ""
-        }
-        <button class="btn${c.existing ? " primary" : ""}" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</button>
+        <button class="btn primary" data-action="navigate" data-path="${esc(path)}">Open the device</button>
+        <button class="btn" data-action="navigate" data-path="${esc(this._base)}/config">Updates &amp; config</button>
         <button class="btn" data-action="wz-restart">Add another device</button>
       </div></div>`;
   }
@@ -4890,6 +5087,19 @@ details.section[open] > summary { padding-bottom: 8px; }
 .wz-nav { display: flex; justify-content: space-between; gap: 8px; margin: 12px 4px; }
 .wz-nav.center { justify-content: center; flex-wrap: wrap; margin-top: 16px; }
 .wz-nav .btn { margin: 0; }
+.wz-build { padding: 4px 20px 8px; }
+.wz-build .steps { margin: 0 0 8px; border: 1px solid var(--divider-color); border-radius: 10px; }
+.wz-build p, .wz-card > p.muted { margin: 8px 0; font-size: 14px; }
+.wz-card > p.muted, .wz-card > p.hint { margin: 8px 20px 12px; }
+.wz-card p.ok { color: var(--success-color, #43a047); }
+.wz-card p.bad { overflow-wrap: anywhere; }
+.wz-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 0 8px; }
+.wz-card > .wz-actions { padding: 4px 20px 8px; }
+.wz-actions .btn { margin: 0; text-decoration: none; display: inline-flex; align-items: center; }
+.wz-howto { margin: 4px 20px 12px; padding-left: 20px; font-size: 14px; line-height: 1.5; }
+.wz-howto li { margin: 4px 0; }
+.wz-howto a { color: var(--lv-accent-text); }
+.wz-pad { padding: 0; }
 .wz-done h2 { margin: 12px 0 4px; }
 .wz-done p { text-align: left; line-height: 1.45; }
 .big-icon.ok svg { color: var(--success-color, #43a047); }
