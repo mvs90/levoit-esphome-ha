@@ -266,7 +266,8 @@ class LevoitPurifierCard extends LevoitCardBase {
     const fans = Object.keys(hass?.states || {}).filter(
       (id) => id.startsWith("fan.") && hass.entities?.[id]?.platform === "esphome",
     );
-    return { entity: fans[0] || "" };
+    // the lists written out: the editor shows a missing key as nothing ticked
+    return { entity: fans[0] || "", show: [...PURIFIER_SHOW], controls: [...PURIFIER_CONTROLS] };
   }
 
   getCardSize() {
@@ -564,7 +565,7 @@ class LevoitGroupCard extends LevoitCardBase {
   }
 
   static getStubConfig(hass) {
-    return { entity: groupFans(hass)[0] || "" };
+    return { entity: groupFans(hass)[0] || "", show: [...GROUP_SHOW], controls: [...GROUP_CONTROLS] };
   }
 
   getCardSize() {
@@ -843,7 +844,7 @@ class LevoitListCard extends LevoitCardBase {
   }
 
   static getStubConfig() {
-    return { title: "Air purifiers", items: "all" };
+    return { title: "Air purifiers", items: "all", controls: [...LIST_CONTROLS] };
   }
 
   getCardSize() {
