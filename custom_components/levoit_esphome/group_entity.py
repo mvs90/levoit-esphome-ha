@@ -34,8 +34,10 @@ class LevoitGroupEntity(Entity):
             entry_type=DeviceEntryType.SERVICE,
         )
 
+    # not `group`: Home Assistant 2026.10 reserves Entity.group for its own
+    # entity groups and warns about anything else there (an error from 2027.2)
     @property
-    def group(self) -> GroupConfig | None:
+    def purifier_group(self) -> GroupConfig | None:
         """The group's config (None once deleted)."""
         return self._manager.groups.get(self._group_id)
 
@@ -47,7 +49,7 @@ class LevoitGroupEntity(Entity):
     @property
     def available(self) -> bool:
         """Available while the group exists."""
-        return self.group is not None
+        return self.purifier_group is not None
 
     async def async_added_to_hass(self) -> None:
         """Follow the group."""

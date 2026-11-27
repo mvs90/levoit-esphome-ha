@@ -69,13 +69,13 @@ class GroupFan(LevoitGroupEntity, FanEntity):
     @property
     def is_on(self) -> bool | None:
         """On while the group controls its purifiers."""
-        group = self.group
+        group = self.purifier_group
         return group.enabled if group else None
 
     @property
     def preset_mode(self) -> str | None:
         """Auto (the sensors pick the level) or Manual."""
-        group = self.group
+        group = self.purifier_group
         if group is None:
             return None
         return PRESET_MANUAL if group.mode == MODE_MANUAL else PRESET_AUTO
@@ -83,7 +83,7 @@ class GroupFan(LevoitGroupEntity, FanEntity):
     @property
     def percentage(self) -> int | None:
         """The level the purifiers run at: the manual level, or the sensors' level in Auto."""
-        group = self.group
+        group = self.purifier_group
         if group is None:
             return None
         if not group.enabled:
