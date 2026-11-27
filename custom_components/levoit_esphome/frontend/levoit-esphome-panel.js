@@ -22,6 +22,14 @@ const BUILD_STEP_LABELS = {
   compile: "Compiling…",
   upload: "Uploading…",
 };
+// the steps of a build as the integration reads them from its output (build_log.py)
+const STEP_LABELS = {
+  setup: "Setup",
+  compile: "Compile",
+  link: "Link and image",
+  result: "Result",
+  upload: "Upload",
+};
 const CHANNEL_LABELS = {
   stable: "Stable",
   main: "Main",
@@ -269,7 +277,7 @@ class LevoitEsphomePanel extends HTMLElement {
     this._unsub = null;
     this._subscribing = false;
     this._deferred = false;
-    this._log = null; // the build log dialog: {name, title, lines, building}
+    this._log = null; // the build log dialog: {name, title, full, lines}; steps and tail from _data
     // device page (route /levoit-esphome/<name>): which entity is which setting
     this._route = null;
     this._view = "overview"; // overview, config or device
@@ -494,6 +502,8 @@ class LevoitEsphomePanel extends HTMLElement {
           // devices changed (one came online, a config was read): find the
           // open device page's entities again
           if (this._pageName && this._page && !this._pageLoading) this._loadPage();
+          // the log dialog in full view follows a running build
+          if (this._log?.full && this._device(this._log.name)?.building) this._fetchLog();
           this._render();
         },
         { type: "levoit_esphome/subscribe" },
@@ -560,7 +570,10 @@ class LevoitEsphomePanel extends HTMLElement {
         location.reload();
         break;
       case "log":
-        await this._showLog(name);
+        this._showLog(name);
+        break;
+      case "log-full":
+        await this._toggleFullLog();
         break;
       case "close-log":
         // a click inside the dialog bubbles to the backdrop: close only on the
@@ -856,10 +869,7 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _status(d) {
-    if (d.building)
-      return `<span class="chip info"><span class="spinner"></span>${
-        BUILD_STEP_LABELS[d.build_step] || "Building…"
-      }</span>`;
+    if (d.building) return this._buildChip(d);
     if (d.online === false) return `<span class="chip">Offline</span>`;
     if (!d.configuration) return `<span class="chip">No config</span>`;
     if (d.update_available) return `<span class="chip warning">Update available</span>`;
@@ -875,12 +885,79 @@ class LevoitEsphomePanel extends HTMLElement {
     if (d.building) return logLink ? `<div class="sub">${logLink.slice(3)}</div>` : "";
     if (!last) return "";
     const when = esc(this._time(last.at));
-    if (last.ok)
-      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}${logLink}</div>`;
+    if (last.ok) {
+      // the result step's summary: Flash and RAM of the finished build
+      const result = (d.build?.steps || []).find((s) => s.key === "result");
+      const sizes = result?.detail ? ` · ${esc(result.detail)}` : "";
+      return `<div class="sub ok">${last.upload ? "Uploaded" : "Compiled"} ${when}${sizes}${logLink}</div>`;
+    }
     const what = last.upload ? "Compile and upload" : "Compile";
     return `<div class="sub bad" title="${esc(last.error)}">${what} failed ${when}${logLink}: ${esc(
       last.error,
     )}</div>`;
+  }
+
+  // --- build steps ---------------------------------------------------------------
+
+  _runningStep(d) {
+    return (d.build?.steps || []).find((s) => s.state === "running") || null;
+  }
+
+  // the compile counter or the upload bar as a fraction, else null
+  _stepFraction(step) {
+    if (step.total && step.done != null) return Math.min(1, step.done / step.total);
+    if (step.percent != null) return Math.min(1, step.percent / 100);
+    return null;
+  }
+
+  _stepCount(step) {
+    if (step.total && step.done != null) return `${step.done} / ${step.total}`;
+    if (step.percent != null) return `${step.percent} %`;
+    return "";
+  }
+
+  _bar(fraction) {
+    return fraction == null
+      ? ""
+      : `<span class="pbar" role="progressbar" aria-valuenow="${Math.round(fraction * 100)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.round(fraction * 100)}%"></span></span>`;
+  }
+
+  // the status chip of a running build: the step, its counter, bar and detail
+  _buildChip(d) {
+    const step = this._runningStep(d);
+    if (!step)
+      return `<span class="chip info"><span class="spinner"></span>${
+        BUILD_STEP_LABELS[d.build_step] || "Building…"
+      }</span>`;
+    const count = this._stepCount(step);
+    const bar = this._bar(this._stepFraction(step));
+    const detail = step.detail ? `<div class="sub mono">${esc(step.detail)}</div>` : "";
+    return `<span class="chip info"><span class="spinner"></span>${esc(STEP_LABELS[step.key] || step.key)}${
+      count ? ` ${count}` : ""
+    }</span>${bar}${detail}`;
+  }
+
+  // the step list of the log dialog: queued, running (with its detail), done, failed
+  _stepsList(build) {
+    if (!build) return "";
+    return `<ol class="steps">${build.steps
+      .map((step) => {
+        const mark =
+          step.state === "done"
+            ? icon("check")
+            : step.state === "failed"
+              ? icon("close")
+              : step.state === "running"
+                ? `<span class="spinner"></span>`
+                : `<span class="dot-q"></span>`;
+        const count = step.state === "running" ? this._stepCount(step) : "";
+        const bar = step.state === "running" ? this._bar(this._stepFraction(step)) : "";
+        const detail = [count, step.detail ? esc(step.detail) : ""].filter(Boolean).join(" · ");
+        return `<li class="${step.state}"><span class="st">${mark}</span><span class="sn">${esc(
+          STEP_LABELS[step.key] || step.key,
+        )}</span><span class="sd">${bar}${detail ? `<span class="sd-text">${detail}</span>` : ""}</span></li>`;
+      })
+      .join("")}</ol>`;
   }
 
   _channel(d) {
@@ -1036,11 +1113,7 @@ class LevoitEsphomePanel extends HTMLElement {
   _pendingRow(p) {
     const busy = this._busy.has(p.name) || p.building;
     const builderUrl = this._data?.builder_url;
-    const status = p.building
-      ? `<span class="chip info"><span class="spinner"></span>${
-          BUILD_STEP_LABELS[p.build_step] || "Building…"
-        }</span>`
-      : `<span class="chip info">Not flashed yet</span>`;
+    const status = p.building ? this._buildChip(p) : `<span class="chip info">Not flashed yet</span>`;
     const none = `<span class="muted">—</span>`;
     return `<tr class="pending">
       <td class="device" data-label="Device">
@@ -1122,6 +1195,10 @@ class LevoitEsphomePanel extends HTMLElement {
     // the theme's light or dark mode: a few colours of our own follow it
     this.toggleAttribute("dark", Boolean(this._hass?.themes?.darkMode));
     const haDevice = onPage && this._page?.device_id ? `/config/devices/device/${this._page.device_id}` : null;
+    // the log dialog: where its lines were scrolled to, before they are replaced
+    const oldPre = this.shadowRoot.querySelector(".log pre");
+    const atEnd = !oldPre || oldPre.scrollHeight - oldPre.scrollTop - oldPre.clientHeight < 8;
+    const oldScroll = oldPre ? oldPre.scrollTop : 0;
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
       <div class="toolbar">
         ${
@@ -1202,7 +1279,12 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       ${this._logDialog()}`;
     const pre = this.shadowRoot.querySelector(".log pre");
-    if (pre) pre.scrollTop = pre.scrollHeight; // newest lines in view
+    if (pre) {
+      // newest lines in view, unless someone scrolled up in the full log
+      if (this._logScroll === "end" || atEnd) pre.scrollTop = pre.scrollHeight;
+      else pre.scrollTop = oldScroll;
+      this._logScroll = null;
+    }
     if (this._hass) {
       this._seen = {};
       for (const entityId of this._watched()) this._seen[entityId] = this._hass.states[entityId];
@@ -3311,28 +3393,53 @@ class LevoitEsphomePanel extends HTMLElement {
 
   // --- build log ----------------------------------------------------------------
 
-  async _showLog(name) {
+  // The dialog shows the build's steps and its newest lines from the device
+  // snapshot, so it follows a running build by itself; the full kept output
+  // is fetched on request.
+  _showLog(name) {
     const device = this._device(name);
+    this._log = { name, title: device ? device.title : name, full: false, lines: null };
+    this._logScroll = "end";
+    this._render();
+  }
+
+  async _fetchLog() {
+    if (!this._log || this._logFetching) return;
+    this._logFetching = true;
     try {
-      const result = await this._hass.callWS({ type: "levoit_esphome/build_log", name });
-      this._log = { name, title: device ? device.title : name, ...result };
+      const result = await this._hass.callWS({ type: "levoit_esphome/build_log", name: this._log.name });
+      if (this._log) this._log.lines = result.lines;
     } catch (err) {
       this._toast(`Log: ${err.message || err}`);
-      return;
+    } finally {
+      this._logFetching = false;
     }
     this._render();
   }
 
+  async _toggleFullLog() {
+    if (!this._log) return;
+    this._log.full = !this._log.full;
+    this._logScroll = "end";
+    if (this._log.full) await this._fetchLog();
+    else this._render();
+  }
+
   _logDialog() {
     if (!this._log) return "";
-    const { title, lines, building } = this._log;
+    const { title, full } = this._log;
+    const d = this._device(this._log.name);
+    const building = Boolean(d?.building);
+    const lines = full ? this._log.lines || [] : d?.build?.tail || [];
+    const what = building ? "running build" : d?.last_build ? `last build, ${esc(this._time(d.last_build.at))}` : "last build";
     return `<div class="backdrop" data-action="close-log">
       <div class="log" role="dialog" aria-label="Build log of ${esc(title)}">
         <div class="log-head">
-          <span>${esc(title)}: ${building ? "running build" : "last build"}</span>
-          <button class="btn" data-action="log" data-name="${esc(this._log.name)}">Refresh</button>
+          <span>${esc(title)}: ${what}</span>
+          <button class="btn" data-action="log-full" ${this._logFetching ? "disabled" : ""}>${full ? "Last lines" : "Full log"}</button>
           <button class="btn" data-action="close-log">Close</button>
         </div>
+        ${this._stepsList(d?.build)}
         <pre>${lines.length ? lines.map(esc).join("\n") : "No output yet."}</pre>
       </div>
     </div>`;
@@ -3502,6 +3609,25 @@ select:disabled { opacity: 0.6; }
 .log pre { margin: 0; padding: 12px 16px; overflow: auto; font-size: 12px; line-height: 1.45;
   font-family: var(--code-font-family, ui-monospace, Menlo, Consolas, monospace);
   white-space: pre-wrap; word-break: break-word; }
+/* the build's steps: mark, name, what it does or how it ended */
+.steps { list-style: none; margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--divider-color);
+  display: grid; grid-template-columns: 20px auto minmax(0, 1fr); gap: 6px 12px; align-items: center;
+  font-size: 13px; }
+.steps li { display: contents; }
+.steps .st { display: flex; justify-content: center; align-items: center; color: var(--secondary-text-color); }
+.steps .st svg { width: 16px; height: 16px; fill: currentColor; }
+.steps .sn { font-weight: 500; white-space: nowrap; }
+.steps .sd { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--secondary-text-color); }
+.steps .sd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.steps .queued .sn, .steps .queued .st { color: var(--disabled-text-color, var(--secondary-text-color)); }
+.steps .done .st { color: var(--success-color, #43a047); }
+.steps .failed .st, .steps .failed .sd { color: var(--error-color, #db4437); }
+.steps .running .st { color: var(--info-color, #039be5); }
+.dot-q { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+.pbar { display: inline-block; flex: none; width: 140px; height: 6px; border-radius: 3px;
+  background: rgba(127, 127, 127, 0.2); overflow: hidden; vertical-align: middle; }
+.pbar span { display: block; height: 100%; background: var(--primary-color); transition: width 0.4s; }
+.fw-status .pbar { width: 72px; margin-left: 8px; }
 
 /* --- tabs and overview --- */
 .tabs { display: flex; gap: 4px; margin: 0 4px 16px; border-bottom: 1px solid var(--divider-color); }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -46,6 +45,15 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from . import templates as tpl
+from .build_log import (
+    BUILD_LOG_IN_HA_LOG,
+    BUILD_PUSH_INTERVAL,
+    STAGE_COMPILE,
+    STAGE_TEMPLATE,
+    STAGE_UPLOAD,
+    STAGE_WAITING,
+    BuildLog,
+)
 from .const import (
     AUTO_ADD_INTERVAL,
     CHANNEL_STABLE,
@@ -174,52 +182,18 @@ def _filter_score(entity: er.RegistryEntry, state: State | None) -> int | None:
     return score
 
 
-BUILD_STEP_TEMPLATE = "template"  # rewriting a template config from the newest builder file
-BUILD_STEP_WAITING = "waiting"  # an older Device Builder compiles another device first
-BUILD_STEP_COMPILE = "compile"
-BUILD_STEP_UPLOAD = "upload"
-# progress bar of the update entity per step, in %
+BUILD_STEP_TEMPLATE = STAGE_TEMPLATE  # rewriting a template config from the newest builder file
+BUILD_STEP_WAITING = STAGE_WAITING  # an older Device Builder compiles another device first
+BUILD_STEP_COMPILE = STAGE_COMPILE
+BUILD_STEP_UPLOAD = STAGE_UPLOAD
+# progress bar of the update entity per step, in %, until the build's output
+# says more (BuildLog.percent)
 BUILD_STEPS = {
     BUILD_STEP_TEMPLATE: 5,
     BUILD_STEP_WAITING: 5,
     BUILD_STEP_COMPILE: 10,
     BUILD_STEP_UPLOAD: 85,
 }
-
-
-BUILD_LOG_LINES = 400  # kept per device, the newest
-BUILD_LOG_IN_HA_LOG = 40  # copied into Home Assistant's log when a build fails
-# colour codes, also written out as text: the Device Builder 2026.11 sends "\033[32m"
-_ANSI = re.compile(r"(?:\x1b|\\033|\\x1b|\\u001b)\[[0-9;?]*[A-Za-z]")
-# best first: an error line names the cause, "[FAILED]" only that it failed
-_REASON_LINES = (re.compile(r"\bERROR\b|\berror:"), re.compile(r"\b(FAILED|Failed|failed)\b"))
-
-
-class BuildLog:
-    """The compile / upload output of one build, as the Device Builder streams it."""
-
-    def __init__(self) -> None:
-        """Initialize."""
-        self._lines: deque[str] = deque(maxlen=BUILD_LOG_LINES)
-
-    @callback
-    def add(self, line: str) -> None:
-        """One line of output (colour codes removed)."""
-        self._lines.append(_ANSI.sub("", line).rstrip())
-
-    @property
-    def lines(self) -> list[str]:
-        """The kept lines, oldest first."""
-        return list(self._lines)
-
-    def reason(self) -> str:
-        """The last error line, else the last "failed" line, else the last line."""
-        lines = [line.strip() for line in self._lines if line.strip()]
-        for pattern in _REASON_LINES:
-            for line in reversed(lines):
-                if pattern.search(line):
-                    return line[:300]
-        return lines[-1][:300] if lines else "no output"
 
 
 @dataclass(frozen=True)
@@ -286,8 +260,11 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         # step of each running build (BUILD_STEPS), for the update's progress bar
         self._build_steps: dict[str, str] = {}
         self.last_builds: dict[str, BuildResult] = {}
-        # output of each device's last build, newest lines only
+        # output of each device's last build, newest lines only, read into steps
         self.build_logs: dict[str, BuildLog] = {}
+        # the panel follows a running build's output, at most once a second
+        self._build_push: asyncio.TimerHandle | None = None
+        self._build_pushed_at = 0.0
         # Auto-add: while configs wait for their first flash, look for them.
         self._unsub_auto_add: CALLBACK_TYPE | None = None
         self._auto_add_task: asyncio.Task[None] | None = None
@@ -784,18 +761,51 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         return self._build_steps.get(name) if name in self._building else None
 
     def build_progress(self, name: str) -> int | None:
-        """Rough progress of a running build in %, by its step (None: not building).
+        """Progress of a running build in %, None when not building.
 
-        The Device Builder does not report compile progress, so the bar moves in
-        steps: the compile, by far the longest part, stays at 10 %.
+        The Device Builder does not report progress; the build's output does:
+        the compile counter moves the bar from 10 to 80 %, the upload's own
+        bar from 85 to 100. Before the output says anything, the step's value.
         """
         step = self.build_step(name)
-        return BUILD_STEPS[step] if step else None
+        if step is None:
+            return None
+        log = self.build_logs.get(name)
+        percent = log.percent() if log is not None else None
+        return percent if percent is not None else BUILD_STEPS[step]
+
+    def build_summary(self, name: str) -> dict[str, Any] | None:
+        """The steps and newest lines of a device's last (or running) build."""
+        log = self.build_logs.get(name)
+        return log.summary() if log is not None else None
 
     @callback
     def _async_set_build_step(self, name: str, step: str) -> None:
         self._build_steps[name] = step
+        if (log := self.build_logs.get(name)) is not None:
+            log.stage(step)
         self.async_update_listeners()
+
+    @callback
+    def _async_build_output(self) -> None:
+        """A line of build output arrived: tell the listeners, at most once a second."""
+        if self._build_push is not None:
+            return
+        loop = self.hass.loop
+        delay = max(0.0, self._build_pushed_at + BUILD_PUSH_INTERVAL - loop.time())
+        self._build_push = loop.call_later(delay, self._async_push_build_output)
+
+    @callback
+    def _async_push_build_output(self) -> None:
+        self._build_push = None
+        self._build_pushed_at = self.hass.loop.time()
+        self.async_update_listeners()
+
+    @callback
+    def _async_cancel_build_push(self) -> None:
+        if self._build_push is not None:
+            self._build_push.cancel()
+            self._build_push = None
 
     async def async_build(self, device: LevoitDevice, *, upload: bool) -> None:
         """Compile a device's config in the Device Builder; with `upload`, also install it.
@@ -819,7 +829,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
 
         self._building.add(device.name)
         # The Device Builder streams the output to us only; it keeps none of it.
-        log = BuildLog()
+        log = BuildLog(upload=upload, on_line=self._async_build_output)
         self.build_logs[device.name] = log
         self.async_update_listeners()
         try:
@@ -828,6 +838,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             )
         except (HomeAssistantError, aiohttp.ClientError, TimeoutError) as err:
             # shown in the panel; the caller still gets the error
+            log.finish(False, log.reason() if isinstance(err, HomeAssistantError) else str(err))
             self.last_builds[device.name] = BuildResult(
                 ok=False, upload=upload, at=dt_util.utcnow(), error=str(err)
             )
@@ -839,8 +850,10 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             )
             raise
         else:
+            log.finish(True)
             self.last_builds[device.name] = BuildResult(ok=True, upload=upload, at=dt_util.utcnow())
         finally:
+            self._async_cancel_build_push()
             self._building.discard(device.name)
             self._build_steps.pop(device.name, None)
             if upload:
@@ -932,6 +945,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
 
     async def async_shutdown(self) -> None:
         """Stop tracking states and looking for new devices."""
+        self._async_cancel_build_push()
         if self._unsub_states is not None:
             self._unsub_states()
             self._unsub_states = None
