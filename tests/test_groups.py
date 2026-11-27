@@ -1123,6 +1123,51 @@ async def test_humidity_control_waits_for_tank_and_holds_at_target(
 
 
 @pytest.mark.usefixtures("patch_sources")
+async def test_humidity_manual_mode_and_preview(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The unsaved preview and the saved controller agree on manual mode and safety."""
+    calls = await _fake_fans(hass)
+    mac = "de:ad:be:ef:00:04"
+    fan = _humidifier(hass, "LV600S", mac, "mist")
+    water = "binary_sensor.mist_water_empty"
+    _add_entities(hass, mac, {water: "Water Tank Empty"})
+    hass.states.async_set(water, "on")
+    hass.states.async_set("sensor.mist_humidity", "unavailable")
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    manual = {"enabled": True, "mode": "manual", "manual_level": 2}
+    config = {"kind": "automation", "humidifiers": [fan], "humidity_control": manual}
+
+    async def preview() -> dict[str, Any]:
+        msg = await _call(client, {"type": "levoit_esphome/groups/preview", "group": config})
+        assert msg["success"], msg
+        (humidity,) = msg["result"]["humidity"]
+        return humidity
+
+    assert (await preview())["status"] == "blocked"
+    hass.states.async_set(water, "off")
+    reading = await preview()
+    assert reading["mist"] == 2 and reading["value"] is None
+    assert not calls
+    group = await _save(client, **config)
+    await _settle(hass)
+    assert group["humidity_control"]["mode"] == "manual"
+    assert calls == [("turn_on", fan, {"percentage": 55})]
+    hass.states.async_set("sensor.mist_humidity", "61")
+    await _settle(hass)
+    assert len(calls) == 1  # the selected manual stage stays in effect
+
+    config["humidity_control"] = {"enabled": True, "mode": "auto"}
+    reading = await preview()
+    assert reading["mist"] == 0 and reading["status"] == "at_target"
+    assert len(calls) == 1  # preview did not turn off the real fan
+    await _save(client, id=group["id"], **config)
+    await _settle(hass)
+    assert calls[-1] == ("turn_off", fan, {})
+
+
+@pytest.mark.usefixtures("patch_sources")
 async def test_existing_groups_are_copied_once_and_keep_the_original_controller(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,

@@ -114,6 +114,8 @@ class HumidityControl:
     """Optional humidity control for the humidifiers in an automation."""
 
     enabled: bool = False
+    mode: str = MODE_AUTO
+    manual_level: int = 1
     sensor: str | None = None  # otherwise each humidifier uses its own reading
     start_below: int = 2
     medium_below: int = 5
@@ -259,6 +261,8 @@ def _humidity_control(data: Any, has_members: bool) -> HumidityControl:
         raise GroupError(ERR_THRESHOLDS, "Humidity thresholds must rise from start to high mist")
     return HumidityControl(
         enabled=_bool(data, "enabled", False) and has_members,
+        mode=_choice(data, "mode", MODE_AUTO, (MODE_AUTO, MODE_MANUAL)),
+        manual_level=_int(data, "manual_level", HumidityControl.manual_level, 1, 3),
         sensor=sensor,
         start_below=start,
         medium_below=medium,

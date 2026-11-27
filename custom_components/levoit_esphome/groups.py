@@ -297,6 +297,47 @@ class HumidityRun:
         return None
 
 
+def _humidity_plan(
+    hass: HomeAssistant,
+    settings: HumidityControl,
+    device: LevoitHumidifier,
+    fan: State | None,
+    reading: dict[str, Any],
+    *,
+    run: HumidityRun,
+    now: float,
+) -> tuple[int | None, str]:
+    """Evaluate the same next action for the controller and the editor preview."""
+    if not settings.enabled:
+        return None, STATUS_PAUSED
+    if fan is None or fan.state in OFFLINE:
+        return None, "offline"
+    if now < run.paused_until:
+        return None, "manual_pause"
+    is_on = fan.state == STATE_ON
+    value, target = reading["value"], reading["target"]
+    deficit = target - value if target is not None and value is not None else None
+    if settings.mode == MODE_MANUAL:
+        run.at_target_since = None
+        mist = settings.manual_level
+    else:
+        mist = run.mist(settings, deficit, is_on, now)
+        if deficit is None:
+            return mist, STATUS_NO_SENSORS
+        if mist is None:
+            return None, "at_target" if deficit <= 0 else STATUS_WATCHING
+        if mist == 0:
+            return 0, "at_target"
+    if not is_on and not settings.turn_on:
+        return None, "leave_off"
+    connected = all(hass.states.is_state(key, STATE_ON) for key in device.required_on)
+    ready = all(hass.states.is_state(key, STATE_OFF) for key in device.required_off)
+    if not (connected and ready):
+        run.engaged = False
+        return None, "blocked"
+    return mist, "holding" if run.at_target_since is not None else STATUS_IN_CONTROL
+
+
 class GroupManager:
     """The purifier groups: stored config, one runner per group."""
 
@@ -540,6 +581,34 @@ class GroupManager:
         return readings
 
     @callback
+    def _humidity_preview(
+        self, config: GroupConfig, runner: GroupRunner | None
+    ) -> list[dict[str, Any]]:
+        if not config.humidifiers:
+            return []
+        devices = self.levoit_humidifiers()
+        readings = self.humidity_readings(config, devices)
+        now = _now()
+        for reading in readings:
+            member = reading["entity_id"]
+            run = (
+                runner.humidity_run_for_preview(member, config.humidity_control)
+                if runner
+                else HumidityRun()
+            )
+            mist, status = _humidity_plan(
+                self.hass,
+                config.humidity_control,
+                devices[member],
+                self.hass.states.get(member),
+                reading,
+                run=run,
+                now=now,
+            )
+            reading.update(mist=mist, status=status)
+        return readings
+
+    @callback
     def cadr_sensors(self, config: GroupConfig) -> tuple[str, ...]:
         """The CADR sensors of a group's purifiers."""
         fans = self.levoit_fans()
@@ -671,8 +740,7 @@ class GroupManager:
     async def async_apply_now(self, group_id: str) -> None:
         """The editor's apply button: run the saved settings now.
 
-        The sensors' level is taken at once (no hold time) and purifiers paused
-        after a change by hand are set again.
+        Skip the purifier hold time and resume members paused by hand.
         """
         if group_id not in self.groups:
             raise GroupError(ERR_NOT_FOUND, "Unknown group")
@@ -755,7 +823,7 @@ class GroupManager:
         return {
             "level": level,
             **(
-                {"humidity": self.humidity_readings(config)}
+                {"humidity": self._humidity_preview(config, runner)}
                 if config.kind == GROUP_AUTOMATION
                 else {}
             ),
@@ -1015,6 +1083,8 @@ class GroupRunner:
         """Set every member for the sensors' level now, also ones changed by hand."""
         async with self._lock:
             self.paused_until.clear()
+            for run in self._humidity.values():
+                run.paused_until = 0
         await self.async_evaluate(now_level=True)
 
     async def async_release(self) -> None:
@@ -1058,9 +1128,17 @@ class GroupRunner:
             else:
                 for member in config.members:
                     await self._async_set(member, level)
-            if config.humidity_control.enabled and not now_level:
+            if config.humidity_control.enabled:
                 await self._async_humidify(now)
         self.manager.async_notify(config.id)
+
+    @callback
+    def humidity_run_for_preview(self, member: str, settings: HumidityControl) -> HumidityRun:
+        """Copy the humidity controller's state without changing it."""
+        run = replace(self._humidity[member]) if member in self._humidity else HumidityRun()
+        if settings != self.config.humidity_control:
+            run.at_target_since = None
+        return run
 
     async def _async_humidify(self, now: float) -> None:
         config = self.config
@@ -1071,26 +1149,13 @@ class GroupRunner:
             fan = self.hass.states.get(member)
             if self._stopped or fan is None or fan.state in OFFLINE:
                 continue
-            device = devices[member]
             run = self._humidity.setdefault(member, HumidityRun())
-            if now < run.paused_until:
-                continue
-            is_on = fan.state == STATE_ON
-            value, target = reading["value"], reading["target"]
-            deficit = target - value if target is not None and value is not None else None
-            mist = run.mist(settings, deficit, is_on, now)
-            if mist is None or (mist and not is_on and not settings.turn_on):
+            mist, _ = _humidity_plan(
+                self.hass, settings, devices[member], fan, reading, run=run, now=now
+            )
+            if mist is None:
                 continue
             if mist:
-                connected = all(
-                    self.hass.states.is_state(key, STATE_ON) for key in device.required_on
-                )
-                ready = all(
-                    self.hass.states.is_state(key, STATE_OFF) for key in device.required_off
-                )
-                if not (connected and ready):
-                    run.engaged = False
-                    continue
                 step: Step = 1 + round((mist - 1) * (_fan_speeds(fan) - 1) / 2)
                 run.engaged = True
             else:

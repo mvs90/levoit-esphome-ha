@@ -234,8 +234,9 @@ const GROUP_DEFAULTS = {
   member_speeds: {},
 };
 const GROUP_LEVELS = [1, 2, 3, 4];
+const HUMIDITY_LEVELS = [1, 2, 3];
 const HUMIDITY_CONTROL_DEFAULTS = {
-  enabled: false, sensor: null, start_below: 2, medium_below: 5, high_below: 10,
+  enabled: false, mode: "auto", manual_level: 1, sensor: null, start_below: 2, medium_below: 5, high_below: 10,
   low_mist: 1, medium_mist: 2, high_mist: 3, stop_minutes: 0, turn_on: true,
 };
 const SENSOR_TYPES = ["pm1", "pm25", "pm10", "aqi"];
@@ -459,7 +460,12 @@ class LevoitEsphomePanel extends HTMLElement {
   set hass(hass) {
     const languageChanged = language(this._hass) !== language(hass);
     const first = !this._hass;
+    const previousStates = this._hass?.states;
     this._hass = hass;
+    if (this._view === "group" && this._edit?.draft?.humidifiers?.length &&
+        this._humidityEntities(this._edit.draft).some((id) => previousStates?.[id] !== hass.states?.[id])) {
+      this._schedulePreview();
+    }
     if (!this._unsub && !this._subscribing) this._subscribe();
     if (!this._groupsUnsub && !this._groupsSubscribing) this._subscribeGroups();
     if (this._pageName && !this._page && !this._pageLoading && !this._pageError) this._loadPage();
@@ -780,6 +786,10 @@ class LevoitEsphomePanel extends HTMLElement {
         this._render();
         break;
       }
+      case "ed-humidity-sensor":
+        this._edit.addOpen = false;
+        this._setDraft("humidity_control.sensor", target.dataset.entity || null);
+        break;
       case "ed-add-sensor": {
         const d = this._edit.draft;
         const entity = target.dataset.entity;
@@ -996,10 +1006,10 @@ class LevoitEsphomePanel extends HTMLElement {
       if (t.matches?.("[data-ed-field]")) {
         const field = t.dataset.edField;
         let value = t.value;
-        if (t.type === "number") {
+        if (t.type === "number" || t.dataset.edNumber !== undefined) {
           if (value === "") return;
           value = Number(value);
-        } else if (field === "area_id" || field === "humidity_control.sensor") value = value || null;
+        } else if (field === "area_id") value = value || null;
         if (t.tagName === "SELECT") t.blur();
         this._setDraft(field, value);
         return;
@@ -2678,7 +2688,8 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _humidityEntities(group) {
     return [group.humidity_control?.sensor, ...this._groupHumidifiers(group)
-      .flatMap(({ entity_id, target, humidity }) => [entity_id, target, humidity])].filter(Boolean);
+      .flatMap(({ entity_id, target, humidity, required_on = [], required_off = [] }) =>
+        [entity_id, target, humidity, ...required_on, ...required_off])].filter(Boolean);
   }
 
   _humidityValue(entityId) {
@@ -3202,8 +3213,12 @@ class LevoitEsphomePanel extends HTMLElement {
     if (this._automation && field === "members" && !this._draftMembers().length) {
       this._edit.addOpen = false;
     }
-    if (field === "humidifiers" && !value.length && d.humidity_control) d.humidity_control.enabled = false;
+    if (field === "humidifiers" && !value.length && d.humidity_control) {
+      d.humidity_control.enabled = false;
+      if (this._edit.addOpen === "humidity") this._edit.addOpen = false;
+    }
     if (field === "area_id" && !d.name.trim()) d.name = this._areaName(value);
+    this._edit.previewSeq += 1;
     this._schedulePreview();
     this._render();
   }
@@ -3331,7 +3346,7 @@ class LevoitEsphomePanel extends HTMLElement {
     if (!d?.id) return;
     try {
       await this._hass.callWS({ type: "levoit_esphome/groups/apply", group_id: d.id });
-      this._toast(this._t("{name}: applied to the purifiers", { name: d.name.trim() || this._t("Group") }));
+      this._toast(this._t(this._automation ? "{name}: saved settings applied" : "{name}: applied to the purifiers", { name: d.name.trim() || this._t("Group") }));
     } catch (err) {
       this._toast(`${err.message || err}`);
     }
@@ -3399,20 +3414,36 @@ class LevoitEsphomePanel extends HTMLElement {
     for (const id of known) ids.add(id);
     if (settings.sensor) ids.add(settings.sensor);
     const name = (id) => states[id]?.attributes?.friendly_name || id;
-    const option = (id, label) => `<option value="${esc(id || "")}"${id === settings.sensor ? " selected" : ""}>${esc(label)}</option>`;
-    const sensorLabel = this._t("Reference humidity sensor");
-    const choices = [...ids].sort((a, b) => name(a).localeCompare(name(b)))
-      .map((id) => option(id, this._t("{sensor} · {value}", { sensor: name(id), value: this._humidityValue(id) })));
-    const sensor = `<select class="inp humidity-sensor" data-ed-field="humidity_control.sensor" aria-label="${esc(sensorLabel)}">
-      ${option(null, this._t("Use each humidifier’s sensor"))}${choices.join("")}</select>`;
-    const enable = this._t("Humidity control");
+    const open = this._edit.addOpen === "humidity";
+    const chip = (id, label) => `<span class="schip"><span>${esc(label)}</span><b>${esc(this._humidityValue(id))}</b>${
+      settings.sensor ? `<button data-action="ed-humidity-sensor" aria-label="${this._text("Use each humidifier’s sensor")}">${icon("close")}</button>` : ""
+    }</span>`;
+    const chips = settings.sensor
+      ? chip(settings.sensor, name(settings.sensor))
+      : members.filter((device) => device.humidity).map(({ humidity, title }) => chip(humidity, title)).join("");
+    const menuItem = (id, label) => `<button role="menuitem" data-action="ed-humidity-sensor" data-entity="${esc(id || "")}">
+      <span>${esc(label)}</span>${id ? `<span class="hint">${esc(this._humidityValue(id))}</span>` : ""}</button>`;
+    const menu = open ? `<div class="menu" role="menu">
+      ${menuItem(null, this._t("Use each humidifier’s sensor"))}
+      ${[...ids].filter((id) => id !== settings.sensor).sort((a, b) => name(a).localeCompare(name(b)))
+        .map((id) => menuItem(id, name(id))).join("")}</div>` : "";
+    const sensor = `<div class="stype stype-with-picker">
+      <div class="stype-label">${this._text("Humidity")}<div class="hint">%</div></div>
+      <div class="stype-chips">${chips || `<span class="hint">${this._text("No sensor values yet")}</span>`}</div>
+      <div class="add-wrap"><button class="btn" data-action="ed-add-toggle" data-type="humidity" aria-label="${this._text("Choose a humidity sensor")}" aria-haspopup="menu" aria-expanded="${open}">${icon("plus")}${this._text("Choose sensor")}</button>${menu}</div>
+    </div>`;
     const start = this._t("Start this far below the target");
     const turnOn = this._t("Turn humidifiers on when needed");
     const stop = this._t("Minutes at or above the target");
     const number = (field, label, min, max, unit) => `<span class="num-unit">${this._edNumber(`humidity_control.${field}`, label, { min, max })}<span class="hint">${esc(unit)}</span></span>`;
-    const levels = [["1", "1"], ["2", "2"], ["3", "3"]];
-    const mist = (field, label, hint) => this._setting(label, hint,
-      this._edSegs(`humidity_control.${field}`, levels, String(settings[field]), label));
+    const mistBands = [["low_mist", "Near the target"], ["medium_mist", "Below the target"], ["high_mist", "Far below the target"]];
+    const mistGrid = `<div class="tbl-scroll"><div class="grid-tbl mist-speeds" style="--cols:3">
+      <div class="gh gl">${this._text("Humidity deficit")}</div>
+      ${mistBands.map(([, label]) => `<div class="gh">${this._text(label)}</div>`).join("")}
+      <div class="gl">${this._text("Mist level")}</div>
+      ${mistBands.map(([field, label]) => `<div><select class="inp sm" data-ed-number data-ed-field="humidity_control.${field}" aria-label="${this._text(label)}">${
+        HUMIDITY_LEVELS.map((level) => `<option value="${level}"${settings[field] === level ? " selected" : ""}>${level}</option>`).join("")}</select></div>`).join("")}
+    </div></div>`;
     const points = this._t("percentage points");
     const medium = this._t("Use medium mist this far below the target");
     const high = this._t("Use high mist this far below the target");
@@ -3420,15 +3451,10 @@ class LevoitEsphomePanel extends HTMLElement {
       `<span class="readout">${esc(this._humidityValue(target))}</span>`));
     const problem = this._humidityControlError();
     return `${this._section(this._t("Humidity sensors"), [
-      this._setting(enable, this._t("Enable humidity control for the selected humidifiers."), this._edSwitch("humidity_control.enabled", enable)),
-      this._setting(sensorLabel, this._t("Choose a shared room sensor or use the reading from each humidifier."), sensor),
+      sensor,
       ...targets,
-    ], this._t("Each humidifier uses the target set on its device page."))}
-    ${this._section(this._t("Mist levels"), [
-      mist("low_mist", this._t("Near the target"), this._t("Lowest humidity deficit")),
-      mist("medium_mist", this._t("Below the target"), ""),
-      mist("high_mist", this._t("Far below the target"), ""),
-    ], this._t("Levels 1–3 map to the low, middle and high settings of each device."))}
+    ], this._t("Choose a shared room sensor or use the reading from each humidifier."))}
+    ${this._section(this._t("Mist levels"), [mistGrid], this._t("Levels 1–3 map to the low, middle and high settings of each device."))}
     ${this._section(this._t("When to start humidifying"), [
       this._setting(start, this._t("Once started, humidification continues until the target is reached."), number("start_below", start, 1, 30, points)),
       this._setting(medium, "", number("medium_below", medium, 1, 40, points)),
@@ -3552,7 +3578,11 @@ class LevoitEsphomePanel extends HTMLElement {
       return `<div class="card empty"><p>${this._text("This group no longer exists.")}</p>
         <button class="btn" data-action="navigate" data-path="${esc(this._groupsPath())}">${this._text("All groups")}</button></div>`;
     const d = e.draft;
-    const purifierControls = !this._automation || this._draftMembers().length > 0;
+    const chosen = new Set(this._draftMembers());
+    const selectedHumidifiers = new Set(d.humidifiers || []);
+    const purifierControls = !this._automation || chosen.size > 0;
+    const humidityControls = this._automation && selectedHumidifiers.size > 0;
+    const mixed = purifierControls && humidityControls;
     const manual = d.mode === "manual";
     const autoOnly = manual ? `<span class="tag">${this._text("Used in Auto only")}</span>` : "";
     const levels = GROUP_LEVELS;
@@ -3565,39 +3595,31 @@ class LevoitEsphomePanel extends HTMLElement {
           `<option value="${esc(a.area_id)}"${a.area_id === d.area_id ? " selected" : ""}>${esc(a.name)}</option>`,
       )
       .join("")}`;
+    const mode = (field, settings, groupLevels, label, hint, levelLabel) => this._setting(
+      this._t(label), this._t(hint),
+      `<div class="ged-modes">${this._edSegs(`${field}mode`, [
+        ["auto", this._t("Auto")], ["manual", this._t("Manual")],
+      ], settings.mode, this._t(label === "Mode" ? "Group mode" : label))}${settings.mode === "manual"
+        ? this._edSegs(`${field}manual_level`, groupLevels.map((n) => [n, String(n)]), settings.manual_level, this._t(levelLabel))
+        : ""}</div>`,
+    );
+    const control = (field, label, hint) => this._setting(this._t(label), this._t(hint), this._edSwitch(field, this._t(label)));
     const general = `<div class="card section">
       <div class="sec-head"><h2>${this._text("General")}</h2></div>
       <div class="ged-fields">
         <label class="field">${this._text("Name")}<input class="inp" type="text" data-ed-field="name" value="${esc(d.name)}" placeholder="${this._text("Living room")}"></label>
         <label class="field">${this._text("Room (Home Assistant area)")}<select class="inp" data-ed-field="area_id">${areaOptions}</select></label>
       </div>
-      ${purifierControls ? this._setting(
-        this._t("Mode"),
-        manual ? this._t("You pick one speed; every purifier follows it") : this._t("The sensors pick the speed"),
-        `<div class="ged-modes">${this._edSegs(
-          "mode",
-          [
-            ["auto", this._t("Auto")],
-            ["manual", this._t("Manual")],
-          ],
-          d.mode,
-          this._t("Group mode"),
-        )}${
-          manual
-            ? this._edSegs(
-                "manual_level",
-                levels.map((n) => [n, String(n)]),
-                d.manual_level,
-                this._t("Group speed"),
-              )
-            : ""
-        }</div>`,
-      ) : ""}
-      ${purifierControls ? this._setting(this._t("Group control"), this._t("When off, the purifiers are left alone"), this._edSwitch("enabled", this._t("Group control"))) : ""}
+      ${purifierControls ? mode("", d, levels, mixed ? "Purifier mode" : "Mode",
+        manual ? "You pick one speed; every purifier follows it" : "The sensors pick the speed", "Group speed") : ""}
+      ${purifierControls ? control("enabled", mixed ? "Purifier group control" : "Group control", "When off, the purifiers are left alone") : ""}
+      ${humidityControls ? mode("humidity_control.", d.humidity_control, HUMIDITY_LEVELS, mixed ? "Humidifier mode" : "Mode",
+        d.humidity_control.mode === "manual"
+          ? "You pick one mist level for all humidifiers"
+          : "The humidity readings and targets pick the mist level", "Group mist level") : ""}
+      ${humidityControls ? control("humidity_control.enabled", mixed ? "Humidifier group control" : "Group control", "When off, the humidifiers are left alone") : ""}
     </div>`;
 
-    const chosen = new Set(this._draftMembers());
-    const selectedHumidifiers = new Set(d.humidifiers || []);
     const knownHumidifiers = this._automation ? this._groups.humidifiers || [] : [];
     const knownIds = new Set(knownHumidifiers.map((device) => device.entity_id));
     const humidifiers = this._automation ? [
@@ -3761,15 +3783,17 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
 
     return `<div class="ged">
-      <div class="ged-main">${general}${devices}${purifierControls ? this._groupSensorEditor(autoOnly) + speed + stepIn + clean : ""}${selectedHumidifiers.size ? this._humidityControlEditor() : ""}</div>
-      ${purifierControls ? `<aside class="ged-aside" aria-label="${this._text("Live preview")}">${this._rightNow()}
-        <div class="hint now-note">${this._text("The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.")}</div>
+      <div class="ged-main">${general}${devices}${purifierControls ? this._groupSensorEditor(autoOnly) + speed + stepIn + clean : ""}${humidityControls ? this._humidityControlEditor() : ""}</div>
+      ${purifierControls || humidityControls ? `<aside class="ged-aside" aria-label="${this._text("Live preview")}">${this._rightNow(purifierControls, humidityControls)}
+        <div class="hint now-note">${this._text(humidityControls
+          ? "The preview uses live readings and updates as you change settings. ▶ applies the saved settings to devices with group control enabled."
+          : "The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.")}</div>
       </aside>` : ""}
     </div>`;
   }
 
   // the editor's live preview: what the group would do with these settings now
-  _rightNow() {
+  _rightNow(purifierControls, humidityControls) {
     const e = this._edit;
     const d = e.draft;
     const p = e.preview;
@@ -3836,17 +3860,52 @@ class LevoitEsphomePanel extends HTMLElement {
       })
       .join("");
     const saved = this._listedGroups().find((g) => g.id === d.id);
-    const canApply = Boolean(saved?.enabled);
+    const canApply = Boolean(saved?.enabled || saved?.humidity_control?.enabled);
+    const applyLabel = this._t(this._automation ? "Apply the saved settings now" : "Apply the saved settings to the purifiers now");
     return `<div class="card now">
       <div class="now-head"><div class="now-k">${this._text("Right now")}</div>
-        <button class="play" data-action="ed-apply" ${canApply ? "" : "disabled"} aria-label="${this._text("Apply the saved settings to the purifiers now")}" title="${
-          saved ? (canApply ? this._t("Apply the saved settings to the purifiers now") : this._t("Group control is off")) : this._t("Save the group first")
-        }">${icon("play")}</button></div>
-      <div class="now-title"><span>${esc(title)}</span>${this._levelBars(d.enabled ? level : 0, 4)}</div>
+        <button class="play" data-action="ed-apply" ${canApply ? "" : "disabled"} aria-label="${esc(applyLabel)}" title="${esc(
+          saved ? (canApply ? applyLabel : this._t("Group control is off")) : this._t("Save the group first"),
+        )}">${icon("play")}</button></div>
+      ${purifierControls ? `<div class="now-title"><span>${esc(title)}</span>${this._levelBars(d.enabled ? level : 0, 4)}</div>
       <div class="now-reason">${esc(reason)}</div>
       ${members ? `<div class="now-h">${this._text("Purifiers")}</div>${members}` : ""}
-      ${sensors ? `<div class="now-h">${this._text("Sensors")}</div>${sensors}${combined}` : ""}
+      ${sensors ? `<div class="now-h">${this._text("Sensors")}</div>${sensors}${combined}` : ""}` : ""}
+      ${humidityControls ? this._humidityNow(p.humidity || [], purifierControls) : ""}
     </div>`;
+  }
+
+  _humidityNow(readings, mixed) {
+    const draft = this._edit.draft;
+    const settings = draft.humidity_control;
+    const manual = settings.mode === "manual";
+    const title = !settings.enabled ? this._t("Paused") : manual
+      ? this._t("Manual · Level {level}", { level: settings.manual_level }) : this._t("Auto");
+    const reason = !settings.enabled ? "Group control is off." : manual
+      ? "You pick one mist level for all humidifiers" : "The humidity readings and targets pick the mist level";
+    const statusLabels = {
+      offline: "Offline · skipped", manual_pause: "Paused after a manual change",
+      paused: "Left alone", no_sensors: "Reading or target unavailable", watching: "Waiting for the start threshold",
+      leave_off: "Left off", blocked: "Start blocked by the device", at_target: "Target reached", holding: "Waiting to stop",
+    };
+    const percent = (value) => Number.isFinite(value) ? `${this._formatNumber(value)} %` : "—";
+    const rows = this._groupHumidifiers(draft).map((device) => {
+      const reading = readings.find(({ entity_id }) => entity_id === device.entity_id);
+      const sensor = reading?.sensor;
+      const name = sensor ? this._hass?.states?.[sensor]?.attributes?.friendly_name || sensor : "";
+      const values = this._t("Current {value} · Target {target}", { value: percent(reading?.value), target: percent(reading?.target) });
+      const result = reading?.mist === 0 ? this._t("Off") : reading?.mist > 0
+        ? this._t("Mist level {level}", { level: reading.mist }) : "";
+      const status = statusLabels[reading?.status] || (reading ? "" : "Offline · skipped");
+      return `<div class="now-row now-humidity"><span><span>${esc(device.title)}</span>
+        ${name ? `<span class="hint" title="${esc(name)}">${esc(name)}</span>` : ""}<span class="hint">${esc(values)}</span></span>
+        <span>${result ? `<b>${esc(result)}</b>` : ""}${status ? `<span class="hint">${this._text(status)}</span>` : ""}</span></div>`;
+    }).join("");
+    return `<div class="${mixed ? "now-humidity-block" : ""}">
+      ${mixed ? `<div class="now-h">${this._text("Humidifiers")}</div>` : ""}
+      <div class="now-title"><span>${esc(title)}</span>${manual ? this._levelBars(settings.enabled ? settings.manual_level : 0, 3) : ""}</div>
+      <div class="now-reason">${this._text(reason)}</div>
+      ${rows}</div>`;
   }
 
   // --- device page: control helpers -------------------------------------------
@@ -5419,7 +5478,6 @@ details.section[open] > summary { padding-bottom: 8px; }
 .stype-with-picker .add-wrap { display: contents; }
 .stype-with-picker .add-wrap > .btn { margin-left: auto; }
 .stype-with-picker .menu { position: static; flex-basis: 100%; width: auto; box-shadow: none; }
-.humidity-sensor { max-width: min(320px, 100%); text-overflow: ellipsis; }
 .menu { position: absolute; top: 56px; left: 20px; z-index: 3; width: min(380px, calc(100% - 40px)); max-height: 320px;
   overflow: auto; padding: 6px; box-sizing: border-box; border-radius: 12px; background: var(--card-background-color, #fff);
   border: 1px solid var(--divider-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); }
@@ -5441,6 +5499,7 @@ details.section[open] > summary { padding-bottom: 8px; }
 .grid-tbl > .gh { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); border-top: 0; }
 .grid-tbl > .gl { justify-content: flex-start; flex-wrap: wrap; padding-left: 20px; }
 .grid-tbl .hint { margin: 0; }
+.grid-tbl.mist-speeds .gh { white-space: normal; text-align: center; }
 .rise { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 14px 20px;
   border-top: 1px solid var(--divider-color); font-size: 15px; }
 .rise .hint { margin: 0; }
@@ -5552,6 +5611,10 @@ details.section[open] > summary { padding-bottom: 8px; }
 .now-row b { font-weight: 500; white-space: nowrap; }
 .now-row > span:last-child { flex: none; white-space: nowrap; }
 .now-row .hint { display: inline; margin: 0; }
+.now-humidity-block { margin-top: 16px; padding-top: 4px; border-top: 1px solid var(--divider-color); }
+.now-humidity > span { display: flex; flex-direction: column; gap: 3px; }
+.now-humidity > span:first-child > span { overflow: hidden; text-overflow: ellipsis; }
+.now-humidity > span:last-child { max-width: 44%; text-align: right; white-space: normal; }
 .ged .sec-head { flex-wrap: wrap; }
 .ged .segs { flex-wrap: nowrap; }
 @media (max-width: 900px) {

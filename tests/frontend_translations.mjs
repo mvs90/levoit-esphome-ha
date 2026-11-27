@@ -320,7 +320,7 @@ test("Automations show air sensors only for purifiers and edit each type indepen
   });
   assert.doesNotMatch(panel._groupEditor(), /Luftqualitätssensoren|ed-add-toggle/);
   panel._setDraft("humidifiers", ["fan.humidifier"]);
-  assert.doesNotMatch(panel._groupEditor(), /Luftqualitätssensoren|ed-add-toggle/);
+  assert.doesNotMatch(panel._groupEditor(), /Luftqualitätssensoren|ed-add-toggle" data-type="pm/);
 
   panel._setDraft("members", [entity]);
   const section = panel._groupSensorEditor("");
@@ -377,9 +377,13 @@ test("the humidity editor uses humidity sensors and keeps its rules separate", (
   });
   assert.doesNotMatch(panel._groupEditor(), /Luftfeuchtigkeitssensoren|Nebelstufen/);
   panel._setDraft("humidifiers", [humidifier.entity_id]);
+  panel._edit.addOpen = "humidity";
   const editor = panel._groupEditor();
+  assert.match(editor, /aria-label="Gruppenmodus"/);
+  assert.match(editor, /aria-label="Gruppensteuerung"[^>]+data-field="humidity_control.enabled"/);
+  assert.match(editor, /<aside class="ged-aside"/);
   assert.match(editor, /Luftfeuchtigkeitssensoren[\s\S]+Nebelstufen[\s\S]+Wann die Regelung eingreift[\s\S]+Wenn die Zielfeuchte erreicht ist/);
-  assert.match(editor, /sensor\.room_humidity[\s\S]+Room sensor · 45 %/);
+  assert.match(editor, /data-entity="sensor\.room_humidity"[^>]*>[\s\S]+Room sensor[\s\S]+45 %/);
   assert.match(editor, /sensor\.device_humidity/);
   assert.match(editor, /58 %/);
   assert.doesNotMatch(editor, /sensor\.temperature|Luftqualitätssensoren/);
@@ -392,11 +396,30 @@ test("the humidity editor uses humidity sensors and keeps its rules separate", (
   assert.match(panel._humidityControlError(), /aufsteigend/);
   panel._setDraft("humidity_control.start_below", 2);
   panel._setDraft("humidity_control.enabled", true);
+  panel._setDraft("humidity_control.mode", "manual");
+  panel._setDraft("humidity_control.manual_level", 2);
+  panel._edit.preview = {
+    members: [], sensors: [], humidity: [{ entity_id: humidifier.entity_id, sensor: "sensor.room_humidity", value: 45, target: 58, mist: 2, status: "in_control" }],
+  };
+  const manual = panel._groupEditor();
+  assert.match(manual, /data-field="humidity_control.manual_level" data-value="2"/);
+  assert.match(manual, /Ist 45 % · Ziel 58 %/);
+  assert.match(manual, /Nebelstufe 2/);
   const { humidity_control: settings } = panel._draftPayload();
   assert.equal(settings.sensor, "sensor.room_humidity");
   assert.equal(settings.high_mist, 2);
   assert.equal(settings.stop_minutes, 4);
   assert.equal(settings.enabled, true);
+  assert.equal(settings.mode, "manual");
+  assert.equal(settings.manual_level, 2);
+  panel._groups.purifiers = [{ entity_id: entity, title: "Purifier", speeds: 4, sensors: [] }];
+  panel._setDraft("members", [entity]);
+  const mixed = panel._groupEditor();
+  assert.match(mixed, /Gruppensteuerung der Luftreiniger/);
+  assert.match(mixed, /Gruppensteuerung der Luftbefeuchter/);
+  assert.match(mixed, /Luftqualitätssensoren/);
+  assert.match(mixed, /Luftfeuchtigkeitssensoren/);
+  panel._setDraft("members", []);
   panel._setDraft("humidifiers", []);
   assert.equal(panel._draftPayload().humidity_control.enabled, false);
   assert.doesNotMatch(panel._groupEditor(), /Luftfeuchtigkeitssensoren/);
