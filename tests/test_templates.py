@@ -213,3 +213,115 @@ def test_parse_templates_skips_unknown_variants() -> None:
         "templates": [{**entry, "variant": "s3"}, {**entry, "variant": "c6"}],
     }
     assert [t.variant for t in parse_templates(data)] == ["s3"]
+
+
+@pytest.mark.parametrize("key", [Value(secret="device_ota_key"), Value(inline="A" * 43 + "=")])
+def test_encrypted_ota_survives_template_refresh(key: Value) -> None:
+    """Refreshing a marked template must not downgrade encrypted OTA to open OTA."""
+    values = ConfigValues(
+        name="secure-air", api_key=VALUES.api_key, ota_encryption_key=key, channel="stable"
+    )
+    text = render(BUILDER, EVEREST_C3, values)
+    assert "    encryption:\n      key: " + key.yaml in text
+    assert "ota_password" not in text
+    assert config_values(text) == values
+    assert render(BUILDER, EVEREST_C3, config_values(text)) == text
+
+
+@pytest.mark.parametrize("ota", ["encryption:", "encryption: {}"])
+def test_ota_inheriting_api_key_survives_refresh(ota: str) -> None:
+    original = BUILDER.replace("password: !secret ota_password", ota)
+    values = config_values(original)
+    expected = ConfigValues(
+        name=values.name, api_key=values.api_key, channel="stable", ota_uses_api_key=True
+    )
+    assert values == expected
+    refreshed = render(BUILDER, EVEREST_C3, values)
+    assert "  - platform: esphome\n    encryption:\n" in refreshed
+    assert config_values(refreshed) == expected
+    assert "ota_password" not in refreshed
+
+
+def test_unrecognised_ota_encryption_fails_closed() -> None:
+    """A format we cannot preserve must fail before the config is written."""
+    text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
+    text = text.replace(
+        "  - platform: esphome",
+        "  - platform: esphome\n    encryption:\n"
+        "      key: !secret ota_key\n      allow_plaintext: true",
+    )
+    with pytest.raises(TemplateError, match="unsupported OTA encryption"):
+        config_values(text)
+
+
+def test_mixed_encrypted_ota_platforms_fail_closed() -> None:
+    text = render(
+        BUILDER,
+        EVEREST_C3,
+        ConfigValues(name="secure-air", ota_encryption_key=Value(secret="ota_key")),
+    )
+    text = text.replace("ota:\n", "ota:\n  - platform: http_request\n")
+    with pytest.raises(TemplateError, match="unsupported encrypted OTA"):
+        config_values(text)
+
+
+def test_inline_encrypted_ota_and_yaml_comments() -> None:
+    text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
+    text = text.replace(
+        "ota:\n  - platform: esphome\n",
+        '"ota": [{platform: esphome, encryption: {key: !secret device_ota_key}}] # keep secure\n',
+    )
+    values = config_values(text)
+    assert values.ota_encryption_key == Value(secret="device_ota_key")
+    assert "    encryption:\n      key: !secret device_ota_key" in render(
+        BUILDER, EVEREST_C3, values
+    )
+
+
+@pytest.mark.parametrize(
+    "ota",
+    [
+        "ota: !include private-ota.yaml",
+        "ota: []",
+        "ota: [{platform: esphome, encryption: {}}]",
+        "ota:\n  - platform: esphome\n    encryption: !include private-ota.yaml",
+        "ota: [{platform: esphome, encryption: {key: !secret ota_key, "
+        "old_key: !secret old_ota_key}}]",
+        "ota: [{platform: esphome, encryption: {key: !secret ota_key, "
+        "allow_plaintext_upload: true}}]",
+        "ota: [{platform: esphome, password: !secret ota_password, "
+        "encryption: {key: !secret ota_key}}]",
+        "ota: [{platform: esphome, encryption: {key: !secret ota_key, key: other}}]",
+        'ota: [{platform: esphome, encryption: {key: "${private_key}"}}]',
+        "ota: [{platform: esphome}]\npackages: !include private.yaml",
+        "ota: [{platform: esphome}]\nota: [{platform: esphome}]",
+    ],
+)
+def test_refuses_ota_that_cannot_be_preserved(ota: str) -> None:
+    text = render(BUILDER, EVEREST_C3, ConfigValues(name="secure-air"))
+    with pytest.raises(TemplateError, match="custom config"):
+        config_values(text.replace("ota:\n  - platform: esphome\n", ota + "\n"))
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("ref: stable", "ref: 1.7.3"),
+        ("https://github.com/tuct/levoit", "https://github.com/owner/levoit"),
+    ],
+)
+def test_refresh_refuses_to_rewrite_pinned_or_forked_source(before: str, after: str) -> None:
+    with pytest.raises(TemplateError, match="custom config"):
+        config_values(BUILDER.replace(before, after))
+
+
+def test_refresh_does_not_enable_a_native_api_that_was_removed() -> None:
+    text = render(
+        BUILDER,
+        EVEREST_C3,
+        ConfigValues(name="secure-air", ota_encryption_key=Value(secret="ota_key")),
+    )
+    without_api = text.replace("\napi:\n", "\n", 1)
+    assert without_api != text
+    with pytest.raises(TemplateError, match="without the native API"):
+        config_values(without_api)
