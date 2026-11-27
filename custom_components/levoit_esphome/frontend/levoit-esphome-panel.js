@@ -235,9 +235,10 @@ const GROUP_DEFAULTS = {
 };
 const GROUP_LEVELS = [1, 2, 3, 4];
 const HUMIDITY_LEVELS = [1, 2, 3];
+const HUMIDITY_MIST_STEPS = [0, ...HUMIDITY_LEVELS];
 const HUMIDITY_BANDS = ["Near the target", "Below the target", "Far below the target"];
 const HUMIDITY_CONTROL_DEFAULTS = {
-  enabled: false, mode: "auto", manual_level: 1, sensors: [], combine: "min", target: null,
+  enabled: false, mode: "auto", manual_level: 1, sensors: [], combine: "min", target: 55,
   start_below: 2, medium_below: 5, high_below: 10, member_mist: {},
   low_mist: 1, medium_mist: 2, high_mist: 3, stop_minutes: 0, turn_on: true,
 };
@@ -262,8 +263,6 @@ const COMBINE_WORDS = { max: "highest", avg: "average", median: "median", min: "
 const TH_MAX = 500;
 const thFrac = (v) => Math.sqrt(Math.min(TH_MAX, Math.max(0, v)) / TH_MAX);
 const thValue = (u) => Math.round(TH_MAX * u * u);
-const humidityFraction = (value, shared) => shared ? value / 100 : Math.sqrt(value / 50);
-const humidityValue = (fraction, shared) => Math.round(shared ? 100 * fraction : 50 * fraction ** 2);
 const sliderPosition = (fraction) => `calc(10px + (100% - 20px) * ${fraction})`;
 // a member's steps, slowest first (as groups_logic.member_ladder)
 const memberLadder = (p) => [
@@ -401,7 +400,7 @@ class LevoitEsphomePanel extends HTMLElement {
       }
       const humidity = ev.target?.closest?.("input[data-humidity-point]");
       if (humidity && this._edit?.draft) {
-        const value = humidityValue(Number(humidity.value) / 1000, this._edit.draft.humidity_control.target != null);
+        const value = Number(humidity.value);
         this._showHumidityPoints(humidity, this._humidityAt(Number(humidity.dataset.humidityPoint), value));
       }
     });
@@ -816,9 +815,6 @@ class LevoitEsphomePanel extends HTMLElement {
           ? [...new Set([...sensors, entity])] : sensors.filter((id) => id !== entity));
         break;
       }
-      case "ed-humidity-target":
-        this._setDraft("humidity_control.target", target.dataset.value ? Number(target.dataset.value) : null);
-        break;
       case "ed-humidity-point":
         target.closest(".section")?.querySelector(`input[data-humidity-point="${target.dataset.point}"]`)?.focus();
         break;
@@ -1031,7 +1027,7 @@ class LevoitEsphomePanel extends HTMLElement {
         return;
       }
       if (t.matches?.("input[data-humidity-point]")) {
-        const value = humidityValue(Number(t.value) / 1000, this._edit.draft.humidity_control.target != null);
+        const value = Number(t.value);
         const settings = this._humidityAt(Number(t.dataset.humidityPoint), value);
         this._showHumidityPoints(t, settings);
         this._setDraft("humidity_control", settings);
@@ -2745,8 +2741,8 @@ class LevoitEsphomePanel extends HTMLElement {
 
   _humidityEntities(group) {
     return [...(group.humidity_control?.sensors || []), ...this._groupHumidifiers(group)
-      .flatMap(({ entity_id, target, humidity, required_on = [], required_off = [] }) =>
-        [entity_id, target, humidity, ...required_on, ...required_off])].filter(Boolean);
+      .flatMap(({ entity_id, humidity, required_on = [], required_off = [] }) =>
+        [entity_id, humidity, ...required_on, ...required_off])].filter(Boolean);
   }
 
   _humidityValue(entityId) {
@@ -2755,9 +2751,8 @@ class LevoitEsphomePanel extends HTMLElement {
     return Number.isFinite(value) && value >= 0 && value <= 100 ? `${this._formatNumber(value)} %` : "—";
   }
 
-  _groupHumidityTarget(group, device) {
-    const value = group.humidity_control?.target;
-    return value == null ? this._humidityValue(device.target) : `${this._formatNumber(value)} %`;
+  _groupHumidityTarget(group) {
+    return `${this._formatNumber(group.humidity_control?.target ?? HUMIDITY_CONTROL_DEFAULTS.target)} %`;
   }
 
   _areaName(areaId) {
@@ -2974,7 +2969,7 @@ class LevoitEsphomePanel extends HTMLElement {
       .join("");
     const targets = this._groupHumidifiers(g)
       .map((device) => `<span class="chip">${this._text("{device} · target humidity {value}", {
-        device: device.title, value: this._groupHumidityTarget(g, device),
+        device: device.title, value: this._groupHumidityTarget(g),
       })}</span>`).join("");
     const path = this._groupsPath(encodeURIComponent(g.id));
     const area = this._areaName(g.area_id);
@@ -3132,7 +3127,7 @@ class LevoitEsphomePanel extends HTMLElement {
     for (const device of humidifiers) {
       tiles.push({
         label: this._t("Target humidity"),
-        value: this._groupHumidityTarget(g, device),
+        value: this._groupHumidityTarget(g),
         note: `${device.title} · ${this._t("Current humidity: {value}", { value: this._humidityValue(device.humidity) })}`,
       });
     }
@@ -3263,7 +3258,8 @@ class LevoitEsphomePanel extends HTMLElement {
     }
     if (this._automation) {
       const { sensor, ...humidity } = draft.humidity_control || {};
-      draft.humidity_control = { ...HUMIDITY_CONTROL_DEFAULTS, sensors: sensor ? [sensor] : [], ...humidity };
+      draft.humidity_control = { ...HUMIDITY_CONTROL_DEFAULTS, sensors: sensor ? [sensor] : [], ...humidity,
+        target: humidity.target ?? HUMIDITY_CONTROL_DEFAULTS.target };
     }
     this._edit = { draft, addOpen: false, saving: false, preview: null, previewError: null, previewSeq: 0 };
     this._schedulePreview(0);
@@ -3467,7 +3463,7 @@ class LevoitEsphomePanel extends HTMLElement {
         || medium < 1 || medium > 40 || high < 1 || high > 50 || stop < 0 || stop > 30) {
       return this._t("Enter a whole number within the range for each humidity rule.");
     }
-    return start > medium || medium > high || (settings.target != null && high > settings.target)
+    return start > medium || medium > high || high > settings.target
       ? this._t("Humidity thresholds must rise from start to high mist.")
       : "";
   }
@@ -3497,85 +3493,80 @@ class LevoitEsphomePanel extends HTMLElement {
   }
 
   _humidityPoints(s) {
-    return s.target == null ? [s.start_below, s.medium_below, s.high_below]
-      : [s.target - s.high_below, s.target - s.medium_below, s.target - s.start_below, s.target];
+    return [s.target - s.high_below, s.target - s.medium_below, s.target - s.start_below, s.target];
   }
 
   _humidityAt(index, value) {
     const s = this._edit.draft.humidity_control;
     const points = this._humidityPoints(s);
-    if (s.target == null) {
-      const min = points[index - 1] ?? 1;
-      const max = Math.min([30, 40, 50][index], points[index + 1] ?? 50);
-      points[index] = Math.max(min, Math.min(max, value));
-      const [start_below, medium_below, high_below] = points;
-      return { ...s, start_below, medium_below, high_below };
-    }
     const [high, medium, low, target] = points;
-    const limits = [
-      [Math.max(0, target - 50), medium],
-      [Math.max(high, target - 40), low],
-      [Math.max(medium, target - 30), target - 1],
-      [Math.max(40, low + 1), Math.min(80, low + 30, medium + 40, high + 50)],
-    ];
-    const [min, max] = limits[index];
-    points[index] = Math.max(min, Math.min(max, value));
+    if (index === 3) {
+      const nextTarget = Math.max(40, Math.min(80, value));
+      // Keep the thresholds where they are while valid. Move them together
+      // if the new target would cross a threshold or exceed a band limit.
+      const limit = Math.max(low + 1, Math.min(low + 30, medium + 40, high + 50, nextTarget));
+      const shift = nextTarget - limit;
+      for (let i = 0; i < 3; i++) points[i] = Math.max(0, points[i] + shift);
+      points[3] = nextTarget;
+    } else {
+      const [min, max] = [
+        [Math.max(0, target - 50), medium],
+        [Math.max(high, target - 40), low],
+        [Math.max(medium, target - 30), target - 1],
+      ][index];
+      points[index] = Math.max(min, Math.min(max, value));
+    }
     const [newHigh, newMedium, newLow, newTarget] = points;
     return { ...s, target: newTarget, start_below: newTarget - newLow,
       medium_below: newTarget - newMedium, high_below: newTarget - newHigh };
   }
 
-  _humidityTrack(points, shared) {
-    const colors = shared ? ["--lv-q4", "--lv-q3", "--lv-q2", "--lv-q1", "--lv-track"]
-      : ["--lv-track", "--lv-q2", "--lv-q3", "--lv-q4"];
-    const positions = [0, ...points.map((v) => humidityFraction(v, shared) * 100), 100];
+  _humidityTrack(points) {
+    const colors = ["--lv-q4", "--lv-q3", "--lv-q2", "--lv-q1", "--lv-track"];
+    const positions = [0, ...points, 100];
     return `linear-gradient(90deg, ${colors.map((color, i) => `var(${color}) ${positions[i]}% ${positions[i + 1]}%`).join(", ")})`;
   }
 
-  _humidityLabelPositions(points, shared) {
+  _humidityLabelPositions(points) {
     // Keep the labels legible even when two handles share the same position.
     const gap = 0.08;
-    const positions = points.map((v, i) => Math.min(1 - (points.length - 1 - i) * gap, humidityFraction(v, shared)));
+    const positions = points.map((v, i) => Math.min(1 - (points.length - 1 - i) * gap, v / 100));
     for (let i = 1; i < positions.length; i++) positions[i] = Math.max(positions[i], positions[i - 1] + gap);
     return positions.map(sliderPosition);
   }
 
   _showHumidityPoints(input, settings) {
     const scale = input.closest(".humidity-scale");
-    const shared = settings.target != null;
     const points = this._humidityPoints(settings);
-    const labels = this._humidityLabelPositions(points, shared);
-    const unit = shared ? "%" : this._t("percentage points");
-    scale.querySelector(".trk").style.background = this._humidityTrack(points, shared);
+    const labels = this._humidityLabelPositions(points);
+    scale.querySelector(".trk").style.background = this._humidityTrack(points);
     points.forEach((value, index) => {
       const label = scale.querySelector(`[data-humidity-label="${index}"]`);
       const thumb = scale.querySelector(`[data-humidity-point="${index}"]`);
       label.style.left = labels[index];
       label.textContent = this._formatNumber(value);
-      thumb.value = Math.round(humidityFraction(value, shared) * 1000);
-      thumb.setAttribute("aria-valuetext", `${this._formatNumber(value)} ${unit}`);
+      thumb.value = value;
+      thumb.setAttribute("aria-valuetext", `${this._formatNumber(value)} %`);
     });
   }
 
   _humiditySlider(settings) {
-    const shared = settings.target != null;
-    const labels = shared ? ["High mist starts at", "Medium mist starts at", "Humidification starts at", "Target humidity"]
-      : ["Start this far below the target", "Use medium mist this far below the target", "Use high mist this far below the target"];
+    const labels = ["High mist starts at", "Medium mist starts at", "Humidification starts at", "Target humidity"];
     const points = this._humidityPoints(settings);
-    const positions = this._humidityLabelPositions(points, shared);
+    const positions = this._humidityLabelPositions(points);
     const thumbs = points.map((value, index) =>
       `<span class="mv" data-humidity-label="${index}" style="left:${positions[index]}">${esc(this._formatNumber(value))}</span>
-      <input type="range" min="0" max="1000" step="1" value="${Math.round(humidityFraction(value, shared) * 1000)}" data-humidity-point="${index}"
-        aria-label="${this._text(labels[index])}" aria-valuetext="${esc(this._formatNumber(value))} ${shared ? "%" : this._text("percentage points")}">`
+      <input type="range" min="0" max="100" step="1" value="${value}" data-humidity-point="${index}"
+        aria-label="${this._text(labels[index])}" aria-valuetext="${esc(this._formatNumber(value))} %">`
     ).join("");
-    const ticks = (shared ? [0, 20, 40, 60, 80, 100] : [0, 2, 5, 10, 20, 35, 50]).map((value) =>
-      `<span class="mt" style="left:${sliderPosition(humidityFraction(value, shared))}">${value}</span>`).join("");
+    const ticks = [0, 20, 40, 60, 80, 100].map((value) =>
+      `<span class="mt" style="left:${sliderPosition(value / 100)}">${value}</span>`).join("");
     const key = (index, color, label) => `<button class="lg humidity-key" data-action="ed-humidity-point" data-point="${index}"><i class="${color}"></i>${label}</button>`;
-    const legend = HUMIDITY_BANDS.map((band, i) => key(shared ? 2 - i : i, `q${i + 2}`,
-      `${i + 1} · ${this._text(band)}`)).join("") + (shared ? key(3, "q1", this._text("Target humidity")) : "");
+    const legend = HUMIDITY_BANDS.map((band, i) => key(2 - i, `q${i + 2}`,
+      `${i + 1} · ${this._text(band)}`)).join("") + key(3, "q1", this._text("Target humidity"));
     return `<div class="lgs">${legend}</div><div class="th-row">
-      <div class="stype-label">${this._text(shared ? "Humidity" : "Below the target")}<div class="hint">${shared ? "%" : this._text("percentage points")}</div></div>
-      <div class="ms humidity-scale"><div class="trk" style="background:${this._humidityTrack(points, shared)}"></div>
+      <div class="stype-label">${this._text("Humidity")}<div class="hint">%</div></div>
+      <div class="ms humidity-scale"><div class="trk" style="background:${this._humidityTrack(points)}"></div>
       ${thumbs}${ticks}</div></div>`;
   }
 
@@ -3616,19 +3607,10 @@ class LevoitEsphomePanel extends HTMLElement {
       label: this._t("Humidity"), unit: "%", chips, combine,
       picker: this._sensorPicker("humidity", this._t("Add humidity sensor"), menu), typed: true,
     });
-    const shared = settings.target != null;
-    const firstTarget = Number.parseFloat(states[members[0]?.target]?.state);
-    const proposed = Math.min(80, Math.max(40, settings.high_below, Number.isFinite(firstTarget) ? Math.round(firstTarget) : 55));
-    const targetLabel = this._t("Shared target humidity");
-    const targetSwitch = `<button class="switch${shared ? " on" : ""}" role="switch" aria-checked="${shared}" aria-label="${esc(targetLabel)}"
-      data-action="ed-humidity-target" data-value="${shared ? "" : proposed}"><span></span></button>`;
-    const deviceRows = members.map((device) => this._setting(device.title, this._t("Target humidity"),
-      `<span class="readout">${esc(this._groupHumidityTarget(draft, device))}</span>`));
     const mistGrid = this._humidityMistGrid(members, settings);
     const turnOn = this._t("Turn humidifiers on when needed");
     const stop = this._t("Minutes at or above the target");
     const problem = this._humidityControlError();
-    const targetControl = `<div class="num-unit humidity-target-control"><span>${esc(targetLabel)}</span>${targetSwitch}</div>`;
     return `${this._section(this._t("Humidity sensors"), [sensors],
       this._t("Sensors come from the selected humidifiers. Choose how to combine several readings. The lowest humidity is the worst reading."))}
     ${this._section(this._t("Mist levels"), [mistGrid,
@@ -3636,11 +3618,10 @@ class LevoitEsphomePanel extends HTMLElement {
     ], this._t("The group has three levels. Each humidifier maps them to its own mist levels."))}
     ${this._section(this._t("When to step in"), [
       this._humiditySlider(settings),
-      ...(!shared ? deviceRows : []),
       problem ? `<div class="err-line">${esc(problem)}</div>` : "",
-    ], this._t("The thresholds decide when each mist level starts. After starting, the humidifier runs until the target is reached."), targetControl)}
+    ], this._t("The thresholds decide when each mist level starts. After starting, the humidifier runs until the target is reached."))}
     ${this._section(this._t("When the target humidity is reached"), [
-      this._setting(stop, this._t("Set 0 to turn off immediately. A delay keeps the humidifier on low mist while humidity stays at or above the target."),
+      this._setting(stop, this._t("Set 0 to turn off immediately. During a delay each device uses its stage 1 setting."),
         `<span class="num-unit">${this._edNumber("humidity_control.stop_minutes", stop, { min: 0, max: 30 })}<span class="hint">min</span></span>`),
       this._setting(turnOn, this._t("Leave humidifiers that are off alone if disabled."), this._edSwitch("humidity_control.turn_on", turnOn)),
     ])}`;
@@ -3653,15 +3634,16 @@ class LevoitEsphomePanel extends HTMLElement {
       const individual = low > high || mid !== Math.ceil((low + high) / 2);
       const prediction = predictions.find((reading) => reading.entity_id === device.entity_id);
       const deficit = prediction?.target - prediction?.value;
-      const active = settings.enabled && settings.mode === "auto" && prediction?.mist > 0
+      const active = settings.enabled && settings.mode === "auto" && (prediction?.mist > 0 || prediction?.status === "off_band")
         ? deficit >= settings.high_below ? 3 : deficit >= settings.medium_below ? 2 : 1 : 0;
+      const step = (level) => level === 0 ? this._text("Off") : level;
       const select = (limit, current, options, label) => `<div><select class="inp sm" data-humidifier-mist="${esc(device.entity_id)}" data-limit="${limit}"
         aria-label="${this._text(label, { device: device.title })}">${options.map((level) =>
-          `<option value="${level}"${current === level ? " selected" : ""}>${level}</option>`).join("")}</select></div>`;
+          `<option value="${level}"${current === level ? " selected" : ""}>${step(level)}</option>`).join("")}</select></div>`;
       return `<div class="gl"><span class="mem-name">${esc(device.title)}</span><span class="hint">${this._text(individual ? "Saved individual mapping" : "3 mist levels")}</span></div>
-        ${select("low", low, HUMIDITY_LEVELS.filter((level) => level <= Math.max(low, high)), "Lowest mist level of {device}")}
-        ${select("high", high, HUMIDITY_LEVELS.filter((level) => level >= Math.min(low, high)), "Highest mist level of {device}")}
-        ${[low, mid, high].map((level, i) => `<div${i + 1 === active ? ' class="cur"' : ""}>${level}</div>`).join("")}`;
+        ${select("low", low, HUMIDITY_MIST_STEPS.filter((level) => level <= Math.max(low, high)), "Lowest mist level of {device}")}
+        ${select("high", high, HUMIDITY_MIST_STEPS.filter((level) => level >= Math.min(low, high)), "Highest mist level of {device}")}
+        ${[low, mid, high].map((level, i) => `<div${i + 1 === active ? ' class="cur"' : ""}>${step(level)}</div>`).join("")}`;
     }).join("");
     return `<div class="tbl-scroll"><div class="grid-tbl speeds mist-speeds" style="--cols:5">
       <div class="gh gl">${this._text("Humidifier")}</div>
@@ -3846,7 +3828,7 @@ class LevoitEsphomePanel extends HTMLElement {
       if (this._offline(device.entity_id)) tags.push(["err", this._t("Offline")]);
       const selected = (humidifier ? selectedHumidifiers : chosen).has(device.entity_id);
       const description = humidifier
-        ? `${this._t("Target humidity")} ${this._groupHumidityTarget(d, device)}`
+        ? `${this._t("Target humidity")} ${this._groupHumidityTarget(d)}`
         : this._t("{model} · {count} speeds{suffix}", {
           model: device.model || "Levoit",
           count: device.speeds,
@@ -4091,8 +4073,8 @@ class LevoitEsphomePanel extends HTMLElement {
       ? "You pick one mist level for all humidifiers" : "The humidity readings and targets pick the mist level";
     const statusLabels = {
       offline: "Offline · skipped", manual_pause: "Paused after a manual change",
-      paused: "Left alone", no_sensors: "Reading or target unavailable", watching: "Waiting for the start threshold",
-      leave_off: "Left off", blocked: "Start blocked by the device", at_target: "Target reached", holding: "Waiting to stop",
+      paused: "Left alone", no_sensors: "Humidity reading unavailable", watching: "Waiting for the start threshold",
+      leave_off: "Left off", off_band: "Off in this humidity range", blocked: "Start blocked by the device", at_target: "Target reached", holding: "Waiting to stop",
     };
     const percent = (value) => Number.isFinite(value) ? `${this._formatNumber(value)} %` : "—";
     const shared = settings.sensors.length > 1 ? readings[0]?.sensors || [] : [];
@@ -5744,7 +5726,6 @@ details.section[open] > summary { padding-bottom: 8px; }
 .humidity-key { font-family: inherit; background: transparent; border: 1px solid var(--divider-color);
   color: var(--secondary-text-color); cursor: pointer; }
 .humidity-key:focus-visible, .humidity-key:hover { color: var(--primary-text-color); border-color: var(--primary-color); }
-.humidity-target-control { flex: none; font-size: 13px; color: var(--secondary-text-color); }
 .ms .mv { position: absolute; top: 2px; transform: translateX(-50%); font-size: 12px; font-weight: 600;
   white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ms .mt { position: absolute; top: 46px; transform: translateX(-50%); font-size: 10.5px;

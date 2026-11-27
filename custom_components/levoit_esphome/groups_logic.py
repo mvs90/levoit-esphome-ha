@@ -118,7 +118,7 @@ class HumidityControl:
     manual_level: int = 1
     sensors: tuple[str, ...] = ()  # otherwise each humidifier uses its own reading
     combine: str = COMBINE_MIN
-    target: int | None = None  # otherwise each humidifier uses its own target
+    target: int = 55
     start_below: int = 2
     medium_below: int = 5
     high_below: int = 10
@@ -263,13 +263,18 @@ def _humidity_control(data: Any, members: tuple[str, ...]) -> HumidityControl:
     )
     if any(not sensor.startswith("sensor.") or len(sensor) <= 7 for sensor in sensors):
         raise GroupError(ERR_INVALID, "Pick humidity sensor entities")
-    target = _int(data, "target", 55, 40, 80) if data.get("target") is not None else None
+    # Groups saved before the automation had its own required target used null.
+    target = (
+        _int(data, "target", HumidityControl.target, 40, 80)
+        if data.get("target") is not None
+        else HumidityControl.target
+    )
     start = _int(data, "start_below", HumidityControl.start_below, 1, 30)
     medium = _int(data, "medium_below", HumidityControl.medium_below, 1, 40)
     high = _int(data, "high_below", HumidityControl.high_below, 1, 50)
     if not start <= medium <= high:
         raise GroupError(ERR_THRESHOLDS, "Humidity thresholds must rise from start to high mist")
-    if target is not None and high > target:
+    if high > target:
         raise GroupError(ERR_THRESHOLDS, "Humidity thresholds must be at or above 0%")
     raw_mist = data.get("member_mist", {})
     if not isinstance(raw_mist, Mapping):
@@ -282,9 +287,9 @@ def _humidity_control(data: Any, members: tuple[str, ...]) -> HumidityControl:
         if (
             not isinstance(levels, (list, tuple))
             or len(levels) != 3
-            or any(type(level) is not int or not 1 <= level <= 3 for level in levels)
+            or any(type(level) is not int or not 0 <= level <= 3 for level in levels)
         ):
-            raise GroupError(ERR_INVALID, f"{member} needs three mist levels from 1 to 3")
+            raise GroupError(ERR_INVALID, f"{member} needs three mist levels from 0 (Off) to 3")
         member_mist[member] = tuple(levels)
     return HumidityControl(
         enabled=_bool(data, "enabled", False) and bool(members),

@@ -185,6 +185,7 @@ test("mixed group shows the individual humidifier targets alongside air quality"
   const group = {
     id: "fixture", name: "Fixture", enabled: true, mode: "auto", members: [entity],
     humidifiers: humidifiers.map((device) => device.entity_id),
+    humidity_control: { target: 62 },
     sensors: [{ type: "pm25", entity_id: "sensor.fixture_pm25" }],
     state: { values: { pm25: { value: 8, how: "max", level: 1, sensors: ["sensor.fixture_pm25"] } } },
   };
@@ -198,18 +199,21 @@ test("mixed group shows the individual humidifier targets alongside air quality"
   });
   const summary = panel._groupCard(group);
   assert.match(summary, /PM2\.5/);
-  assert.match(summary, /Fixture &lt;one&gt; · Zielfeuchte 62,5 %/);
-  assert.match(summary, /Fixture two · Zielfeuchte —/);
+  assert.match(summary, /Fixture &lt;one&gt; · Zielfeuchte 62 %/);
+  assert.match(summary, /Fixture two · Zielfeuchte 62 %/);
   const detail = panel._groupDetail();
   assert.match(detail, /PM2\.5/);
   assert.match(detail, /Zielfeuchte/);
   assert.match(detail, /Istfeuchte: 43 %/);
-  assert.match(detail, /62,5 %/);
+  assert.match(detail, /62 %/);
   assert.match(detail, /<h2>Geräte<\/h2>[\s\S]+fan\.fixture[\s\S]+Fixture &lt;one&gt;/);
   assert.equal(panel._pageStatesChanged(), false);
   states["number.target"] = { state: "71" };
+  assert.equal(panel._pageStatesChanged(), false);
+  states["sensor.humidity"] = { state: "46" };
   assert.equal(panel._pageStatesChanged(), true);
-  assert.match(panel._groupDetail(), /71 %/);
+  assert.match(panel._groupDetail(), /Istfeuchte: 46 %/);
+  assert.match(panel._groupDetail(), /62 %/);
 
   group.members = [];
   group.sensors[0].source = "manual";
@@ -217,7 +221,7 @@ test("mixed group shows the individual humidifier targets alongside air quality"
   assert.equal(panel._historySeries().length, 0);
   assert.doesNotMatch(panel._groupCard(group), /PM2\.5/);
   assert.doesNotMatch(panel._groupDetail(), /PM2\.5|sensor\.fixture_pm25/);
-  assert.match(panel._groupDetail(), /71 %/);
+  assert.match(panel._groupDetail(), /62 %/);
 });
 
 test("checking a humidifier updates the display list without adding a purifier", async () => {
@@ -390,7 +394,9 @@ test("the humidity editor uses humidity sensors and keeps its rules separate", (
   assert.match(editor, /Niedrigste[\s\S]+Höchste[\s\S]+Stufe 1[\s\S]+Stufe 2[\s\S]+Stufe 3/);
   assert.equal([...editor.matchAll(/data-humidifier-mist=/g)].length, 2);
   assert.doesNotMatch(editor, /humidity-guide/);
-  assert.match(editor, /58 %/);
+  assert.match(editor, /aria-label="Zielfeuchte" aria-valuetext="55 %"/);
+  assert.doesNotMatch(editor, /Gemeinsame Zielfeuchte|Prozentpunkte|58 %/);
+  assert.match(editor, /<option value="0">Aus<\/option>/);
   assert.doesNotMatch(editor, /sensor\.temperature|Luftqualitätssensoren/);
   assert.equal(panel._draftPayload().humidity_control.enabled, false);
   panel._setDraft("humidity_control.sensors", ["sensor.room_humidity", "sensor.other_humidity"]);
@@ -400,18 +406,19 @@ test("the humidity editor uses humidity sensors and keeps its rules separate", (
   assert.deepEqual(panel._humidifierMist(humidifier.entity_id), [1, 3, 2]);
   assert.deepEqual(panel._humidityMistRange(humidifier.entity_id, "high", 3), [1, 2, 3]);
   assert.deepEqual(panel._humidityMistRange(humidifier.entity_id, "low", 2), [2, 2, 2]);
+  assert.deepEqual(panel._humidityMistRange(humidifier.entity_id, "low", 0), [0, 1, 2]);
   panel._setDraft("humidity_control.stop_minutes", 4);
   assert.equal(panel._humidityControlError(), "");
   panel._setDraft("humidity_control.start_below", 15);
   assert.match(panel._humidityControlError(), /aufsteigend/);
   panel._setDraft("humidity_control.start_below", 2);
-  assert.deepEqual(panel._humidityPoints(panel._edit.draft.humidity_control), [2, 5, 10]);
+  assert.deepEqual(panel._humidityPoints(panel._edit.draft.humidity_control), [45, 50, 53, 55]);
   panel._setDraft("humidity_control.target", 58);
   assert.deepEqual(panel._humidityPoints(panel._edit.draft.humidity_control), [48, 53, 56, 58]);
   const moved = panel._humidityAt(3, 60);
   assert.deepEqual(panel._humidityPoints(moved), [48, 53, 56, 60]);
   assert.deepEqual(panel._humidityPoints(panel._humidityAt(0, 99)), [53, 53, 56, 58]);
-  assert.deepEqual(panel._humidityPoints(panel._humidityAt(3, 0)), [48, 53, 56, 57]);
+  assert.deepEqual(panel._humidityPoints(panel._humidityAt(3, 0)), [31, 36, 39, 40]);
   panel._setDraft("humidity_control", moved);
   panel._setDraft("humidity_control.enabled", true);
   panel._setDraft("humidity_control.mode", "manual");

@@ -322,8 +322,8 @@ def _humidity_plan(
     if now < run.paused_until:
         return None, "manual_pause"
     is_on = fan.state == STATE_ON
-    value, target = reading["value"], reading["target"]
-    deficit = target - value if target is not None and value is not None else None
+    value = reading["value"]
+    deficit = settings.target - value if value is not None else None
     if settings.mode == MODE_MANUAL:
         run.at_target_since = None
         mist = settings.manual_level
@@ -334,7 +334,7 @@ def _humidity_plan(
         if mist is None:
             return None, "at_target" if deficit <= 0 else STATUS_WATCHING
         if mist == 0:
-            return 0, "at_target"
+            return 0, "at_target" if deficit <= 0 else "off_band"
     if not is_on and not settings.turn_on:
         return None, "leave_off"
     connected = all(hass.states.is_state(key, STATE_ON) for key in device.required_on)
@@ -582,16 +582,13 @@ class GroupManager:
             if not samples and device.humidity:
                 value = _humidity_percent(self.hass.states.get(device.humidity))
                 sources = [{"entity_id": device.humidity, "value": value}]
-            target = settings.target
-            if target is None and device.target:
-                target = _humidity_percent(self.hass.states.get(device.target))
             readings.append(
                 {
                     "entity_id": member,
                     "sensor": sources[0]["entity_id"] if len(sources) == 1 else None,
                     "sensors": sources,
                     "value": value,
-                    "target": target,
+                    "target": settings.target,
                 }
             )
         return readings
@@ -968,7 +965,6 @@ class GroupRunner:
                         entity
                         for entity in (
                             member,
-                            device.target,
                             None if sensors else device.humidity,
                             *device.required_on,
                             *device.required_off,

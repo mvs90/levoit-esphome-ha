@@ -1036,7 +1036,7 @@ async def test_humidity_control_uses_reference_stages_and_hysteresis(
     hass.states.async_set(sensor, "40", attrs)
     await _setup(hass)
     client = await hass_ws_client(hass)
-    settings = {"enabled": True, "sensor": sensor}
+    settings = {"enabled": True, "sensor": sensor, "target": 58}
     group = await _save(client, kind="automation", humidifiers=[fan], humidity_control=settings)
     await _settle(hass)
     assert group["enabled"] is False  # purifier control is separate
@@ -1093,7 +1093,7 @@ async def test_humidity_control_waits_for_tank_and_holds_at_target(
         client,
         kind="automation",
         humidifiers=[fan],
-        humidity_control={"enabled": True, "stop_minutes": 2},
+        humidity_control={"enabled": True, "target": 58, "stop_minutes": 2},
     )
     await _settle(hass)
     assert not calls
@@ -1174,9 +1174,46 @@ async def test_humidity_combines_sensors_and_maps_each_member(
     options.update(sensors=[], target=None, enabled=False)
     fallback = await _save(client, id=group["id"], **config)
     assert [(r["sensor"], r["target"]) for r in fallback["state"]["humidity"]] == [
-        ("sensor.mist_humidity", 58),
-        ("sensor.superior_humidity", 58),
+        ("sensor.mist_humidity", 55),
+        ("sensor.superior_humidity", 55),
     ]
+
+
+@pytest.mark.usefixtures("patch_sources")
+async def test_humidity_off_band_uses_the_automation_target(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    calls = await _fake_fans(hass)
+    fan = _humidifier(hass, "LV600S", "de:ad:be:ef:00:04", "mist")
+    sensor = "sensor.mist_humidity"
+    hass.states.async_set("number.mist_target", "80")
+    hass.states.async_set(sensor, "49")
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    config = {
+        "kind": "automation",
+        "humidifiers": [fan],
+        "humidity_control": {"enabled": True, "target": 60, "member_mist": {fan: [0, 2, 3]}},
+    }
+    group = await _save(client, **config)
+    await _settle(hass)
+    assert group["state"]["humidity"][0]["target"] == 60
+    assert calls == [("turn_on", fan, {"percentage": 100})]
+
+    hass.states.async_set(sensor, "57")
+    await _settle(hass)
+    assert calls[-1] == ("turn_off", fan, {})
+    msg = await _call(client, {"type": "levoit_esphome/groups/preview", "group": config})
+    (reading,) = msg["result"]["humidity"]
+    assert reading["target"] == 60 and reading["mist"] == 0 and reading["status"] == "off_band"
+    hass.states.async_set("number.mist_target", "40")
+    await _settle(hass)
+    assert len(calls) == 2
+
+    hass.states.async_set(sensor, "54")
+    await _settle(hass)
+    assert calls[-1] == ("turn_on", fan, {"percentage": 55})
+    assert hass.states.get("number.mist_target").state == "40"
 
 
 @pytest.mark.usefixtures("patch_sources")
