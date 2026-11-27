@@ -210,6 +210,14 @@ test("mixed group shows the individual humidifier targets alongside air quality"
   states["number.target"] = { state: "71" };
   assert.equal(panel._pageStatesChanged(), true);
   assert.match(panel._groupDetail(), /71 %/);
+
+  group.members = [];
+  group.sensors[0].source = "manual";
+  group.entities = { pm25: "sensor.fixture_pm25" };
+  assert.equal(panel._historySeries().length, 0);
+  assert.doesNotMatch(panel._groupCard(group), /PM2\.5/);
+  assert.doesNotMatch(panel._groupDetail(), /PM2\.5|sensor\.fixture_pm25/);
+  assert.match(panel._groupDetail(), /71 %/);
 });
 
 test("checking a humidifier updates the display list without adding a purifier", async () => {
@@ -283,4 +291,67 @@ test("the Automations editor lists both device types in the same section", () =>
   const legacy = panel._groupEditor();
   assert.match(legacy, /<h2>Luftreiniger<\/h2>/);
   assert.doesNotMatch(legacy, /Humidifier example/);
+});
+
+test("Automations show air sensors only for purifiers and edit each type independently", () => {
+  const panel = component("levoit-esphome-panel");
+  const purifierSensor = { entity_id: "sensor.built_in", type: "pm25" };
+  const extraSensor = { entity_id: "sensor.extra_pm25", type: "pm25", source: "manual" };
+  const sensorState = (id, type) => ({
+    entity_id: id, state: "5", attributes: { device_class: type, unit_of_measurement: "µg/m³" },
+  });
+  Object.assign(panel, {
+    _automation: true,
+    _groupKey: "new",
+    _hass: {
+      locale: { language: "de" },
+      states: {
+        [purifierSensor.entity_id]: sensorState(purifierSensor.entity_id, "pm25"),
+        [extraSensor.entity_id]: sensorState(extraSensor.entity_id, "pm25"),
+        "sensor.other_pm10": sensorState("sensor.other_pm10", "pm10"),
+      },
+    },
+    _groups: {
+      groups: [], automations: [],
+      purifiers: [{ entity_id: entity, title: "Purifier", speeds: 4, sensors: [purifierSensor] }],
+      humidifiers: [{ entity_id: "fan.humidifier", title: "Humidifier" }],
+    },
+    _schedulePreview: () => {},
+  });
+  assert.doesNotMatch(panel._groupEditor(), /Luftqualitätssensoren|ed-add-toggle/);
+  panel._setDraft("humidifiers", ["fan.humidifier"]);
+  assert.doesNotMatch(panel._groupEditor(), /Luftqualitätssensoren|ed-add-toggle/);
+
+  panel._setDraft("members", [entity]);
+  const section = panel._groupSensorEditor("");
+  assert.match(section, /Luftqualitätssensoren/);
+  assert.deepEqual([...section.matchAll(/data-action="ed-add-toggle" data-type="([^"]+)"/g)].map((match) => match[1]), [
+    "pm1", "pm25", "pm10", "aqi",
+  ]);
+  assert.doesNotMatch(section, /data-combine/);
+  panel._edit.addOpen = "pm25";
+  const menu = panel._groupSensorEditor("");
+  assert.match(menu, /data-action="ed-add-sensor" data-entity="sensor\.extra_pm25" data-type="pm25"/);
+  assert.doesNotMatch(menu, /sensor\.other_pm10|data-action="ed-add-sensor" data-entity="sensor\.built_in"/);
+  panel._setDraft("removed_sensors", [purifierSensor.entity_id]);
+  assert.match(panel._groupSensorEditor(""), /ed-restore-sensor" data-entity="sensor\.built_in"/);
+  panel._setDraft("removed_sensors", []);
+  panel._setDraft("sensors", [extraSensor]);
+  assert.match(panel._groupSensorEditor(""), /value="max" selected>Schlechtester Sensor<\/option>/);
+  panel._setDraft("combine.pm25", "avg");
+  assert.match(panel._groupSensorEditor(""), /value="avg" selected>Mittelwert<\/option>/);
+  assert.deepEqual(panel._draftPayload().sensors, [extraSensor]);
+  assert.equal(panel._draftPayload().combine.pm25, "avg");
+  panel._setDraft("members", []);
+  assert.doesNotMatch(panel._groupEditor(), /Luftqualitätssensoren/);
+  assert.equal(panel._edit.addOpen, false);
+  panel._setDraft("members", [entity]);
+  assert.match(panel._groupSensorEditor(""), /value="avg" selected>Mittelwert<\/option>/);
+
+  panel._automation = false;
+  const legacy = panel._groupSensorEditor("");
+  assert.equal([...legacy.matchAll(/data-action="ed-add-toggle"/g)].length, 1);
+  assert.match(legacy, /value="max">Höchste<\/option>/);
+  assert.match(legacy, /value="median"/);
+  assert.match(legacy, /value="min"/);
 });

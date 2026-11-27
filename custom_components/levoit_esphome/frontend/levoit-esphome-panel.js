@@ -770,10 +770,12 @@ class LevoitEsphomePanel extends HTMLElement {
       case "ed-set":
         if (this._edit?.draft) this._setDraft(target.dataset.field, parseValue(target.dataset.value));
         break;
-      case "ed-add-toggle":
-        this._edit.addOpen = !this._edit.addOpen;
+      case "ed-add-toggle": {
+        const picker = target.dataset.type || true;
+        this._edit.addOpen = this._edit.addOpen === picker ? false : picker;
         this._render();
         break;
+      }
       case "ed-add-sensor": {
         const d = this._edit.draft;
         const entity = target.dataset.entity;
@@ -2915,7 +2917,7 @@ class LevoitEsphomePanel extends HTMLElement {
       </div>
       <div class="gc-mode"><div class="segs" role="group" aria-label="${this._text("Mode for {name}", { name: g.name })}">${modes}</div>${speeds}</div>
       <div class="gc-members">${members}</div>`}
-      <div class="gc-foot">${chips}${targets}<button class="btn text" data-action="navigate" data-path="${esc(
+      <div class="gc-foot">${humidityOnly ? "" : chips}${targets}<button class="btn text" data-action="navigate" data-path="${esc(
         this._groupsPath(`${encodeURIComponent(g.id)}/edit`),
       )}">${this._text("Edit")}</button></div>
     </div>`;
@@ -3013,7 +3015,8 @@ class LevoitEsphomePanel extends HTMLElement {
           : this._groupReason(g);
 
     // tiles: the combined value of each sensor type, and the total CADR
-    const values = st.values || {};
+    const humidityOnly = this._automation && !g.members.length;
+    const values = humidityOnly ? {} : st.values || {};
     const cap = (text) => text.charAt(0).toUpperCase() + text.slice(1);
     const tiles = SENSOR_TYPES.filter((t) => values[t]).map((t) => {
       const v = values[t];
@@ -3026,7 +3029,7 @@ class LevoitEsphomePanel extends HTMLElement {
         dot: `q${v.level}`,
       };
     });
-    if (st.cadr?.sensors?.length)
+    if (!humidityOnly && st.cadr?.sensors?.length)
       tiles.push({
         label: this._t("CADR now"),
         value: st.cadr.value == null ? "—" : this._formatNumber(Math.round(st.cadr.value)),
@@ -3051,7 +3054,6 @@ class LevoitEsphomePanel extends HTMLElement {
           )
           .join("")}</div>`
       : `<div class="hint">${this._text("No sensor values yet")}</div>`;
-    const humidityOnly = this._automation && !g.members.length;
     const controls = `<div class="card gd-controls">
       ${humidityOnly ? "" : `<div class="gd-main">
         <button class="gd-power${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="${this._text("Group control")}" data-action="group-set" data-id="${id}" data-field="enabled" data-value="${!on}">${icon(
@@ -3118,7 +3120,7 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
 
     // sensors added in the editor, not part of a purifier
-    const extra = g.sensors.filter((s) => s.source === "manual");
+    const extra = humidityOnly ? [] : g.sensors.filter((s) => s.source === "manual");
     const extras = extra.length
       ? `<div class="card gd-card gd-side">
           <div class="gd-head"><div><h2>${this._text("Additional sensors")}</h2><div class="hint">${this._text("Not part of a purifier, added in the editor")}</div></div></div>
@@ -3182,6 +3184,9 @@ class LevoitEsphomePanel extends HTMLElement {
   _setDraft(field, value) {
     const d = this._edit.draft;
     this._setPath(d, field, value);
+    if (this._automation && field === "members" && !this._draftMembers().length) {
+      this._edit.addOpen = false;
+    }
     if (field === "area_id" && !d.name.trim()) d.name = this._areaName(value);
     this._schedulePreview();
     this._render();
@@ -3354,6 +3359,106 @@ class LevoitEsphomePanel extends HTMLElement {
       .join("")}</div>`;
   }
 
+  _groupSensorEditor(autoOnly) {
+    const { draft: d, addOpen } = this._edit;
+    const shown = this._draftSensors();
+    const sensorMenu = (type) => {
+      const shownIds = new Set(shown.map((s) => s.entity_id));
+      const removed = [];
+      const removedIds = new Set(d.removed_sensors);
+      const knownTypes = {};
+      for (const p of this._groups.purifiers) for (const s of p.sensors) knownTypes[s.entity_id] = s.type;
+      for (const m of this._draftMembers()) {
+        const p = this._purifier(m);
+        for (const s of p.sensors) if (removedIds.has(s.entity_id)) removed.push({ ...s, label: p.title });
+      }
+      const restored = type ? removed.filter((s) => s.type === type) : removed;
+      const extras = Object.values(this._hass?.states || {})
+        .filter((st) => {
+          const dc = st.attributes.device_class;
+          return (
+            st.entity_id.startsWith("sensor.") &&
+            (dc === "pm1" || dc === "pm25" || dc === "pm10" || knownTypes[st.entity_id]) &&
+            !shownIds.has(st.entity_id) &&
+            !removedIds.has(st.entity_id)
+          );
+        })
+        .map((st) => ({
+          entity_id: st.entity_id,
+          type: knownTypes[st.entity_id] || st.attributes.device_class,
+          label: st.attributes.friendly_name || st.entity_id,
+        }))
+        .filter((s) => !type || s.type === type)
+        .sort((a, b) => a.label.localeCompare(b.label))
+        .slice(0, 40);
+      return `<div class="menu" role="menu">${
+          restored.length
+            ? `<div class="mh">${this._text("From this group's purifiers")}</div>${restored
+                .map(
+                  (s) =>
+                    `<button role="menuitem" data-action="ed-restore-sensor" data-entity="${esc(s.entity_id)}"><span>${esc(
+                      s.label,
+                    )} · ${this._text(SENSOR_TYPE_INFO[s.type].label)}</span><span class="hint">${esc(
+                      this._sensorValue(s.entity_id, s.type),
+                    )}</span></button>`,
+                )
+                .join("")}`
+            : ""
+        }<div class="mh">${this._text("Other Home Assistant sensors")}</div>${
+          extras.length
+            ? extras
+                .map(
+                  (x) =>
+                    `<button role="menuitem" data-action="ed-add-sensor" data-entity="${esc(x.entity_id)}" data-type="${x.type}"><span>${esc(
+                      x.label,
+                    )} · ${this._text(SENSOR_TYPE_INFO[x.type].label)}</span><span class="mono-id">${esc(x.entity_id)}</span></button>`,
+                )
+                .join("")
+            : `<div class="hint menu-empty">${type
+                ? this._text("No other {sensor} sensors", { sensor: this._t(SENSOR_TYPE_INFO[type].label) })
+                : this._text("No other PM1, PM2.5 or PM10 sensors")}</div>`
+        }</div>`;
+    };
+    const picker = (type) => {
+      const open = addOpen === (type || true);
+      const label = this._t("Add sensor");
+      const accessibleName = type
+        ? this._t("Add {sensor} sensor", { sensor: this._t(SENSOR_TYPE_INFO[type].label) })
+        : label;
+      return `<div class="add-wrap"><button class="btn" data-action="ed-add-toggle"${
+        type ? ` data-type="${type}"` : ""
+      } aria-label="${esc(accessibleName)}" aria-haspopup="menu" aria-expanded="${open}">${icon(
+        "plus",
+      )}${esc(label)}</button>${open ? sensorMenu(type) : ""}</div>`;
+    };
+    const typeRows = SENSOR_TYPES.map((t) => {
+      const matching = shown.filter((s) => s.type === t);
+      const chips = matching
+        .map(
+          (s) => `<span class="schip"><span>${esc(s.label)}</span><b>${esc(this._sensorValue(s.entity_id, t))}</b>
+            <button data-action="ed-remove-sensor" data-entity="${esc(s.entity_id)}" aria-label="${this._text("Remove {sensor} {type}", { sensor: s.label, type: SENSOR_TYPE_INFO[t].label })}">${icon("close")}</button></span>`,
+        )
+        .join("");
+      const how = d.combine?.[t] || "max";
+      const combine = matching.length > 1
+        ? `<label class="combine"><span class="hint">${this._text("Combine")}</span><select class="inp sm" data-combine="${t}" aria-label="${this._text("Combine the {sensor} sensors", { sensor: this._t(SENSOR_TYPE_INFO[t].label) })}">${COMBINE_OPTIONS.map(
+            ([value, label]) =>
+              `<option value="${value}"${value === how ? " selected" : ""}>${this._text(
+                this._automation && value === "max" ? "Worst sensor" : label,
+              )}</option>`,
+          ).join("")}</select></label>`
+        : "";
+      return `<div class="stype${this._automation ? " stype-with-picker" : ""}"><div class="stype-label">${this._text(SENSOR_TYPE_INFO[t].label)}<div class="hint">${esc(
+        SENSOR_TYPE_INFO[t].unit,
+      )}</div></div><div class="stype-chips">${chips || `<span class="hint">${this._text("None: this type is not used")}</span>`}</div>${combine}${this._automation ? picker(t) : ""}</div>`;
+    }).join("");
+    return `<div class="card section">
+      <div class="sec-head"><div><h2>${this._text("Air quality sensors")}${autoOnly}</h2><div class="hint">${this._text("Picked from the purifiers above. With several sensors of one type, pick how they are combined; the worst type decides the group's level.")}</div></div></div>
+      ${typeRows}
+      ${this._automation ? "" : picker()}
+    </div>`;
+  }
+
   _groupEditor() {
     if (this._groupsError)
       return `<div class="card empty"><p class="bad">${esc(this._groupsError)}</p>
@@ -3466,88 +3571,6 @@ class LevoitEsphomePanel extends HTMLElement {
       )}</span><span class="mem-text"><span class="mem-name">${this._text("Other fans")}</span><span class="hint">${this._text("Any Home Assistant fan entity")}</span></span><span class="tags"><span class="tag">${this._text("Coming later")}</span></span></div>
     </div>`;
 
-    // Air quality sensors
-    const shown = this._draftSensors();
-    const shownIds = new Set(shown.map((s) => s.entity_id));
-    const typeRows = SENSOR_TYPES.map((t) => {
-      const chips = shown
-        .filter((s) => s.type === t)
-        .map(
-          (s) => `<span class="schip"><span>${esc(s.label)}</span><b>${esc(this._sensorValue(s.entity_id, t))}</b>
-            <button data-action="ed-remove-sensor" data-entity="${esc(s.entity_id)}" aria-label="${this._text("Remove {sensor} {type}", { sensor: s.label, type: SENSOR_TYPE_INFO[t].label })}">${icon("close")}</button></span>`,
-        )
-        .join("");
-      const several = shown.filter((s) => s.type === t).length > 1;
-      const how = d.combine?.[t] || "max";
-      const combine = several
-        ? `<label class="combine"><span class="hint">${this._text("Combine")}</span><select class="inp sm" data-combine="${t}" aria-label="${this._text("Combine the {sensor} sensors", { sensor: this._t(SENSOR_TYPE_INFO[t].label) })}">${COMBINE_OPTIONS.map(
-            ([value, label]) => `<option value="${value}"${value === how ? " selected" : ""}>${this._text(label)}</option>`,
-          ).join("")}</select></label>`
-        : "";
-      return `<div class="stype"><div class="stype-label">${this._text(SENSOR_TYPE_INFO[t].label)}<div class="hint">${esc(
-        SENSOR_TYPE_INFO[t].unit,
-      )}</div></div><div class="stype-chips">${chips || `<span class="hint">${this._text("None: this type is not used")}</span>`}</div>${combine}</div>`;
-    }).join("");
-    const removed = [];
-    const removedIds = new Set(d.removed_sensors);
-    const knownTypes = {};
-    for (const p of this._groups.purifiers) for (const s of p.sensors) knownTypes[s.entity_id] = s.type;
-    for (const m of this._draftMembers()) {
-      const p = this._purifier(m);
-      for (const s of p.sensors) if (removedIds.has(s.entity_id)) removed.push({ ...s, label: p.title });
-    }
-    const extras = Object.values(this._hass?.states || {})
-      .filter((st) => {
-        const dc = st.attributes.device_class;
-        return (
-          st.entity_id.startsWith("sensor.") &&
-          (dc === "pm1" || dc === "pm25" || dc === "pm10" || knownTypes[st.entity_id]) &&
-          !shownIds.has(st.entity_id) &&
-          !removedIds.has(st.entity_id)
-        );
-      })
-      .map((st) => ({
-        entity_id: st.entity_id,
-        type: knownTypes[st.entity_id] || st.attributes.device_class,
-        label: st.attributes.friendly_name || st.entity_id,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .slice(0, 40);
-    const menu = e.addOpen
-      ? `<div class="menu" role="menu">${
-          removed.length
-            ? `<div class="mh">${this._text("From this group's purifiers")}</div>${removed
-                .map(
-                  (s) =>
-                    `<button role="menuitem" data-action="ed-restore-sensor" data-entity="${esc(s.entity_id)}"><span>${esc(
-                      s.label,
-                    )} · ${this._text(SENSOR_TYPE_INFO[s.type].label)}</span><span class="hint">${esc(
-                      this._sensorValue(s.entity_id, s.type),
-                    )}</span></button>`,
-                )
-                .join("")}`
-            : ""
-        }<div class="mh">${this._text("Other Home Assistant sensors")}</div>${
-          extras.length
-            ? extras
-                .map(
-                  (x) =>
-                    `<button role="menuitem" data-action="ed-add-sensor" data-entity="${esc(x.entity_id)}" data-type="${x.type}"><span>${esc(
-                      x.label,
-                    )} · ${this._text(SENSOR_TYPE_INFO[x.type].label)}</span><span class="mono-id">${esc(x.entity_id)}</span></button>`,
-                )
-                .join("")
-            : `<div class="hint menu-empty">${this._text("No other PM1, PM2.5 or PM10 sensors")}</div>`
-        }</div>`
-      : "";
-    const sensors = `<div class="card section">
-      <div class="sec-head"><div><h2>${this._text("Air quality sensors")}${autoOnly}</h2><div class="hint">${this._text("Picked from the purifiers above. With several sensors of one type, pick how they are combined; the worst type decides the group's level.")}</div></div></div>
-      ${typeRows}
-      <div class="add-wrap"><button class="btn" data-action="ed-add-toggle" aria-haspopup="menu" aria-expanded="${e.addOpen}">${icon(
-        "plus",
-      )}${this._text("Add sensor")}</button>${menu}</div>
-    </div>`;
-
     // Speeds: each purifier's lowest and highest step, and its step per level
     const members = [...chosen].map((m) => this._purifier(m)).filter(Boolean);
     const ranges = d.member_speeds || {};
@@ -3656,7 +3679,7 @@ class LevoitEsphomePanel extends HTMLElement {
     </div>`;
 
     return `<div class="ged">
-      <div class="ged-main">${general}${devices}${sensors}${purifierControls ? speed + stepIn + clean : ""}</div>
+      <div class="ged-main">${general}${devices}${purifierControls ? this._groupSensorEditor(autoOnly) + speed + stepIn + clean : ""}</div>
       ${purifierControls ? `<aside class="ged-aside" aria-label="${this._text("Live preview")}">${this._rightNow()}
         <div class="hint now-note">${this._text("The preview uses the current readings and updates as you change settings. Nothing is sent to the purifiers until you save. ▶ runs the saved settings now: the sensors' level without waiting for the hold time, also for purifiers changed by hand.")}</div>
       </aside>` : ""}
@@ -4287,7 +4310,9 @@ class LevoitEsphomePanel extends HTMLElement {
   // The recorder can supply either purifier statistics or recorded humidifier states.
   _historySeries() {
     if (this._view === "groupdetail") {
-      const entities = this._detailGroup()?.entities || {};
+      const group = this._detailGroup();
+      if (this._automation && !group?.members.length) return [];
+      const entities = group?.entities || {};
       const series = GROUP_HISTORY_SERIES.filter((s) => entities[s.key]).map((s) => ({
         ...s,
         entity: entities[s.key],
@@ -5303,6 +5328,15 @@ details.section[open] > summary { padding-bottom: 8px; }
 .add-wrap { position: relative; padding: 12px 20px 16px; border-top: 1px solid var(--divider-color); }
 .add-wrap > .btn { margin: 0; display: inline-flex; align-items: center; gap: 6px; }
 .add-wrap > .btn svg { width: 18px; height: 18px; }
+.stype-with-picker { flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.stype-with-picker .stype-label { padding-top: 0; }
+.stype-with-picker .stype-chips { flex: 1 1 120px; }
+.stype-with-picker .schip { max-width: 100%; box-sizing: border-box; }
+.stype-with-picker .schip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.stype-with-picker .schip > :not(span) { flex: none; }
+.stype-with-picker .add-wrap { display: contents; }
+.stype-with-picker .add-wrap > .btn { margin-left: auto; }
+.stype-with-picker .menu { position: static; flex-basis: 100%; width: auto; box-shadow: none; }
 .menu { position: absolute; top: 56px; left: 20px; z-index: 3; width: min(380px, calc(100% - 40px)); max-height: 320px;
   overflow: auto; padding: 6px; box-sizing: border-box; border-radius: 12px; background: var(--card-background-color, #fff);
   border: 1px solid var(--divider-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); }

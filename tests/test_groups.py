@@ -704,24 +704,35 @@ async def test_off_and_sleep_as_lowest(
 
 
 @pytest.mark.usefixtures("patch_sources")
-async def test_combined_sensors(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+@pytest.mark.parametrize("kind", ["purifier", "automation"])
+async def test_combined_sensors(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, kind: str
+) -> None:
     """Two PM2.5 sensors: the highest by default, or their average."""
     _purifiers(hass)
     await _setup(hass)
     client = await hass_ws_client(hass)
-    group = await _save(client, members=MEMBERS, rise={"enabled": False})
+    group = await _save(client, kind=kind, members=MEMBERS, rise={"enabled": False})
+    listing = (await _call(client, {"type": "levoit_esphome/groups/list"}))["result"]
+    collection = "automations" if kind == "automation" else "groups"
+    entities = listing[collection][0]["entities"]
     _pm(hass, 10, "sensor.bedroom_pm25")
     _pm(hass, 60)
     await _settle(hass)
-    assert hass.states.get(LEVEL).state == "4"  # the highest: 60
+    assert hass.states.get(entities["level"]).state == "4"  # the highest: 60
 
     await _save(
-        client, id=group["id"], members=MEMBERS, rise={"enabled": False}, combine={"pm25": "avg"}
+        client,
+        id=group["id"],
+        kind=kind,
+        members=MEMBERS,
+        rise={"enabled": False},
+        combine={"pm25": "avg"},
     )
     await _settle(hass)
-    level = hass.states.get(LEVEL)
+    level = hass.states.get(entities["level"])
     assert level.state == "4"  # holds: down one level per hold time
-    quality = hass.states.get(AIR_QUALITY)
+    quality = hass.states.get(entities["air_quality"])
     assert quality.state == "3"  # the average: 35
     assert level.attributes["reason"] == "PM2.5 35 µg/m³ (average of 2)"
 
