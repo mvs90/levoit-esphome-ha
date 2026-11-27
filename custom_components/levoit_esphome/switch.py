@@ -46,7 +46,7 @@ class GroupControlSwitch(LevoitGroupEntity, SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """On while the group is enabled."""
-        group = self.group
+        group = self.purifier_group
         return group.enabled if group else None
 
     async def async_turn_on(self, **kwargs: Any) -> None:

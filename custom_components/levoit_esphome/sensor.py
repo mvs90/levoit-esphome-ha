@@ -348,12 +348,12 @@ class GroupLevelSensor(LevoitGroupEntity, SensorEntity):
     @property
     def native_value(self) -> int | None:
         """The level."""
-        return self.group_state["level"] if self.group is not None else None
+        return self.group_state["level"] if self.purifier_group is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Status, why, the worst sensor and the members in control."""
-        if self.group is None:
+        if self.purifier_group is None:
             return None
         state = self.group_state
         return {
@@ -382,12 +382,12 @@ class GroupAirQualitySensor(LevoitGroupEntity, SensorEntity):
     @property
     def native_value(self) -> int | None:
         """1-4; unknown while no sensor has a number."""
-        return self.group_state["air_quality"] if self.group is not None else None
+        return self.group_state["air_quality"] if self.purifier_group is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """The worst sensor and each sensor's level."""
-        if self.group is None:
+        if self.purifier_group is None:
             return None
         state = self.group_state
         return {
@@ -410,7 +410,7 @@ class GroupValueSensor(LevoitGroupEntity, SensorEntity):
 
     @property
     def _value(self) -> dict[str, Any] | None:
-        if self.group is None:
+        if self.purifier_group is None:
             return None
         state = self.group_state
         if self.entity_description.key == CADR:

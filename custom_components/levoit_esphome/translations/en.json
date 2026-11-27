@@ -192,7 +192,7 @@
         },
         "details": {
           "title": "{model}",
-          "description": "A new API encryption key and OTA password are generated and stored in the Device Builder's secrets.yaml under the device's name, e.g. levoit_everest_air_c3_api_key and levoit_everest_air_c3_ota_password. Wi-Fi comes from its wifi_ssid / wifi_password / wifi_ap_password secrets.",
+          "description": "A new API encryption key is generated and stored in the Device Builder's secrets.yaml under the device's name, e.g. levoit_everest_air_c3_api_key; OTA updates are encrypted with it. Wi-Fi comes from its wifi_ssid / wifi_password / wifi_ap_password secrets.",
           "data": {
             "name": "Name",
             "channel": "Update channel"
@@ -204,7 +204,7 @@
         },
         "details_existing": {
           "title": "{model}: {name}",
-          "description": "The device keeps its name. Its API encryption key is taken from Home Assistant's ESPHome connection to the device (no key there: no encryption) and stored in the Device Builder's secrets.yaml as {api_secret}. Home Assistant does not know the OTA password: enter it if the device has one, leave it empty if not.",
+          "description": "The device keeps its name. Its API encryption key is taken from Home Assistant's ESPHome connection to the device (no key there: no encryption) and stored in the Device Builder's secrets.yaml as {api_secret}. Home Assistant does not know the OTA password: enter it if the device has one, leave it empty if not. After its first update here, OTA updates are encrypted with the API key.",
           "data": {
             "channel": "Update channel",
             "ota_password": "OTA password"

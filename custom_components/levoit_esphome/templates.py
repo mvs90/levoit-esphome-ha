@@ -435,6 +435,52 @@ def _apply_values(text: str, values: ConfigValues) -> str:
     return text
 
 
+# ESPHome 2026.9.0 brought OTA encryption, and from then on a firmware with an
+# API key offers it; the uploader of that version and later uses it.
+OTA_ENCRYPTION_SINCE = (2026, 9, 0)
+_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+
+
+def supports_ota_encryption(esphome_version: str | None) -> bool:
+    """Whether an ESPHome version builds and uploads encrypted OTA; unknown counts as yes."""
+    if not esphome_version:
+        return True
+    match = _VERSION.match(esphome_version.strip())
+    if match is None:
+        return True
+    return tuple(int(part) for part in match.groups()) >= OTA_ENCRYPTION_SINCE
+
+
+_OTA_PASSWORD_LINE = (
+    r"^(  - platform: esphome[ \t]*\n)    password: (?:!secret [A-Za-z0-9_.-]+|\".*\")[ \t]*\n"
+)
+_OTA_INHERITED_LINE = r"^(  - platform: esphome[ \t]*\n)    encryption:[ \t]*\n(?!      key:)"
+
+
+def _swap_ota_line(pattern: str, line: str, text: str, what: str) -> str:
+    """The one OTA credential line under `- platform: esphome` replaced by `line`."""
+    matches = list(re.finditer(pattern, text, re.MULTILINE))
+    if len(matches) != 1:
+        raise TemplateError(f"expected exactly one {what}, found {len(matches)}")
+    match = matches[0]
+    return text[: match.start()] + match.group(1) + line + text[match.end() :]
+
+
+def ota_encryption_from_password(text: str) -> str:
+    """A config's OTA password line replaced by encryption that inherits the API key.
+
+    The migration's second step: text only, the rest of the file stays.
+    """
+    return _swap_ota_line(_OTA_PASSWORD_LINE, "    encryption:\n", text, "ota password line")
+
+
+def ota_password_from_encryption(text: str, secret: str) -> str:
+    """The reverse: inherited OTA encryption replaced by `password: !secret <secret>`."""
+    return _swap_ota_line(
+        _OTA_INHERITED_LINE, f"    password: !secret {secret}\n", text, "ota encryption"
+    )
+
+
 def with_channel(text: str, channel: str) -> str:
     """A builder file or template config with its component `ref:` set to `channel`."""
     if channel not in (CHANNEL_STABLE, CHANNEL_MAIN):

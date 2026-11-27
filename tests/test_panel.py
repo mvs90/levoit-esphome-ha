@@ -49,6 +49,17 @@ async def test_panel_behind_option(hass: HomeAssistant) -> None:
     assert PANEL_URL_PATH not in hass.data.get(DATA_PANELS, {})
 
 
+def _assert_steps(
+    build: dict[str, Any], *, upload: bool, done: int, tail: list[str] | None = None
+) -> None:
+    """The build's steps as the panel gets them: the first `done` done, the rest not."""
+    keys = ["setup", "compile", "link", "result"] + (["upload"] if upload else [])
+    assert build["upload"] is upload
+    assert [s["key"] for s in build["steps"]] == keys
+    assert [s["state"] == "done" for s in build["steps"]] == [i < done for i in range(len(keys))]
+    assert build["tail"] == (tail or [])
+
+
 async def _call(client: Any, message: dict[str, Any]) -> dict[str, Any]:
     """Send a command; its result, skipping subscription events."""
     await client.send_json_auto_id(message)
@@ -85,6 +96,7 @@ async def test_subscribe_and_build(
     assert device["can_set_channel"] is False
     assert device["building"] is False
     assert device["build_step"] is None
+    assert device["build"] is None
     assert device["device_id"]
 
     build = {"type": "levoit_esphome/build", "name": "bedroom-purifier", "upload": False}
@@ -102,11 +114,22 @@ async def test_subscribe_and_build(
     assert seen_building
     assert_compiled(builder, "bedroom-purifier.yaml")
     builder.api.upload.assert_not_awaited()
-    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    coordinator = hass.config_entries.async_entries(DOMAIN)[0].runtime_data
+    last = coordinator.last_builds["bedroom-purifier"]
     assert last.ok
     assert not last.upload
+    # the build's steps, for the panel: nothing was printed, so all done, no detail
+    _assert_steps(coordinator.build_summary("bedroom-purifier"), upload=False, done=4)
 
-    # failed compile: an error naming the cause, the failure and the output kept
+
+@pytest.mark.usefixtures("esphome_devices", "patch_sources")
+async def test_build_fails(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, builder: FakeBuilder
+) -> None:
+    """A failed compile: an error naming the cause, the failure and the output kept."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
     async def failing_compile(configuration: str, line_received_cb: Any = None) -> bool:
         for line in (
             r"\033[32mINFO Compiling app...\033[0m",
@@ -133,6 +156,13 @@ async def test_subscribe_and_build(
         "src/main.cpp:12: error: 'foo' was not declared",  # colour codes removed
         "========== [FAILED] ==========",
     ]
+    # the steps: nothing compiled yet, so the setup failed, with the reason
+    _assert_steps(log["result"]["build"], upload=True, done=0, tail=log["result"]["lines"])
+    assert log["result"]["build"]["steps"][0] == {
+        "key": "setup",
+        "state": "failed",
+        "detail": "src/main.cpp:12: error: 'foo' was not declared",
+    }
 
 
 @pytest.mark.usefixtures("esphome_devices")

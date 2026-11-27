@@ -42,4 +42,4 @@ jobs:
         with:
           node-version: "22"
       - name: Humidifier panel regression
-        run: node tests/frontend_lv600s.mjs
+        run: node --test tests/frontend_lv600s.mjs

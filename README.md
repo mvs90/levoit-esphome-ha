@@ -89,6 +89,11 @@ Assistant's device page. It needs no Device Builder config: the settings are
 found by their entity names, as the tuct/levoit configs name them (or as the
 device's config does, when there is one).
 
+The LV600S page uses the ESPHome fan from `levoit` model `LV600S` for power,
+mist level and operating mode. It also shows humidity, temperature, tank
+status, warm mist and the timer. The older standalone component still appears
+in the device list and links to its Home Assistant device page.
+
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/device-page.png?v=0.6.8" width="720" alt="A device page: power, mode and speed, PM2.5, AQI and CADR, the 24 hour history in one chart, and the settings">
 
 ## Purifier groups
@@ -168,7 +173,7 @@ editor, *Add card* lists them as **Levoit purifier**, **Levoit group** and
 ```yaml
 type: custom:levoit-purifier-card
 entity: fan.levoit_core600s_c3_fan   # the purifier's fan
-show: [pm25, aqi, cadr, filter, group]   # default: all
+show: [pm25, aqi, cadr, filter, group]   # no key: all; a new card lists them
 controls: [speed, mode]                  # default: both
 grid_options:
   columns: 12   # 6 = medium / small, 3 = compact
@@ -191,7 +196,7 @@ one switches to Manual.
 ```yaml
 type: custom:levoit-group-card
 entity: fan.living_room   # the group's fan (or group: <its id>)
-show: [pm25, aqi, cadr, members]   # default: all
+show: [pm25, aqi, cadr, members]   # no key: all; a new card lists them
 controls: [mode, level]            # default: both
 grid_options:
   columns: 12   # 6 = medium / small, 3 = compact
@@ -241,7 +246,9 @@ The sidebar page's third tab has:
   component version, filter %, ESPHome version, status and the last build
 * the latest releases on top, with **Update all** (one device after the other)
 * **Compile** and **Compile and upload** (*Update* when one is out), with the
-  result per device, and the output of the last build under **Log**
+  build's step and progress live per device (the compile counter, the upload
+  bar), the result, and under **Log** the steps with the last lines or the
+  full output
 * the channel of a device without a config or with a template config
 * configs made by *Add device* that are **not flashed yet**, with what to do
   next; they can be compiled, but not uploaded until the first USB flash
@@ -249,6 +256,12 @@ The sidebar page's third tab has:
   reads the latest versions from GitHub without waiting for the 6 hours
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/panel-updates.png?v=0.6.8" width="720" alt="Updates and config: every device with model, channel, installed and latest version, and Compile, Update and Log">
+
+A running build, in the row and under **Log**: the steps, the compile counter
+with the file being built, then the upload with its bar.
+
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/build-log.png?v=0.7.1" width="720" alt="A running build: the device row says Compile 111 / 117 with a bar; the Log dialog shows Setup done with ESP-IDF 5.5.6, Compile running at 111 of 117 on main.cpp, Link and image, Result and Upload queued, and the last lines of the output">
+<img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/build-log-upload.png?v=0.7.1" width="720" alt="The same build uploading: Setup, Compile with 107 files, Link and image with a 900 KB image and Result with RAM 30.3 % and Flash 50.2 % done, Upload at 74 % with its bar, and the upload's progress lines">
 
 ### Extra ESP or original ESP
 
@@ -463,10 +476,12 @@ pins, and the config is made from the model's builder file with those.
 
 <img src="https://raw.githubusercontent.com/tuct/levoit-esphome-ha/main/images/add-device-model.png" width="420" alt="Add device: pick the model">
 
-* **New device:** a name is suggested; a new API encryption key and OTA
-  password are generated and stored in the Device Builder's `secrets.yaml` as
-  `<name>_api_key` / `<name>_ota_password`. Flash it once over USB from the
-  Device Builder; after that, updates come over the air. As soon as the
+* **New device:** a name is suggested; a new API encryption key is
+  generated and stored in the Device Builder's `secrets.yaml` as
+  `<name>_api_key`, and OTA updates are encrypted with it (a Device Builder
+  older than ESPHome 2026.9.0 gets an OTA password instead, as
+  `<name>_ota_password`). Flash it once over USB from the Device Builder;
+  after that, updates come over the air. As soon as the
   flashed ESP is on the network (every 30 s it looks for `<name>.local`), the
   integration adds it to the ESPHome integration with the key from the Device
   Builder, so there is no discovered device to confirm. If the ESP needs
@@ -493,17 +508,33 @@ through its `ref:`.
 
 #### Encrypted native OTA
 
-Template refreshes preserve the native ESPHome OTA encryption key and API
-key, whether inline or referenced by `!secret`. If `ota.encryption` is left
-empty, OTA continues to use the API encryption key. An explicit OTA key must
-resolve to the same value as a configured API key. The integration inspects the
-YAML without loading packages or looking up secret values. Refresh supports a
-standalone template with the native API, one native OTA transport, and an
-upstream Main or Stable source. Other layouts stop before writing or building.
-Key rotation (`old_key`) and migration that permits a plaintext upload
-(`allow_plaintext_upload`) also require a custom config. Remove the template
-marker to manage that file manually. Use a Device Builder version that
-supports native OTA encryption for an encrypted device.
+New configs encrypt OTA updates with the device's API key (`ota: encryption:`
+without a key of its own). Template refreshes preserve the native ESPHome OTA
+encryption key and API key, whether inline or referenced by `!secret`. If
+`ota.encryption` is left empty, OTA continues to use the API encryption key.
+An explicit OTA key must resolve to the same value as a configured API key.
+The integration inspects the YAML without loading packages or looking up
+secret values. Refresh supports a standalone template with the native API,
+one native OTA transport, and an upstream Main or Stable source. Other layouts
+stop before writing or building. Key rotation (`old_key`) and migration that
+permits a plaintext upload (`allow_plaintext_upload`) also require a custom
+config. Remove the template marker to manage that file manually. Use a Device
+Builder version that supports native OTA encryption for an encrypted device.
+
+**From an OTA password to encryption.** A template config made before this
+version has `password: !secret <name>_ota_password`. It migrates over two
+updates, as the [ESPHome documentation](https://esphome.io/components/ota/esphome/)
+describes: the next update installs with the password as before, and the
+firmware it installs (ESPHome 2026.9.0 or newer, with an API key) offers
+encryption; right after that upload the integration swaps the password line
+for `encryption:`, a text change, and the row says *OTA encrypted from the
+next update on*. The update after that is encrypted. Nothing to do; the
+`<name>_ota_password` secret stays in `secrets.yaml`, unused (the integration
+never deletes a secret). Should an encrypted upload be refused because the
+device does not offer encryption, the password line comes back while the
+secret exists, and the row says so. A custom config is not touched. ESPHome
+removes the plain password path in 2027.3.0: update every device once before
+then.
 
 ### How it works
 
@@ -561,10 +592,16 @@ What the upload needs, and what goes wrong otherwise:
 | The new firmware starts on this hardware (right board) | The ESP doesn't come back and needs a USB reflash. The configs don't enable ESPHome's `safe_mode`, so there is no automatic fallback |
 
 The Device Builder streams the compile and upload output to the integration and
-keeps none of it itself. The integration keeps the last 400 lines of each
-device's last build: **Log** on the sidebar page shows them, also while a build
-runs. When a build fails, its error message names the reason (the last error
-line), and the last 40 lines go into Home Assistant's log (*Settings → System →
+keeps none of it itself; it reports no progress of its own. The integration
+reads the output into steps, *setup, compile, link and image, result, upload*,
+each queued, running or done: for an ESP-IDF build the compile step counts the
+files (`312 / 1065`, from the build tool's counter) and the upload step shows
+its bar, the result step the Flash and RAM used. The device's row shows the
+running step; **Log** shows all steps with the last 15 lines, or on request the
+whole kept output (the last 400 lines), following a running build. The update
+entity's progress bar follows the same counters. When a build fails, the
+running step shows the reason (the last error line), the error message names
+it, and the last 40 lines go into Home Assistant's log (*Settings → System →
 Logs*).
 
 ## Requirements
@@ -628,95 +665,3 @@ Home Assistant has to run the version in the manifest. `--device` and `--group`
 pick which device and group, `--only overview groups` takes some, `--dark` uses the dark theme,
 `--sidebar` keeps Home Assistant's sidebar and `--scale 2` makes them
 sharper.
-
-### LV600S support
-
-The LV600S (`lv600s_humidifier`, model `LV600S`) uses its existing ESPHome device
-entry. Humidity, temperature, tank status, power, modes, mist, warm level and
-timer map to ESPHome entities. The panel labels the target-humidity mode Auto
-and shows Auto (Original) and Unknown only under the reported device status.
-The panel reads and controls these ESPHome entities directly. Auxiliary LV600S
-fans are excluded from purifier group discovery.
-
-**English.** The LV600S card shows the tank state next to the model, in the
-same position as the filter indicator on purifiers. A drop shows whether water
-is available or empty. If the tank is missing, a tank icon replaces the water
-status. The card offers three mist presets and shows the current warm mist
-level beside its icon. Selecting that level opens Off and levels 1–3 to the
-right. On narrow cards, the mode selector is hidden until the warm mist choice
-is made or the picker is closed. Choosing a mist preset starts the unit if
-needed and waits for Manual before sending the level. A mode selected in
-standby starts the device and the card follows its confirmed power, mode and
-mist states. Power, mode and mist selections appear immediately, with a
-single update for the warm mist value and its icon. The panel falls back
-to the device's reported values after four seconds without confirmation.
-The detail header shows mist and warm mist to the
-right of the operating mode when space allows. The history shows humidity, temperature and both
-device-reported mist settings over 12 hours, 24 hours, 7 days or 30 days. The
-chart leaves gaps for unavailable readings. The timer uses the purifier's
-presets and shows the remaining time with a progress bar when the start is
-known. Configuration contains the
-target humidity and display controls.
-
-**Deutsch.** Die LV600S-Karte zeigt den Tankstatus neben der Modellbezeichnung
-an derselben Stelle wie die Filteranzeige der Luftreiniger. Ein Tropfen zeigt
-„Wasser vorhanden“ oder „Wasser leer“. Fehlt der Tank, erscheint das
-Tank-Symbol mit „Tank fehlt“. Die Karte zeigt drei Nebelstufen und die aktuelle
-Warmnebelstufe mit Symbol. Antippen klappt „Aus“ und die Stufen 1–3 nach rechts
-auf. Auf schmalen Karten erscheint die Moduswahl wieder, sobald die Stufe
-gewählt oder die Auswahl geschlossen wurde. Bei Wahl einer Nebelstufe startet
-das Gerät bei Bedarf und bestätigt zuerst **Manuell**. Bei einer Moduswahl aus
-dem Standby aktualisiert die Karte Einschaltzustand, Modus und Nebelstufe anhand
-der bestätigten Gerätewerte. Die Auswahl erscheint sofort. Warmnebelstufe
-und Symbol wechseln zusammen. Ohne Bestätigung zeigt das Panel nach vier
-Sekunden wieder die gemeldeten Gerätewerte.
-**Auto** regelt auf die eingestellte Zielfeuchte. **Auto (Original)** und
-**Unbekannt** erscheinen als gemeldeter Modus im Gerätestatus.
-Bei genügend Platz stehen Nebel- und Warmnebelstufen rechts neben der
-Moduswahl. Der Verlauf zeigt Luftfeuchtigkeit, Temperatur und beide
-gemeldeten Stufen über 12 Stunden, 24 Stunden, 7 Tage oder 30 Tage. Fehlende
-Messwerte erscheinen als Lücken. Der Timer nutzt dieselben Zeitvorgaben wie
-die Luftreiniger und zeigt bei bekanntem Timerstart einen Fortschrittsbalken.
-Zielfeuchte und Display stehen unter Konfiguration.
-
-
-With the [LV600S firmware](https://github.com/tuct/levoit/pull/152), the ESPHome
-mist, warm mist and timer numbers allow presets in standby. The timer card shows the
-queued duration and starts counting at power-on. Setting Timer (min) to zero
-cancels a queued or running timer. A confirmed inactive timer and standby
-without a timer report display `Off`. In operation, missing timer feedback is
-shown as unavailable. Active mist uses a blue
-`mdi:scent` and active warmth an orange `mdi:heat-wave`. Their off icons are
-grey. The remaining entity defaults are in the
-[firmware contribution](https://github.com/tuct/levoit/pull/152).
-
-Mit der [LV600S-Firmware](https://github.com/tuct/levoit/pull/152) lassen sich Nebel,
-Warmnebel und der Timer über die ESPHome-Zahlen im Standby vormerken. Auf der
-Timerkarte steht bis zum Einschalten die vorgemerkte Dauer. `0` löscht einen
-vorgemerkten oder laufenden Timer. Bei bestätigtem Timer-Aus und im Standby
-ohne Timer-Rückmeldung steht `Off`. Fehlende Timerdaten im Betrieb erscheinen
-als nicht verfügbar. Bei aktivem Nebel erscheint
-`mdi:scent` blau, bei aktiver Wärme `mdi:heat-wave` orange. Die Aus-Symbole
-sind grau.
-
-The preset control is advertised as **Target Humidity Preset** or
-**Zielfeuchte Vorgabe**. In a Device Builder configuration, the template number
-ID `humidifier_target_preset` also identifies it when a custom name is used.
-The older **Target Humidity** / **Zielfeuchte** control uses confirmed Auto
-mode before applying a target.
-
-Die speicherbare Vorgabe ist als **Target Humidity Preset** oder **Zielfeuchte
-Vorgabe** erkennbar. Für eigene Namen in Device Builder dient die Template-ID
-`humidifier_target_preset`. Der ältere Regler **Target Humidity** /
-**Zielfeuchte** übernimmt Werte nach bestätigtem Wechsel auf Auto.
-
-Use an existing LV600S ESPHome configuration to add the device. Preserve its
-ESPHome identity, keys and partition table. The panel discovers the device
-through its ESPHome entry; a stable Add Device template requires a firmware release.
-
-Live verification of the earlier panel revision used an assembled EU LV600S
-with MCU 1.0.56. An isolated HA Core 2026.10.4 instance matched 20 native
-ESPHome entities, received water and MCU status, and recorded that ON was
-blocked and OFF confirmed with an empty tank. The Device Builder listing for
-that check was simulated. The current preset discovery is covered by the
-automated tests.
