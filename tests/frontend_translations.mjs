@@ -274,6 +274,8 @@ test("the Automations editor lists both device types in the same section", () =>
   assert.match(choices, /Purifier example/);
   assert.match(choices, /data-member="fan\.humidifier" data-humidifier/);
   assert.match(choices, /Humidifier example/);
+  assert.match(choices, /Humidifier example[\s\S]+disabled aria-label="Andere Lüfter"[\s\S]+Folgt später/);
+  assert.equal(Array.from(choices.matchAll(/aria-label="([^"]+)"/g)).at(-1)[1], "Andere Lüfter");
   assert.doesNotMatch(editor, /<h2>Luftbefeuchter<\/h2>/);
 
   panel._automation = false;

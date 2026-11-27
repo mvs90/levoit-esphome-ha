@@ -3461,9 +3461,9 @@ class LevoitEsphomePanel extends HTMLElement {
           hint: validMembers ? "" : this._t(this._automation ? " · pick at least 1" : " · pick at least 2"),
         })}</span></div>
       ${rows}
-      ${this._automation ? "" : `<div class="mem dis"><input type="checkbox" disabled aria-label="${this._text("Other fans")}"><span class="dev-tile">${icon(
+      <div class="mem dis"><input type="checkbox" disabled aria-label="${this._text("Other fans")}"><span class="dev-tile">${icon(
         "fan",
-      )}</span><span class="mem-text"><span class="mem-name">${this._text("Other fans")}</span><span class="hint">${this._text("Any Home Assistant fan entity")}</span></span><span class="tags"><span class="tag">${this._text("Coming later")}</span></span></div>`}
+      )}</span><span class="mem-text"><span class="mem-name">${this._text("Other fans")}</span><span class="hint">${this._text("Any Home Assistant fan entity")}</span></span><span class="tags"><span class="tag">${this._text("Coming later")}</span></span></div>
     </div>`;
 
     // Air quality sensors
