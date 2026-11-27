@@ -107,6 +107,26 @@ test("warmth and timer are direct number commands, with stored target editable i
   assert.match(panel._devicePage(), /data-number="number.humidity_target"[^>]*disabled/);
 });
 
+test("the LV600S card shows warm mist off in standby and keeps the saved level in the picker", () => {
+  const { panel, card, fan, states } = fixture();
+  const warmth = states["number.warm_level"];
+  warmth.state = "3.0";
+
+  const standby = panel._deviceCard(card);
+  assert.match(standby, /icon="mdi:thermometer-off"/);
+  assert.doesNotMatch(button(standby, "Warm mist: Off"), /disabled/);
+  panel._lv600sWarmPicker = warmth.entity_id;
+  assert.match(button(panel._deviceCard(card), "Warm mist 3"), /aria-pressed="true"/);
+
+  panel._lv600sWarmPicker = null;
+  fan.state = "on";
+  states["binary_sensor.heating_enabled"].state = "on";
+  const running = panel._deviceCard(card);
+  assert.match(running, /icon="mdi:heat-wave"/);
+  assert.match(button(running, "Warm mist: 3"), /aria-expanded="false"/);
+  assert.equal(warmth.state, "3.0");
+});
+
 test("LV600S history uses the read-only mist sensor and all four ranges", async () => {
   const { panel } = fixture();
   let request;

@@ -1477,13 +1477,14 @@ class LevoitEsphomePanel extends HTMLElement {
           disabled: disabled || !this._usable(warm) || preset === "Sleep",
           compact, on, selected: this._usable(warm) ? Number(warm.state) : null,
           active: state("binary_sensor.heating_enabled")?.state === "on",
+          standby: fan.state === "off",
         })
       : "";
     const levels = `<div class="lv-levels">${mist}${warmth}</div>`;
     return compact ? `${levels}${mode}` : `<div class="lv-quick">${mode}${levels}</div>`;
   }
 
-  _lv600sLevelControl(kind, entity, levels, { disabled, compact, on, selected, active }) {
+  _lv600sLevelControl(kind, entity, levels, { disabled, compact, on, selected, active, standby }) {
     const warm = kind === "warm";
     const label = warm ? "Warm mist" : "Mist level";
     const effective = on && active;
@@ -1503,7 +1504,7 @@ class LevoitEsphomePanel extends HTMLElement {
     const options = `<div class="segs lv-level-options" role="group" aria-label="${label}">${buttons}</div>`;
     if (warm && compact) {
       const expanded = this._lv600sWarmPicker === entity.entity_id && !disabled;
-      const text = selected === 0 ? "Off" : selected ?? "—";
+      const text = standby || selected === 0 ? "Off" : selected ?? "—";
       return `<div class="lv-level lv-warm-picker${expanded ? " expanded" : ""}" data-entity="${esc(entity.entity_id)}">
         ${levelIcon}${expanded ? options : `<div class="segs">
           <button class="seg sm" data-action="lv-warm-picker" data-entity="${esc(entity.entity_id)}"
