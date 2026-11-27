@@ -269,6 +269,12 @@ async def test_install_refreshes_template_config(
             "    password: !secret bedroom_purifier_ota_password\n", "    encryption:\n"
         )
         values = replace(values, ota_password=None, ota_uses_api_key=True)
+    elif protection == "unprotected":
+        # an API key without an OTA credential: the same, from the bare line
+        expected = expected.replace(
+            "  - platform: esphome\n", "  - platform: esphome\n    encryption:\n"
+        )
+        values = replace(values, ota_uses_api_key=True)
     assert new == expected
     assert config_values(new) == values  # keeps name, secrets, channel
     assert_compiled(builder, "bedroom-purifier.yaml")
@@ -568,11 +574,38 @@ async def test_refused_encrypted_upload_restores_password(
     assert not last.ok
     assert last.note == "OTA password restored for the next update"
 
-    # without the secret the config stays encrypted: nothing to fall back to
+    # without the secret the config goes back to no OTA credential, as it was
+    # before the migration (a device added without a password)
     builder.files.configs["bedroom-purifier.yaml"] = old
     builder.files.writes.clear()
     del builder.files.secrets["bedroom_purifier_ota_password"]
-    with pytest.raises(HomeAssistantError):
+    await hass.async_block_till_done(wait_background_tasks=True)  # the config read again
+    with pytest.raises(HomeAssistantError) as error:
         await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
-    assert builder.files.configs["bedroom-purifier.yaml"] == old
-    assert builder.files.writes == []
+    assert error.value.translation_key == "upload_failed", error.value
+    new = builder.files.configs["bedroom-purifier.yaml"]
+    assert new == old.replace("    encryption:\n", "")
+    assert config_values(new) == replace(_password_values(), ota_password=None)
+    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    assert last.note == "OTA encryption dropped for the next update"
+
+
+@pytest.mark.usefixtures("esphome_devices")
+async def test_install_encrypts_unprotected_ota_with_api_key(
+    hass: HomeAssistant, patch_sources: AsyncMock, builder: FakeBuilder
+) -> None:
+    """API key, no OTA credential (a device added without a password): encrypted after it."""
+    values = replace(_password_values(), ota_password=None)
+    old = render(BUILDER_TEXT, EVEREST_C3, values)
+    assert "  - platform: esphome\n\n" in old  # no credential line
+    builder.files.configs["bedroom-purifier.yaml"] = old
+    await _setup(hass)
+    await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: UPDATE}, blocking=True)
+    assert_uploaded(builder, "bedroom-purifier.yaml")
+
+    new = builder.files.configs["bedroom-purifier.yaml"]
+    assert new == old.replace("  - platform: esphome\n", "  - platform: esphome\n    encryption:\n")
+    assert config_values(new) == replace(values, ota_uses_api_key=True)
+    last = hass.config_entries.async_entries(DOMAIN)[0].runtime_data.last_builds["bedroom-purifier"]
+    assert last.ok
+    assert last.note == "OTA encrypted from the next update on"

@@ -912,7 +912,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
                 log.note = await self._async_encrypt_ota_after_upload(builder, device, log)
             return
         if device.template and log.encryption_refused:
-            log.note = await self._async_restore_ota_password(builder, device)
+            log.note = await self._async_undo_ota_encryption(builder, device)
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="upload_failed",
@@ -925,13 +925,19 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
     # encryption, whatever its own `ota:` says. So after a successful password
     # (or unprotected) upload of such a build, the config can require
     # encryption for the next one: the line is swapped, nothing is built. Should
-    # that next upload be refused ("did not offer encryption"), the password
-    # line comes back while its secret exists.
+    # that next upload be refused ("did not offer encryption"), the config goes
+    # back to what it had: the password line while its secret exists, else no
+    # OTA credential.
 
     async def _async_encrypt_ota_after_upload(
         self, builder: DeviceBuilder, device: LevoitDevice, log: BuildLog
     ) -> str | None:
-        """Swap a template config's OTA password for inherited encryption; the note, or None."""
+        """Make a template config's OTA inherit the API key's encryption; the note, or None.
+
+        From a password line, or from no OTA credential at all (a device that
+        was added without a password); a config without an API key, or with an
+        explicit OTA key, is left as it is.
+        """
         assert device.configuration
         if not tpl.supports_ota_encryption(log.esphome_version or device.esphome_current):
             return None
@@ -943,8 +949,9 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             if values.ota_uses_api_key:
                 return None  # done already
             if values.ota_password is None:
-                return None  # an unprotected config is left as it is
-            new = tpl.ota_encryption_from_password(text)
+                new = tpl.ota_encryption_from_none(text)
+            else:
+                new = tpl.ota_encryption_from_password(text)
             expected = replace(values, ota_password=None, ota_uses_api_key=True)
             if tpl.config_values(new) != expected:
                 raise tpl.TemplateError("the OTA line could not be swapped for encryption")
@@ -956,7 +963,7 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             TimeoutError,
         ) as err:
             _LOGGER.warning(
-                "%s: the OTA password stays; could not switch the config to encryption: %s",
+                "%s: the OTA credential stays; could not switch the config to encryption: %s",
                 device.configuration,
                 err,
             )
@@ -965,25 +972,31 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
         _LOGGER.info("%s: OTA encrypted from the next update on", device.configuration)
         return "OTA encrypted from the next update on"
 
-    async def _async_restore_ota_password(
+    async def _async_undo_ota_encryption(
         self, builder: DeviceBuilder, device: LevoitDevice
     ) -> str | None:
-        """After a refused encrypted upload: the password line back, while its secret exists."""
+        """After a refused encrypted upload: the password line back while its secret exists,
+        else no OTA credential, so the next update is a plain one again.
+        """
         assert device.configuration
         secret = tpl.secret_key(device.name, "ota_password")
         try:
             text = await async_read_config(self.hass, builder, device.configuration)
             values = tpl.config_values(text)
-            if not values.ota_uses_api_key or secret not in await async_secret_names(
-                self.hass, builder
-            ):
+            if not values.ota_uses_api_key:
                 return None
-            new = tpl.ota_password_from_encryption(text, secret)
-            expected = replace(
-                values, ota_password=tpl.Value(secret=secret), ota_uses_api_key=False
-            )
+            if secret in await async_secret_names(self.hass, builder):
+                new = tpl.ota_password_from_encryption(text, secret)
+                expected = replace(
+                    values, ota_password=tpl.Value(secret=secret), ota_uses_api_key=False
+                )
+                note = "OTA password restored for the next update"
+            else:
+                new = tpl.ota_none_from_encryption(text)
+                expected = replace(values, ota_uses_api_key=False)
+                note = "OTA encryption dropped for the next update"
             if tpl.config_values(new) != expected:
-                raise tpl.TemplateError("the OTA line could not be swapped back to the password")
+                raise tpl.TemplateError("the OTA line could not be swapped back")
             await async_write_config(self.hass, builder, device.configuration, new, expected=text)
         except (
             DeviceBuilderCommandError,
@@ -992,17 +1005,16 @@ class LevoitEsphomeCoordinator(DataUpdateCoordinator[LevoitData]):
             TimeoutError,
         ) as err:
             _LOGGER.warning(
-                "%s: could not restore the OTA password after the refused upload: %s",
+                "%s: could not undo the OTA encryption after the refused upload: %s",
                 device.configuration,
                 err,
             )
             return None
         self.async_forget_config(device.configuration)
         _LOGGER.warning(
-            "%s: the device did not offer OTA encryption; its password is back for the next update",
-            device.configuration,
+            "%s: the device did not offer OTA encryption; %s", device.configuration, note.lower()
         )
-        return "OTA password restored for the next update"
+        return note
 
     @callback
     def _track_version_entities(self, devices: dict[str, LevoitDevice]) -> None:

@@ -19,7 +19,9 @@ from custom_components.levoit_esphome.templates import (
     config_values,
     new_api_key,
     normalize_pin,
+    ota_encryption_from_none,
     ota_encryption_from_password,
+    ota_none_from_encryption,
     ota_password_from_encryption,
     parse_templates,
     render,
@@ -363,3 +365,22 @@ def test_ota_password_and_encryption_swap() -> None:
     )
     with pytest.raises(TemplateError, match="ota encryption"):
         ota_password_from_encryption(explicit, "x")
+
+
+def test_ota_encryption_and_none_swap() -> None:
+    """An unprotected OTA (API key, no credential) made encrypted, and back."""
+    bare = render(BUILDER, EVEREST_C3, replace(VALUES, ota_password=None))
+    assert "  - platform: esphome\n\n" in bare
+    encrypted = ota_encryption_from_none(bare)
+    assert encrypted == bare.replace(
+        "  - platform: esphome\n", "  - platform: esphome\n    encryption:\n"
+    )
+    assert config_values(encrypted) == replace(VALUES, ota_password=None, ota_uses_api_key=True)
+    assert ota_none_from_encryption(encrypted) == bare
+    # only a bare line is taken; a password or encryption line is not
+    with pytest.raises(TemplateError, match="unprotected ota line"):
+        ota_encryption_from_none(encrypted)
+    with pytest.raises(TemplateError, match="unprotected ota line"):
+        ota_encryption_from_none(render(BUILDER, EVEREST_C3, VALUES))
+    with pytest.raises(TemplateError, match="ota encryption"):
+        ota_none_from_encryption(bare)

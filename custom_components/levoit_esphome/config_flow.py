@@ -1,20 +1,10 @@
 """Config flow (one entry) and the "Add device" subentry flow.
 
-Add device makes a Device Builder config from a template of tuct/levoit
-(devices/templates.json: a model, original ESP, ESP32-C3 or Seeed XIAO ESP32-S3):
-
-* new device: suggested name, generated API encryption key and OTA password,
-  stored in secrets.yaml as <name>_api_key / <name>_ota_password
-* existing device (in Home Assistant, but no Device Builder config): its name,
-  its API key from the ESPHome config entry, its OTA password as entered
-
-Either way the ESP is a template (the config follows it: every update rewrites
-it from the newest builder file) or custom: the model's builder file with the
-user's own board and UART pins, never rewritten.
-
-Wi-Fi comes from the shared wifi_ssid / wifi_password / wifi_ap_password
-secrets, which must exist. Only secret names are read, never values; a secret
-that exists is never overwritten.
+Add device is the plain route: five forms on the integration page, over the
+steps in onboarding.py (which the sidebar panel's wizard shares): a new
+device or one Home Assistant knows without a config, the model, the ESP (a
+template, or the user's own board and pins), name and channel, then the
+secrets and the config in the Device Builder.
 """
 
 from __future__ import annotations
@@ -45,32 +35,13 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from . import templates as tpl
+from . import onboarding as onb, templates as tpl
 from .const import CHANNEL_MAIN, CHANNEL_STABLE, CONF_SHOW_PANEL, DOMAIN
-from .device_builder import (
-    DeviceBuilderCommandError,
-    async_add_secret,
-    async_create_config,
-    async_get_device_builder,
-    async_secret_names,
-    builder_page_url,
-)
+from .device_builder import async_get_device_builder
+from .onboarding import OnboardingError
 
 if TYPE_CHECKING:
     from .coordinator import LevoitDevice, LevoitEsphomeCoordinator
-
-WIFI_SECRETS = ("wifi_ssid", "wifi_password", "wifi_ap_password")
-# offered for a custom config; any other ESPHome board name can be typed in
-COMMON_BOARDS = (
-    "seeed_xiao_esp32s3",
-    "seeed_xiao_esp32c3",
-    "seeed_xiao_esp32c6",
-    "esp32dev",
-    "esp32-s3-devkitc-1",
-    "esp32-c3-devkitm-1",
-    "esp32-c6-devkitc-1",
-)
-ESPHOME_DOMAIN = "esphome"
 
 
 class LevoitEsphomeConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -92,7 +63,7 @@ class LevoitEsphomeConfigFlow(ConfigFlow, domain=DOMAIN):
         cls, config_entry: ConfigEntry
     ) -> dict[str, type[ConfigSubentryFlow]]:
         """The "Add device" button."""
-        return {"device": AddDeviceFlow}
+        return {onb.SUBENTRY_TYPE: AddDeviceFlow}
 
     @staticmethod
     @callback
@@ -133,15 +104,11 @@ class AddDeviceFlow(ConfigSubentryFlow):
         # custom: the user's own board and pins, on the template's builder file
         self._custom: tpl.CustomEsp | None = None
         self._source: str | None = None
-        self._esphome_version: str | None = None  # the Device Builder's, from its listing
+        self._state: onb.BuilderState | None = None  # the Device Builder's listing
 
     @property
     def _coordinator(self) -> LevoitEsphomeCoordinator:
         return self._get_entry().runtime_data
-
-    def _unconfigured(self) -> list[LevoitDevice]:
-        data = self._coordinator.data
-        return [d for d in data.devices.values() if not d.configuration] if data else []
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """New device, or one Home Assistant knows without a Device Builder config."""
@@ -153,7 +120,7 @@ class AddDeviceFlow(ConfigSubentryFlow):
             return self.async_abort(reason="templates_unavailable")
         if not self._templates:
             return self.async_abort(reason="templates_unavailable")
-        if not self._unconfigured():
+        if not onb.unconfigured(self._coordinator):
             return await self.async_step_new()
         return self.async_show_menu(step_id="user", menu_options=["new", "existing"])
 
@@ -161,12 +128,10 @@ class AddDeviceFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Pick the device."""
-        devices = {d.name: d for d in self._unconfigured()}
+        devices = {d.name: d for d in onb.unconfigured(self._coordinator)}
         if user_input is not None:
             self._existing = devices[user_input["device"]]
-            if self._existing.model and any(
-                t.model == self._existing.model for t in self._templates
-            ):
+            if self._existing.model and onb.variants(self._templates, self._existing.model):
                 self._model = self._existing.model
                 return await self.async_step_variant()
             return await self.async_step_new()
@@ -187,12 +152,9 @@ class AddDeviceFlow(ConfigSubentryFlow):
         if user_input is not None:
             self._model = user_input["model"]
             return await self.async_step_variant()
-        models: dict[str, str] = {}
-        for template in self._templates:
-            models.setdefault(template.model, template.title)
         options = [
             SelectOptionDict(value=model, label=title)
-            for model, title in sorted(models.items(), key=lambda item: item[1])
+            for model, title in onb.models(self._templates)
         ]
         return self.async_show_form(
             step_id="new",
@@ -209,13 +171,11 @@ class AddDeviceFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Pick the ESP: a template (original, XIAO C3, ...) or custom (own board and pins)."""
-        variants = [t for t in self._templates if t.model == self._model]
+        assert self._model is not None
+        variants = onb.variants(self._templates, self._model)
         if user_input is not None:
             if user_input["variant"] == tpl.VARIANT_CUSTOM:
-                # the best template to start from: same model, closest to a bare ESP
-                self._template = next(
-                    (t for v in tpl.CUSTOM_BASE for t in variants if t.variant == v), variants[0]
-                )
+                self._template = onb.custom_base(variants)
                 return await self.async_step_custom()
             self._template = next(t for t in variants if t.variant == user_input["variant"])
             self._custom = None
@@ -251,27 +211,12 @@ class AddDeviceFlow(ConfigSubentryFlow):
         defaults = tpl.builder_esp(self._source)
         errors: dict[str, str] = {}
         if user_input is not None:
-            board = str(user_input["board"]).strip().lower()
-            rx_pin = tpl.normalize_pin(str(user_input["rx_pin"]))
-            tx_pin = tpl.normalize_pin(str(user_input["tx_pin"]))
-            if not tpl.valid_board(board):
-                errors["board"] = "invalid_board"
-            if rx_pin is None:
-                errors["rx_pin"] = "invalid_pin"
-            if tx_pin is None:
-                errors["tx_pin"] = "invalid_pin"
-            elif rx_pin == tx_pin:
-                errors["tx_pin"] = "same_pin"
+            board, rx_pin, tx_pin = (str(user_input[k]) for k in ("board", "rx_pin", "tx_pin"))
+            self._custom, errors = onb.validate_custom(board, rx_pin, tx_pin)
             if not errors:
-                assert rx_pin is not None and tx_pin is not None
-                self._custom = tpl.CustomEsp(board=board, rx_pin=rx_pin, tx_pin=tx_pin)
                 return await self.async_step_details()
-            defaults = tpl.CustomEsp(
-                board=str(user_input["board"]),
-                rx_pin=str(user_input["rx_pin"]),
-                tx_pin=str(user_input["tx_pin"]),
-            )
-        boards = list(COMMON_BOARDS)
+            defaults = tpl.CustomEsp(board=board, rx_pin=rx_pin, tx_pin=tx_pin)
+        boards = list(onb.COMMON_BOARDS)
         if defaults.board and defaults.board not in boards:
             boards.insert(0, defaults.board)
         return self.async_show_form(
@@ -306,19 +251,9 @@ class AddDeviceFlow(ConfigSubentryFlow):
         if builder is None:
             return self.async_abort(reason="no_device_builder")
         try:
-            listing = await builder.api.get_devices()
-        except (aiohttp.ClientError, TimeoutError):
-            return self.async_abort(reason="cannot_connect")
-        taken = {d["name"] for d in listing.get("configured", []) if d.get("name")}
-        taken |= set(self._coordinator.data.devices) if self._coordinator.data else set()
-        self._esphome_version = next(
-            (
-                d["current_version"]
-                for d in listing.get("configured", [])
-                if d.get("current_version")
-            ),
-            None,
-        )
+            self._state = await onb.async_builder_state(self.hass, builder, self._coordinator)
+        except OnboardingError as err:
+            return self.async_abort(reason=err.code)
 
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {"model": self._template.title}
@@ -327,20 +262,27 @@ class AddDeviceFlow(ConfigSubentryFlow):
                 name = self._existing.name
             else:
                 name = str(user_input["name"]).strip().lower()
-                if not tpl.valid_name(name):
-                    errors["name"] = "invalid_name"
-                elif name in taken:
-                    errors["name"] = "name_taken"
+                if error := onb.check_name(name, self._state.taken):
+                    errors["name"] = error
             if not errors:
-                result = await self._async_create(
-                    name,
-                    user_input["channel"],
-                    user_input.get("ota_password") or None,
-                    errors,
-                    placeholders,
+                request = onb.DeviceRequest(
+                    template=self._template,
+                    name=name,
+                    channel=user_input["channel"],
+                    existing=self._existing is not None,
+                    custom=self._custom,
+                    ota_password=user_input.get("ota_password") or None,
+                    source=self._source,
                 )
-                if result is not None:
-                    return result
+                try:
+                    created = await onb.async_create_device(
+                        self.hass, self._coordinator, builder, request, self._state.esphome_version
+                    )
+                except OnboardingError as err:
+                    errors["base"] = err.code
+                    placeholders.update(err.placeholders)
+                else:
+                    return self._async_created(created)
 
         if self._existing is not None:
             schema = vol.Schema(
@@ -355,7 +297,9 @@ class AddDeviceFlow(ConfigSubentryFlow):
             placeholders["api_secret"] = tpl.secret_key(self._existing.name, "api_key")
             step_id = "details_existing"
         else:
-            default = (user_input or {}).get("name") or tpl.suggest_name(self._template.name, taken)
+            default = (user_input or {}).get("name") or tpl.suggest_name(
+                self._template.name, set(self._state.taken)
+            )
             schema = vol.Schema(
                 {
                     vol.Required("name", default=default): TextSelector(),
@@ -373,104 +317,19 @@ class AddDeviceFlow(ConfigSubentryFlow):
     # the details_existing form posts to its own step id
     async_step_details_existing = async_step_details
 
-    async def _async_create(
-        self,
-        name: str,
-        channel: str,
-        ota_password: str | None,
-        errors: dict[str, str],
-        placeholders: dict[str, str],
-    ) -> SubentryFlowResult | None:
-        """Secrets, then the config. None (with `errors` set) if it did not work."""
-        assert self._template is not None
-        builder = async_get_device_builder(self.hass)
-        if builder is None:
-            return self.async_abort(reason="no_device_builder")
-
-        # what goes into secrets.yaml; a new device gets encrypted OTA that
-        # inherits its API key, a password only on a Device Builder too old for it
-        api_secret = tpl.secret_key(name, "api_key")
-        ota_secret = tpl.secret_key(name, "ota_password")
-        new_secrets: dict[str, str] = {}
-        encrypt = self._existing is None and tpl.supports_ota_encryption(self._esphome_version)
-        if self._existing is None:
-            new_secrets[api_secret] = tpl.new_api_key()
-            if not encrypt:
-                new_secrets[ota_secret] = tpl.new_ota_password()
-        else:
-            if api_key := self._existing_api_key(name):
-                new_secrets[api_secret] = api_key
-            if ota_password:
-                new_secrets[ota_secret] = ota_password
-
-        try:
-            present = await async_secret_names(self.hass, builder)
-            if missing := [key for key in WIFI_SECRETS if key not in present]:
-                errors["base"] = "missing_wifi_secrets"
-                placeholders["missing"] = ", ".join(missing)
-                return None
-            if exists := [key for key in new_secrets if key in present]:
-                errors["base"] = "secret_exists"
-                placeholders["secret"] = ", ".join(exists)
-                return None
-
-            source = self._source or await tpl.async_fetch_template_text(
-                async_get_clientsession(self.hass), self._template
-            )
-            values = tpl.ConfigValues(
-                name=name,
-                api_key=tpl.Value(secret=api_secret) if api_secret in new_secrets else None,
-                ota_password=tpl.Value(secret=ota_secret) if ota_secret in new_secrets else None,
-                channel=channel,
-                ota_uses_api_key=encrypt,
-            )
-            content = self._render(source, values)
-
-            for key, value in new_secrets.items():
-                if not await async_add_secret(self.hass, builder, key, value):
-                    errors["base"] = "secret_exists"
-                    placeholders["secret"] = key
-                    return None
-            configuration = await async_create_config(self.hass, builder, name, content)
-        except DeviceBuilderCommandError as err:
-            errors["base"] = "config_exists" if err.code == "already_exists" else "cannot_connect"
-            return None
-        except (aiohttp.ClientError, TimeoutError, tpl.TemplateError):
-            errors["base"] = "template_failed"
-            return None
-
-        await self._coordinator.async_request_refresh()
+    def _async_created(self, created: onb.CreatedDevice) -> SubentryFlowResult:
+        """The device's sub-entry, and what to do next."""
         return self.async_create_entry(
-            title=name,
-            data={
-                "configuration": configuration,
-                "template": self._template.file,
-                "existing": self._existing is not None,
-                "custom": self._custom is not None,
-            },
-            description="existing" if self._existing is not None else None,
+            title=created.name,
+            data=created.subentry_data,
+            description="existing" if created.existing else None,
             description_placeholders={
-                "configuration": configuration,
-                "name": name,
-                "builder_url": builder_page_url(builder)
-                or "/config/integrations/integration/esphome",
+                "configuration": created.configuration,
+                "name": created.name,
+                "builder_url": created.builder_url,
             },
-            unique_id=name,
+            unique_id=created.name,
         )
-
-    def _render(self, source: str, values: tpl.ConfigValues) -> str:
-        """The new config: a template config, or a custom one for the user's ESP."""
-        assert self._template is not None
-        if self._custom is not None:
-            return tpl.render_custom(source, self._template, values, self._custom)
-        return tpl.render(source, self._template, values)
-
-    def _existing_api_key(self, name: str) -> str | None:
-        """The API encryption key Home Assistant uses for the device, if any."""
-        for entry in self.hass.config_entries.async_entries(ESPHOME_DOMAIN):
-            if entry.data.get("device_name") == name:
-                return entry.data.get("noise_psk") or None
-        return None
 
 
 def _channel_selector() -> SelectSelector:

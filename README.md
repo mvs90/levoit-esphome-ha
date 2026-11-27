@@ -486,7 +486,8 @@ pins, and the config is made from the model's builder file with those.
   and its API encryption key, which is taken from Home Assistant's ESPHome
   connection to the device (none there: no encryption) and stored as
   `<name>_api_key`. Home Assistant does not know the OTA password, so the
-  flow asks for it (leave it empty if the device has none)
+  flow asks for it (leave it empty if the device has none). After its first
+  update here, OTA updates are encrypted with the key too (below)
 * Wi-Fi comes from the shared `wifi_ssid`, `wifi_password` and
   `wifi_ap_password` secrets, which must exist. The integration reads secret
   **names** only, never values, and never overwrites an existing secret
@@ -525,11 +526,13 @@ encryption; right after that upload the integration swaps the password line
 for `encryption:`, a text change, and the row says *OTA encrypted from the
 next update on*. The update after that is encrypted. Nothing to do; the
 `<name>_ota_password` secret stays in `secrets.yaml`, unused (the integration
-never deletes a secret). Should an encrypted upload be refused because the
-device does not offer encryption, the password line comes back while the
-secret exists, and the row says so. A custom config is not touched. ESPHome
-removes the plain password path in 2027.3.0: update every device once before
-then.
+never deletes a secret). A template config with an API key and no OTA
+credential at all (a device added without a password) takes the same two
+steps. Should an encrypted upload be refused because the device does not
+offer encryption, the config goes back to what it had, the password line
+while the secret exists or no credential, and the row says so. A custom
+config is not touched. ESPHome removes the plain password path in 2027.3.0:
+update every device once before then.
 
 ### How it works
 
