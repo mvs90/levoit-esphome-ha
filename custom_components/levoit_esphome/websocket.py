@@ -10,7 +10,8 @@
 * levoit_esphome/device_controls: which entity is which setting, for the
   device page
 
-Purifier groups have their own commands, in groups_websocket.py.
+Purifier groups have their own commands, in groups_websocket.py; Add device
+from the panel has its own, in onboarding_websocket.py.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from .const import CHANNEL_MAIN, CHANNEL_STABLE, DOMAIN, SIGNAL_COORDINATOR
 from .controls import match_controls, page_supported
 from .device_builder import builder_page_url
 from .groups_websocket import async_register as async_register_groups
+from .onboarding_websocket import async_register as async_register_onboarding
 from .templates import VARIANT_CUSTOM
 from .versions import is_behind
 
@@ -55,6 +57,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_build_log)
     websocket_api.async_register_command(hass, ws_device_controls)
     async_register_groups(hass)
+    async_register_onboarding(hass)
 
 
 def _coordinator(hass: HomeAssistant) -> LevoitEsphomeCoordinator | None:

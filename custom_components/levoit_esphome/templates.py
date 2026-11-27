@@ -455,6 +455,8 @@ _OTA_PASSWORD_LINE = (
     r"^(  - platform: esphome[ \t]*\n)    password: (?:!secret [A-Za-z0-9_.-]+|\".*\")[ \t]*\n"
 )
 _OTA_INHERITED_LINE = r"^(  - platform: esphome[ \t]*\n)    encryption:[ \t]*\n(?!      key:)"
+# no credential at all under the platform line (an unprotected OTA)
+_OTA_BARE_LINE = r"^(  - platform: esphome[ \t]*\n)(?!    (?:password|encryption):)"
 
 
 def _swap_ota_line(pattern: str, line: str, text: str, what: str) -> str:
@@ -474,11 +476,21 @@ def ota_encryption_from_password(text: str) -> str:
     return _swap_ota_line(_OTA_PASSWORD_LINE, "    encryption:\n", text, "ota password line")
 
 
+def ota_encryption_from_none(text: str) -> str:
+    """Encryption that inherits the API key added to a config's unprotected OTA."""
+    return _swap_ota_line(_OTA_BARE_LINE, "    encryption:\n", text, "unprotected ota line")
+
+
 def ota_password_from_encryption(text: str, secret: str) -> str:
     """The reverse: inherited OTA encryption replaced by `password: !secret <secret>`."""
     return _swap_ota_line(
         _OTA_INHERITED_LINE, f"    password: !secret {secret}\n", text, "ota encryption"
     )
+
+
+def ota_none_from_encryption(text: str) -> str:
+    """Inherited OTA encryption removed: an unprotected OTA again."""
+    return _swap_ota_line(_OTA_INHERITED_LINE, "", text, "ota encryption")
 
 
 def with_channel(text: str, channel: str) -> str:
